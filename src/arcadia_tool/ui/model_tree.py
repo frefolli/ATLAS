@@ -84,6 +84,7 @@ class ModelTree(QFrame):
     srs_window_requested = Signal()  # the SRS catalogue in a separate window
     import_requested = Signal()  # «Importa SRS…»: the SRS items from the PDFs of the SUBSET-026
     functions_import_requested = Signal()  # «Importa funzioni…» of SA-2: the catalogue in Excel of the teams
+    adrs_import_requested = Signal()  # «Importa ADR…»: the sheets X-1 in Excel of the teams
     element_created = Signal(str)  # «Nuovo…»: the uuid of the element just created (its sheet opens next)
     list_requested = Signal(str)  # a kind whose elements are shown as a table in a tab (e.g. X-2)
     breakdown_requested = Signal(str)  # the functional breakdown of the SA of this kind (SA-1 or SA-2)
@@ -416,6 +417,12 @@ class ModelTree(QFrame):
         if kind == "system_function" and not uuid:
             imported = menu.addAction(icon("mdi6.file-import-outline"), "Importa funzioni…",
                                       lambda _=False: self.functions_import_requested.emit())
+            imported.setEnabled(not denied)
+            imported.setToolTip(denied or "")
+            menu.addSeparator()
+        if kind == "adr" and not uuid:
+            imported = menu.addAction(icon("mdi6.file-import-outline"), "Importa ADR…",
+                                      lambda _=False: self.adrs_import_requested.emit())
             imported.setEnabled(not denied)
             imported.setToolTip(denied or "")
             menu.addSeparator()

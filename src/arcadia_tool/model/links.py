@@ -150,7 +150,7 @@ def _functions_trace_record_item(model, record, previous, changed):
     item = model.get(record.get("requirement"))
     if item is None:
         return
-    for uuid in [record.get("primary_function"), *(record.get("secondary_functions") or [])]:
+    for uuid in [*(record.get("primary_functions") or []), *(record.get("secondary_functions") or [])]:
         function = model.get(uuid)
         if function is None or function.kind not in TRACED_FIELD:
             continue

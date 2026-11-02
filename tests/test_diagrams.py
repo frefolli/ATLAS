@@ -57,13 +57,13 @@ def build(tmp_path):
     section = p.new_element("requirement", id="3.11", item_type="Sezione", sequence=1)
     c1, c2 = (p.new_element("requirement", id=f"3.11.{n}", item_type="Requisito", parent=section.uuid, sequence=n + 1)
               for n in (1, 2))
-    p.new_element("trace_record", requirement=c1.uuid, primary_function=f[(6, 4)].uuid)
-    p.new_element("trace_record", requirement=c2.uuid, primary_function=f[(6, 6)].uuid,
+    p.new_element("trace_record", requirement=c1.uuid, primary_functions=[f[(6, 4)].uuid])
+    p.new_element("trace_record", requirement=c2.uuid, primary_functions=[f[(6, 6)].uuid],
                   secondary_functions=[f[(6, 4)].uuid])
     # Allocated from its sheet (or the import of SA-2), without SA-3 records: its clauses are counted too.
     f[(11, 1)].set("sections", [section.uuid])
     p.update(f[(11, 1)])
-    p.new_element("trace_record", requirement=c1.uuid, primary_function=f[(11, 1)].uuid)  # within its section
+    p.new_element("trace_record", requirement=c1.uuid, primary_functions=[f[(11, 1)].uuid])  # within its section
     return p, d, f, x, chain, rbc, alone
 
 

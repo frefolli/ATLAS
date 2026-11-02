@@ -194,7 +194,7 @@ def test_the_same_workbook_imported_again_aligns_the_model(app, tmp_path):
     first.import_functions()
     p.save()
     brake = next(f for f in first.created if f.get("name") == "Gestire comandi di frenatura")
-    assert brake.get("catalogue_id") == "SF-DF01-01"
+    assert brake.get("imported") is True and "catalogue_id" not in brake.values  # the ID: of ATLAS only
     brake.set("description", "Scritta in ATLAS")
     brake.set("status", "Rivista")
     p.update(brake)
@@ -230,3 +230,58 @@ def test_the_same_workbook_imported_again_aligns_the_model(app, tmp_path):
     assert brake.get("sections") == [items["3.4.1.2"].uuid]
     assert brake.get("description") == "Scritta in ATLAS" and brake.get("status") == "Rivista"
     assert [e.get("name") for e in again.deleted] == ["Determinare il modo"] and REMOVED
+
+
+def test_each_clause_is_allocated_once_also_through_its_section(app, tmp_path):
+    from arcadia_tool.ui.import_functions import NEW, UPDATED, ImportFunctionsDialog
+
+    p, d1, items, existing = project(tmp_path)
+    section = p.model.get(items["3.4.1.1"].get("parent"))
+    existing.set("sections", [items["3.4.1.1"].uuid])  # already allocated: inside the section now in the file
+    p.update(existing)
+    # A clause numbered under another clause: a requirement of its own, allocated with it.
+    nested = p.new_element("requirement", id="3.4.1.2.1", item_type="Requisito", parent=items["3.4.1.2"].uuid,
+                           sequence=7)
+    rows = [["SF-DF01-01", "Gestire comandi di frenatura", "3.4.1.2; 3.4.1.2 b); 3.4.1.2 f); 3.4.1.2; 3.4.1.2.1",
+             None, None, None],
+            ["SF-DF01-02", "Proteggere dal Roll Away", "3.4.1, 3.4.1.1, 3.4.1.2 b)", None, None, None],
+            ["SF-DF01-04", "Monitorare la velocità", "3.4.1; 3.4.1.1", None, None, None]]
+    dialog = ImportFunctionsDialog(p, workbook(tmp_path / "sa2.xlsx", rows))
+    brake, roll, speed = dialog.planned[:3]
+    assert brake.outcome == NEW and [i.get("id") for i in brake.wanted] == ["3.4.1.2", "3.4.1.2.1"]  # 3.4.1.2: once
+    assert roll.outcome == NEW and [i.get("id") for i in roll.wanted] == ["3.4.1"]  # its clauses: in the section
+    assert speed.outcome == UPDATED and speed.added == {section.uuid} and speed.removed == [items["3.4.1.1"].uuid]
+    entries = {x.source.name: row for x, row in dialog.entries if x.source}
+    children = lambda row: [(row.child(i).text(1), row.child(i).text(5)) for i in range(row.childCount())]
+    assert children(entries["Gestire comandi di frenatura"]) == [
+        ("3.4.1.2", "Si alloca · nel file: 3.4.1.2, 3.4.1.2 b), 3.4.1.2 f), 3.4.1.2"), ("3.4.1.2.1", "Si alloca")]
+    assert [t for _n, t in children(entries["Proteggere dal Roll Away"])] == [
+        "Si alloca", "Contenuta nella sezione 3.4.1, anch'essa nel file: non si alloca una seconda volta",
+        "Contenuta nella sezione 3.4.1, anch'essa nel file: non si alloca una seconda volta · nel file: 3.4.1.2 b)"]
+    speed_rows = children(entries["Monitorare la velocità"])  # the allocation inside the section: shown once
+    assert speed_rows == [("3.4.1", "Si alloca"), ("3.4.1.1", "Già allocata, ma contenuta nella sezione 3.4.1, "
+                                                             "anch'essa nel file: si toglie l'allocazione doppia")]
+    assert "allocazioni: +4 −1" in dialog.counts.text() and "riferimenti già contati" in dialog.counts.text()
+    dialog.import_functions()
+    created = {f.get("name"): f for f in dialog.created}
+    assert created["Gestire comandi di frenatura"].get("sections") == [items["3.4.1.2"].uuid, nested.uuid]
+    assert created["Proteggere dal Roll Away"].get("sections") == [section.uuid]
+    assert existing.get("sections") == [section.uuid] and existing.get("imported") is True
+    assert all(f.get("id", "").startswith("SF-DF01-") and "catalogue_id" not in f.values for f in dialog.created)
+
+
+def test_the_id_of_the_catalogue_of_earlier_versions_is_no_longer_kept(tmp_path):
+    from arcadia_tool.model.serialization import dumps
+
+    p = Project.create(tmp_path / "p", "Prova")
+    d1 = p.new_element("domain", id="DF01", name="Frenatura")
+    imported = p.new_element("system_function", name="Importata", domain=d1.uuid)
+    manual = p.new_element("system_function", name="A mano", domain=d1.uuid)
+    p.save()
+    imported.values["catalogue_id"] = "SF-DF01-07"  # written by 0.7.0
+    path = next(p.path.rglob(f"{imported.uuid}.yaml"))
+    path.write_text(dumps(imported), encoding="utf-8")
+    reopened = Project.open(tmp_path / "p")
+    again = reopened.model.get(imported.uuid)
+    assert "catalogue_id" not in again.values and again.get("imported") is True
+    assert not reopened.model.get(manual.uuid).get("imported")

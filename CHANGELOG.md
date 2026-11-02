@@ -6,6 +6,87 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.8.0] - 2026-11-02
+
+### Aggiunto
+- **Import delle ADR da Excel.** Clic destro sulle ADR nell'albero del modello, poi «Importa ADR…», e si scelgono
+  uno o più file.
+  - **File:** le schede X-1 dei team (un file per ADR) o il file delle ADR generato da ATLAS (un foglio per ADR),
+    nei template di tutti i 14 tipi e in quello delle prime versioni («Riallocazione di sezione»).
+  - **Tipo e campi:** il tipo si riconosce da «Tipo di decisione», altrimenti dal modello della scheda. Ogni riga si
+    abbina al campo del tipo con la stessa etichetta, anche nelle varianti delle prime versioni («Sezione o
+    clausola da riallocare», «Dominio principale proposto (destinazione)»). I testi guida si ignorano.
+  - **Riferimenti:** voci SRS con le sottovoci, domini per ID o nome, team per ID, nome o sigla, membri anche come
+    «G. Ioele», funzioni, exchange item, catene e ADR. I campi calcolati da ATLAS, come il dominio principale
+    attuale, si confrontano con il modello e si segnalano se diversi.
+  - **Membro proponente:** se il file non indica un membro del team proponente, ad esempio riporta solo «Unimib»
+    come autore, si usa il referente del team, indicato così nell'anteprima.
+  - **ID e stato:** l'ID è quello del nome del file (ADR-0010 diventa ADR-010) o del titolo, se nel modello è
+    libero, altrimenti lo genera ATLAS. Lo stato è sempre «Proposta». La data e la decisione della DA non si
+    importano.
+  - **Anteprima:** prima di creare le ADR, una finestra le elenca con la spunta «Applica», i campi importati e gli
+    avvisi. Sono avvisi, ad esempio, il titolo con un altro ID, più domini di destinazione, un dominio «da
+    definire», un tipo non previsto o voci di sezioni diverse in una riallocazione. Ciò che non si imposta così
+    com'è scritto resta nelle note della motivazione. Le ADR già nel modello o ripetute nei file non si importano.
+  - **Report dell'importazione:** alla fine ATLAS chiede se salvarlo in Excel. Ha tre fogli:
+    - *Riepilogo:* file letti e non letti, ADR importate, già nel modello, ripetute, non riconosciute o escluse
+      nell'anteprima;
+    - *ADR:* una riga per scheda, con l'ID nel file e nel modello, il tipo, il proponente, l'esito e il numero di
+      avvisi;
+    - *Dettaglio:* per ogni ADR i campi importati, le scelte fatte (da dove vengono l'ID, il tipo, il team e il
+      membro proponente, come per il referente, e lo stato) e gli avvisi, con quelli riportati nelle note della
+      motivazione.
+- **Checkout di una versione del modello.** Nella finestra *Versioni › Rami*, «Checkout di una versione…» porta il
+  modello completo a una versione scelta di un ramo, di questo PC o del repository (dopo «Aggiorna dal
+  repository»). Il progetto passa su quel ramo, anche se non è ancora su questo PC.
+  - **Ripristino (consigliato):** il ramo resta alla sua ultima versione; ciò che differisce è una modifica da
+    pubblicare, inviata al repository come le altre.
+  - **Riporto forzato del ramo:** il ramo di questo PC torna alla versione scelta e le successive non ne fanno più
+    parte. Il repository non cambia, e ricevendo le versioni tornano. Prima della conferma ATLAS indica quante
+    versioni escono dal ramo e avvisa se alcune, mai inviate, vanno perse.
+  - **Modifiche in sospeso:** come per il cambio di ramo, prima si pubblicano o si scartano.
+
+### Modificato
+- **Più ID account per membro del team (più postazioni).** Chi lavora su più PC ha un account locale, e un ID, su
+  ciascuno. Nella finestra del membro la DA li tiene in una lista: incolla un ID nel campo e preme «Aggiungi» (o
+  Invio), anche con i trattini, e «Rimuovi» toglie quello selezionato. ATLAS riconosce
+  la persona da qualunque delle sue postazioni, per l'accesso al progetto, i permessi della DA e le versioni
+  pubblicate.
+  - **Controlli:** un ID non valido, o già di un altro membro del team, viene segnalato.
+  - **Tabella dei membri:** mostra il primo ID e quanti altri ce ne sono («87d54dd9… (+1)»); il suggerimento li
+    elenca tutti.
+  - **Confronto tra versioni e schede Excel:** riportano tutti gli ID.
+  - **File del team:** un solo ID resta scritto come prima; più ID sono una lista. Le versioni precedenti di ATLAS
+    non leggono una lista, quindi chi usa una postazione con più ID deve aggiornare ATLAS.
+- **Registro SA-3: più funzioni primarie per voce.**
+  - **Scheda:** il campo «Funzione primaria» diventa «Funzioni primarie», con una o più funzioni scelte a spunta e
+    raggruppate per dominio, come le «Funzioni secondarie». La voce viene allocata a tutte.
+  - **Progetti esistenti:** quelli salvati con una sola funzione primaria sono convertiti all'apertura.
+  - **Verifiche e documenti:** le verifiche SA-3 (SA3-05, 10, 11, 12, 13, 14) considerano ciascuna funzione primaria.
+    La colonna del template e della scheda SA-3 generata si chiama «Funzioni primarie».
+- **Import delle funzioni SA-2: clausole una volta sola, anteprima per clausola, ID solo di ATLAS.**
+  - **Clausole:** ognuna si alloca una volta sola per funzione. Le sottovoci e le ripetizioni della stessa clausola
+    contano una volta; una clausola contenuta in una sezione anch'essa nel file passa per la sezione; una clausola
+    numerata sotto un'altra clausola (3.6.5.1.4.1 sotto 3.6.5.1.4) resta un requisito a sé.
+  - **Anteprima:** una riga per clausola, con quanto scritto nel file e cosa succede: «Si alloca», «Già allocata
+    alla funzione: invariata», «Contenuta nella sezione…», «Non più nel file». Il riepilogo conta anche i
+    riferimenti già contati.
+  - **ID:** gli ID del file non si importano più, nemmeno come riferimento: li genera ATLAS. Le funzioni importate
+    con le versioni precedenti perdono l'«ID nel catalogo SA-2» e restano riconosciute come importate.
+- **Ricevi dal repository: prima le modifiche locali.** Se sul ramo in uso ci sono modifiche non pubblicate, ATLAS
+  le mostra elemento per elemento, come nella finestra «Pubblica», e chiede cosa farne:
+  - **Pubblica…:** vengono integrate con le versioni ricevute;
+  - **Scarta le modifiche:** il progetto torna all'ultima versione pubblicata, poi riceve quelle del repository.
+
+### Corretto
+- **Membri di un team modificati con la scheda in sola lettura.** Nella scheda di un team non in modalità modifica,
+  la matita, il doppio clic su un membro e «Aggiungi membro…» aprivano comunque la finestra del membro. La tabella
+  mostrava il nuovo ID account, ma la modifica non arrivava al modello: niente «Salva», e «Pubblica» non la
+  vedeva. Ora ATLAS chiede prima di passare in modalità modifica.
+- **Pubblica e Ricevi con schede non salvate.** Le modifiche di una scheda ancora in modalità modifica, ad esempio
+  l'ID account di un membro del team cambiato senza premere «Salva» nella scheda, non erano viste da «Pubblica», che
+  segnalava «nulla da pubblicare». Ora ATLAS chiede prima se salvarle o scartarle.
+
 ## [0.7.0] - 2026-10-30
 
 ### Aggiunto
@@ -515,7 +596,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.7.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.8.0...main
+[0.8.0]: https://github.com/salvodesi/ATLAS/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/salvodesi/ATLAS/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/salvodesi/ATLAS/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/salvodesi/ATLAS/compare/v0.4.0...v0.5.0

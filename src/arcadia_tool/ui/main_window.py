@@ -19,8 +19,8 @@ from arcadia_tool.ui.accounts import AccountDialog, account_store, require_login
 from arcadia_tool.ui.branding import FittedImage, logo_size, vertical_logo
 from arcadia_tool.checks import problems as check_problems
 from arcadia_tool.model.schema import KINDS_BY_NAME
-from arcadia_tool.model.teams import (access_denied, design_authority, edit_denied, is_da_member, locks_out,
-                                      memberships)
+from arcadia_tool.model.teams import (access_denied, account_ids, design_authority, edit_denied, is_da_member,
+                                      locks_out, memberships)
 from arcadia_tool.ui.checks_panel import ChecksDock, ChecksPanel, summary
 from arcadia_tool.ui.clone import CloneDialog
 from arcadia_tool.ui.diagrams import BreakdownPage, DiagramPage, resolve_unsaved_view
@@ -39,7 +39,7 @@ from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
 from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, TEXT, icon, kind_icon
 from arcadia_tool.ui.branches import BranchesDialog
-from arcadia_tool.ui.versions import CompareDialog, HistoryDialog, PublishDialog
+from arcadia_tool.ui.versions import CompareDialog, HistoryDialog, PublishDialog, UnpublishedDialog
 from arcadia_tool.ui import updates as updates_ui
 
 MAX_RECENT = 8
@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
         self.tree.srs_window_requested.connect(self.open_srs_window)
         self.tree.import_requested.connect(self.import_srs)
         self.tree.functions_import_requested.connect(self.import_functions)
+        self.tree.adrs_import_requested.connect(self.import_adrs)
         self.tree.list_requested.connect(self.open_element_list)
         self.tree.breakdown_requested.connect(self.open_breakdown)
         self.tree.view_created.connect(lambda _uuid: self._diagram_saved("Vista creata"))
@@ -539,7 +540,7 @@ class MainWindow(QMainWindow):
                     f"\nNon è tra i membri della Design Authority ({self.project.model.label(da)})")
             for t, row in teams:
                 tip += f"\nMembro di {self.project.model.label(t)}" + (
-                    "" if row.get("account") else " (riconosciuto dal nome: la DA non ha ancora indicato il tuo ID)")
+                    "" if account_ids(row) else " (riconosciuto dal nome: la DA non ha ancora indicato il tuo ID)")
             if not teams:
                 tip += "\nNon sei tra i membri di nessun team del progetto"
             tip += ("\n(riconosciuto dall'ID del tuo account, che la DA indica aggiungendoti al team: lo trovi in "
@@ -637,6 +638,19 @@ class MainWindow(QMainWindow):
         for page in [p for p in self.diagram_pages.values() if isinstance(p, DiagramPage) and p.dirty]:
             self.pages.setCurrentWidget(page)
             if not resolve_unsaved_view(page, self):
+                return False
+        return True
+
+    def _resolve_unsaved_pages(self):
+        """Sheets in edit mode and views with changes not saved: saved or discarded, as the user chooses (before
+        publishing or receiving, which see only the model). False if the user cancels."""
+        if not self._resolve_unsaved_views():
+            return False
+        self._flush_editors()
+        for editor in self._unsaved_editors():
+            if editor in self.editors.values():
+                self._show_editor(editor)
+            if not resolve_unsaved(editor, self):
                 return False
         return True
 
@@ -1470,12 +1484,28 @@ class MainWindow(QMainWindow):
                                          "scrivere le modifiche su disco.", 10000)
         return created, changed, deleted
 
+    def import_adrs(self, paths=None):
+        """«Importa ADR…» in the model tree: the sheets X-1 of the teams in Excel (paths: given, without asking).
+        Saved with «Salva» of the toolbar."""
+        from arcadia_tool.ui.import_adrs import import_adrs
+
+        if not self.project:
+            return []
+        self._flush_editors()
+        created = import_adrs(self.project, self, paths, self.user.full_name if self.user else "")
+        if created:
+            self._model_changed()
+            self.tree.reload()  # asked from the tree: _model_changed leaves it to the tree
+            self._refresh_state()
+            self.statusBar().showMessage(f"Import completato: {len(created)} ADR create. Salva per scrivere le "
+                                         "modifiche su disco.", 10000)
+        return created
+
     # --- versions (the only places where a diff is computed) ------------------------------------
 
     def publish(self):
-        if not self.project:
+        if not self.project or not self._resolve_unsaved_pages():
             return
-        self._flush_editors()
         dialog = PublishDialog(self.project, self, user=self.user)
         if dialog.exec():
             if dialog.sha:
@@ -1512,9 +1542,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Ricevi dal repository", "Nessun repository remoto: indica l'URL in "
                                     "Progetto › Impostazioni › Repository Git.")
             return
-        self._flush_editors()
+        if not self._resolve_unsaved_pages():
+            return
         if self.project.is_modified:
             self.save()
+        if not self._ready_to_receive():
+            return
         author = f"{self.user.full_name} <{self.user.email}>" if self.user else None
         dialog = ReceiveDialog(self.project, git_credentials(self.user, self.project.remote()), author, self)
         dialog.exec()
@@ -1538,6 +1571,30 @@ class MainWindow(QMainWindow):
                 self, "Ricevi dal repository", "Le versioni sono state integrate in una nuova versione. Inviarla "
                 "ora al repository?") == QMessageBox.Yes:
             self.send_versions()
+
+    def _ready_to_receive(self):
+        """Before receiving: the changes saved and not published on the working branch are published (a version,
+        sent after the merge), or discarded (the project goes back to its last version), or the user cancels."""
+        if not self.project.has_unpublished_changes():
+            return True
+        box = UnpublishedDialog(self.project, self)  # the changes shown, as in «Pubblica»
+        box.exec()
+        if box.choice == UnpublishedDialog.PUBLISH:
+            dialog = PublishDialog(self.project, self, user=self.user)  # sent with the merge, after receiving
+            if dialog.exec() and dialog.sha:
+                self.statusBar().showMessage(f"Pubblicata la versione {dialog.sha[:8]}", 5000)
+            self._refresh_state()
+            return not self.project.has_unpublished_changes()
+        if box.choice != UnpublishedDialog.DISCARD:
+            return False
+        if QMessageBox.question(self, "Scarta le modifiche", "Le modifiche non pubblicate andranno perse. "
+                                "Continuare?") != QMessageBox.Yes:
+            return False
+        path = self.project.path
+        self.project.discard_unpublished()
+        self._set_project(None)  # its files changed
+        self.open_project(str(path), confirmed=True)
+        return self.project is not None
 
     def compare(self):
         if self.project:
@@ -1565,8 +1622,9 @@ class MainWindow(QMainWindow):
             self.branch_request(dialog.request)
 
     def branch_request(self, request):
-        """("switch", name) or ("create", name, sha, send): the project moves to that branch and is opened
-        again. The changes not yet published are published first, or discarded, if the user wants."""
+        """("switch", name), ("create", name, sha, send) or ("checkout", name, sha, move_branch): the project moves
+        to that branch (the model to that version) and is opened again. The changes not yet published are
+        published first, or discarded, if the user wants."""
         if not self._ready_to_leave_branch():
             return
         path = self.project.path
@@ -1574,6 +1632,10 @@ class MainWindow(QMainWindow):
             if request[0] == "create":
                 _kind, name, sha, send = request
                 self.project.switch_branch(name, sha)
+            elif request[0] == "checkout":
+                _kind, name, sha, move_branch = request
+                send = False
+                self.project.checkout_version(name, sha, move_branch)
             else:
                 _kind, name = request
                 send = False
@@ -1585,7 +1647,12 @@ class MainWindow(QMainWindow):
         self.open_project(str(path), confirmed=True)
         if self.project is None:
             return
-        self.statusBar().showMessage(f"Ora lavori sul ramo «{name}»", 6000)
+        if request[0] == "checkout":
+            restored = not request[3] and self.project.has_unpublished_changes()
+            self.statusBar().showMessage(f"Ramo «{name}», modello alla versione {request[2][:8]}" +
+                                         (": le differenze sono da pubblicare" if restored else ""), 10000)
+        else:
+            self.statusBar().showMessage(f"Ora lavori sul ramo «{name}»", 6000)
         if send:
             dialog = PushDialog(self.project, git_credentials(self.user, self.project.remote()), self)
             dialog.exec()

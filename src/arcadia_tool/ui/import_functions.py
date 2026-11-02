@@ -14,6 +14,7 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QHeaderView, QLabel, QMessageBox, QPushButton,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
+from arcadia_tool.model.links import _ancestors
 from arcadia_tool.model.srs_sections import parse_clauses, resolve
 from arcadia_tool.storage.function_sheets import read_function_sheets
 from arcadia_tool.ui.srs_reader import document_order
@@ -33,6 +34,7 @@ CLAUSE_OUTCOMES = {
 COLUMNS = ("Applica", "Funzione / clausola", "Clausole", "Stato nel foglio", "Note", "Cosa cambia nel modello")
 TICK, NAME, CLAUSES, ORIGIN, NOTES, OUTCOME = range(len(COLUMNS))
 STATES = {"propost": "Proposta", "rivist": "Rivista", "approvat": "Approvata"}
+HEADINGS = ("Capitolo", "Sezione", "Titolo")  # SRS items that contain clauses, without a requirement of their own
 
 
 def _same(name):
@@ -46,11 +48,21 @@ def _clauses(n):
 class PlannedFunction:
     """A function of the workbook, or one of the model no longer in it: what the import does with it."""
 
-    def __init__(self, source, domain, existing, clauses, sheet=None):
+    def __init__(self, source, domain, existing, clauses, sheet=None, model=None):
         self.source, self.domain, self.existing = source, domain, existing
         self.sheet = source.sheet if source is not None else sheet
         self.clauses = clauses  # [(outcome, written, the SRS item traced or None)]
+        # The SRS items of the row, each once (a clause and its list items written apart: one item).
         self.traced = list({item.uuid: item for _o, _w, item in clauses if item is not None}.values())
+        # Those inside a section (a heading) of the row too: already traced through it, not allocated a second time.
+        # A clause numbered under another clause (3.6.5.1.4.1 under 3.6.5.1.4) is a requirement of its own: kept.
+        sections = {item.uuid for item in self.traced if item.get("item_type") in HEADINGS}
+        self.covered = {}  # uuid of the item → the section of the row containing it
+        for item in self.traced if model is not None else ():
+            ancestor = next((model.get(a) for a in _ancestors(model, item) if a in sections), None)
+            if ancestor is not None:
+                self.covered[item.uuid] = ancestor
+        self.wanted = [item for item in self.traced if item.uuid not in self.covered]  # what the function traces
         self.added, self.removed = set(), []  # an existing function: the clauses allocated / no longer allocated
         if domain is None:
             self.outcome = NO_DOMAIN
@@ -60,7 +72,7 @@ class PlannedFunction:
             self.outcome = NEW
         else:
             allocated = list(existing.get("sections") or [])
-            wanted = {item.uuid for item in self.traced}
+            wanted = {item.uuid for item in self.wanted}
             self.added = wanted - set(allocated)
             self.removed = [u for u in allocated if u not in wanted]
             self.outcome = UPDATED if self.added or self.removed else PRESENT
@@ -72,22 +84,22 @@ class PlannedFunction:
     @property
     def ticked(self):
         """At first: all the changes, except deleting a function created in ATLAS (never imported)."""
-        return self.applicable and (self.outcome != DELETED or bool(self.existing.get("catalogue_id")))
+        return self.applicable and (self.outcome != DELETED or bool(self.existing.get("imported")))
 
     @property
     def sections(self):
         """The clauses of the function after the import: those kept in their order, then the new ones."""
         kept = [u for u in (self.existing.get("sections") or []) if u not in self.removed] if self.existing else []
-        return kept + [item.uuid for item in self.traced if item.uuid not in kept]
+        return kept + [item.uuid for item in self.wanted if item.uuid not in kept]
 
     def describe(self):
         """(what changes in the model, its colour)."""
         if self.outcome == NO_DOMAIN:
             return f"Dominio {self.sheet} non presente nel modello: non si importa", RED
         if self.outcome == NEW:
-            return f"Nuova funzione, allocata a {_clauses(len(self.traced))}", GREEN
+            return f"Nuova funzione, allocata a {_clauses(len(self.wanted))}", GREEN
         if self.outcome == DELETED:
-            if self.existing.get("catalogue_id"):
+            if self.existing.get("imported"):
                 return "Non più nel file: si elimina dal modello", RED
             return "Creata in ATLAS, non è nel file: si elimina solo con la spunta", AMBER
         if self.outcome == PRESENT:
@@ -128,7 +140,7 @@ def plan(model, functions, sheets=()):
                 else:
                     sub = bool(ref.sub_items) or item.get("id") != ident
                     clauses.append((SUB_ITEM if sub else FOUND, ref.text if not ref.is_range else ident, item))
-        planned.append(PlannedFunction(f, domain, existing, clauses))
+        planned.append(PlannedFunction(f, domain, existing, clauses, model=model))
     for sheet in dict.fromkeys([*(f.sheet for f in functions), *sheets]):
         domain = domains.get(sheet)
         if domain is None:
@@ -151,14 +163,18 @@ class ImportFunctionsDialog(QDialog):
         sheets = []
         self.planned = plan(project.model, read_function_sheets(self.path, sheets), sheets)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Funzioni di sistema da {self.path.name}", objectName="cardTitle"))
+        layout.addWidget(QLabel(f"Anteprima dell'import · funzioni di sistema da {self.path.name}",
+                                objectName="cardTitle"))
         layout.addWidget(QLabel(
-            "Ogni funzione va nel dominio del suo foglio, con l'ID dato da ATLAS (quelli del file non si usano), ed è "
-            "allocata alle clausole della sua riga; si importano anche le funzioni senza clausole. Una sottovoce "
-            "(«3.5.3.4 b) f)») è tracciata con la sua clausola. Una funzione già nel dominio con lo stesso nome non "
-            "si sovrascrive: si allineano solo le sue clausole a quelle del file. Le funzioni dei domini del file che "
-            "nel file non ci sono più si eliminano. Togli la spunta a ciò che non vuoi applicare; la freccia a "
-            "sinistra mostra le clausole di ogni funzione e gli elementi impattati da un'eliminazione.",
+            "Il modello non cambia finché non premi «Importa». Ogni funzione va nel dominio del suo foglio, con un "
+            "ID generato da ATLAS (gli ID del file non si importano), ed è allocata alle clausole della sua riga; si "
+            "importano anche le funzioni senza clausole. Ogni clausola si alloca una volta sola: una sottovoce "
+            "(«3.5.3.4 b) f)») è tracciata con la sua clausola, una clausola contenuta in una sezione anch'essa nel "
+            "file non si alloca di nuovo, una già allocata alla funzione resta com'è. Una funzione già nel dominio "
+            "con lo stesso nome non si sovrascrive: si allineano solo le sue clausole a quelle del file. Le funzioni "
+            "dei domini del file che nel file non ci sono più si eliminano. Togli la spunta a ciò che non vuoi "
+            "applicare; la freccia a sinistra mostra le clausole di ogni funzione e gli elementi impattati da "
+            "un'eliminazione.",
             objectName="muted", wordWrap=True))
         self.counts = QLabel(objectName="formLabel", wordWrap=True)
         layout.addWidget(self.counts)
@@ -217,11 +233,15 @@ class ImportFunctionsDialog(QDialog):
                 groups[p.sheet] = node
             text, color = p.describe()
             if p.source is not None:
-                found = sum(1 for o, _w, _i in p.clauses if o in (FOUND, SUB_ITEM))
-                row = QTreeWidgetItem(["", p.source.name, f"{found}/{len(p.clauses)}" if p.clauses else "—",
+                missing = sum(1 for o, _w, _i in p.clauses if o == MISSING)
+                count = f"{len(p.wanted)}" + (f" · {missing} non trovate" if missing else "")
+                row = QTreeWidgetItem(["", p.source.name, count if p.clauses else "—",
                                        p.source.origin, " · ".join(p.source.notes), text])
-                row.setToolTip(NAME, f"{p.source.ident} nel file (riga {p.source.row})" +
-                               (f" · nel modello: {p.existing.get('id')}" if p.existing is not None else ""))
+                row.setToolTip(CLAUSES, f"{len(p.clauses)} riferimenti nel file → {_clauses(len(p.wanted))} da "
+                                        "tracciare, ciascuna una volta")
+                row.setToolTip(NAME, f"{p.source.ident} nel file (riga {p.source.row}), non importato: " +
+                               (f"nel modello {p.existing.get('id')}" if p.existing is not None else
+                                "ATLAS genera l'ID"))
             else:
                 row = QTreeWidgetItem(["", model.label(p.existing), "", "", "", text])
                 font = row.font(NAME)
@@ -236,15 +256,29 @@ class ImportFunctionsDialog(QDialog):
             else:
                 row.setFlags(row.flags() & ~Qt.ItemIsUserCheckable)
             node.addChild(row)
+            # One row per SRS item of the row, with what is written for it (a clause and its list items: one).
             allocated = set(p.existing.get("sections") or []) if p.existing is not None else set()
+            for item in p.traced:
+                written = [w for _o, w, i in p.clauses if i is not None and i.uuid == item.uuid]
+                section = p.covered[item.uuid].get("id") if item.uuid in p.covered else None
+                if section and item.uuid in allocated:
+                    ctext, ccolor = (f"Già allocata, ma contenuta nella sezione {section}, anch'essa nel file: si "
+                                     "toglie l'allocazione doppia", AMBER)
+                elif section:
+                    ctext, ccolor = (f"Contenuta nella sezione {section}, anch'essa nel file: non si alloca una "
+                                     "seconda volta", MUTED)
+                elif item.uuid in allocated:
+                    ctext, ccolor = "Già allocata alla funzione: invariata", MUTED
+                else:
+                    ctext, ccolor = "Si alloca", GREEN
+                if written != [item.get("id")]:
+                    ctext += f" · nel file: {', '.join(written)}"
+                self._child(row, item.get("id"), ctext, ccolor, item.get("text") or item.get("title") or "")
             for outcome, written, item in p.clauses:
-                ctext, ccolor = CLAUSE_OUTCOMES[outcome]
-                ctext = ctext.format(clause=item.get("id") if item is not None else "")
-                if p.outcome == UPDATED and item is not None:
-                    ctext += " · già allocata" if item.uuid in allocated else " · si alloca"
-                self._child(row, written, ctext, ccolor,
-                            (item.get("text") or item.get("title") or "") if item is not None else "")
-            for uuid in p.removed:
+                if item is None:  # not found, or not an SRS item
+                    ctext, ccolor = CLAUSE_OUTCOMES[outcome]
+                    self._child(row, written, ctext, ccolor)
+            for uuid in [u for u in p.removed if u not in p.covered]:  # those covered: shown above
                 item = model.get(uuid)
                 text_, color_ = CLAUSE_OUTCOMES[REMOVED]
                 self._child(row, item.get("id") if item is not None else uuid, text_, color_,
@@ -269,7 +303,7 @@ class ImportFunctionsDialog(QDialog):
         new = [p for p in chosen if p.outcome == NEW]
         updated = [p for p in chosen if p.outcome == UPDATED]
         deleted = [p for p in chosen if p.outcome == DELETED]
-        added = sum(len(p.traced) for p in new) + sum(len(p.added) for p in updated)
+        added = sum(len(p.wanted) for p in new) + sum(len(p.added) for p in updated)
         removed = sum(len(p.removed) for p in updated)
         same = sum(1 for p in self.planned if p.outcome == PRESENT)
         missing = sum(1 for p in self.planned for o, _w, _i in p.clauses if o == MISSING)
@@ -279,6 +313,10 @@ class ImportFunctionsDialog(QDialog):
                f"aggiornate, {len(deleted)} eliminate · allocazioni: +{added} −{removed} · {same} senza modifiche"
         if missing:
             text += f" · clausole non trovate: {missing}"
+        once = sum(sum(1 for _o, _w, i in p.clauses if i is not None) - len(p.wanted) for p in chosen
+                   if p.outcome in (NEW, UPDATED))
+        if once:
+            text += f" · riferimenti già contati (sottovoci, clausole ripetute o contenute in una sezione): {once}"
         if no_domain:
             text += f" · domini non presenti nel modello: {', '.join(no_domain)}"
         self.counts.setText(text)
@@ -291,7 +329,7 @@ class ImportFunctionsDialog(QDialog):
         for p in self.chosen():
             if p.outcome == NEW:
                 values = {"name": p.source.name, "domain": p.domain.uuid, "sections": p.sections,
-                          "catalogue_id": p.source.ident}
+                          "imported": True}  # the ID: generated by ATLAS
                 if p.source.origin.lower() == "nuova":
                     values["is_new"] = True
                 notes = ([f"Stato nel catalogo SA-2: {p.source.origin}."] if p.source.origin and
@@ -305,8 +343,7 @@ class ImportFunctionsDialog(QDialog):
             elif p.outcome == UPDATED:
                 previous = p.existing.copy()
                 p.existing.set("sections", p.sections)
-                if not p.existing.get("catalogue_id"):
-                    p.existing.set("catalogue_id", p.source.ident)
+                p.existing.set("imported", True)
                 self.changed += [p.existing, *(project.update(p.existing, previous) or [])]
         gone = [p.existing for p in self.chosen() if p.outcome == DELETED]
         if gone:

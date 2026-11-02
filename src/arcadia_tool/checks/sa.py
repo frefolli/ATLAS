@@ -559,8 +559,12 @@ def sa2_not_refined(ctx):
 
 # --- SA-3: traceability register (B5) -----------------------------------------------------------------------
 
+def _primaries(record):
+    return list(record.get("primary_functions") or [])
+
+
 def _record_functions(record, ctx):
-    functions = [ctx.get(record.get("primary_function")), *(ctx.get(u) for u in record.get("secondary_functions") or [])]
+    functions = [ctx.get(u) for u in [*_primaries(record), *(record.get("secondary_functions") or [])]]
     return list({f.uuid: f for f in functions if f is not None}.values())
 
 
@@ -611,11 +615,10 @@ def sa3_question_category(ctx):
 def sa3_primary_function(ctx):
     for r in ctx.of("trace_record"):
         outcome = r.get("outcome")
-        if outcome == "Tracciata a funzione" and not r.get("primary_function"):
+        if outcome == "Tracciata a funzione" and not _primaries(r):
             yield issue(r, "Esito «Tracciata a funzione» senza funzione primaria.")
-        elif r.get("primary_function") and outcome and outcome not in ("Tracciata a funzione",
-                                                                       "Collegata alla voce nominale"):
-            yield issue(r, f"Funzione primaria indicata con l'esito «{outcome}».", [r.get("primary_function")])
+        elif _primaries(r) and outcome and outcome not in ("Tracciata a funzione", "Collegata alla voce nominale"):
+            yield issue(r, f"Funzione primaria indicata con l'esito «{outcome}».", _primaries(r))
 
 
 @check("SA3-06", "Più di tre funzioni tra primaria e secondarie", "A", "B5 domanda 6")
@@ -666,12 +669,13 @@ def sa3_nominal(ctx):
             yield issue(r, "La voce non indica la voce nominale che sostituisce.", [item])
             continue
         nominal_functions = {f.uuid for f in ctx.functions_tracing.get(nominal.uuid, [])}
-        nominal_functions |= {x.get("primary_function") for x in ctx.records_by_requirement.get(nominal.uuid, [])}
-        nominal_functions.discard(None)
-        if r.get("primary_function") and nominal_functions and r.get("primary_function") not in nominal_functions:
-            yield issue(r, f"Tracciata a {ctx.label(r.get('primary_function'))}, la voce nominale "
-                           f"{nominal.get('id')} a {ctx.labels(ctx.get(u) for u in nominal_functions)}: va tracciata "
-                           "alla stessa funzione.", [nominal, r.get("primary_function")])
+        for x in ctx.records_by_requirement.get(nominal.uuid, []):
+            nominal_functions.update(_primaries(x))
+        for primary in _primaries(r):
+            if nominal_functions and primary not in nominal_functions:
+                yield issue(r, f"Tracciata a {ctx.label(primary)}, la voce nominale {nominal.get('id')} a "
+                               f"{ctx.labels(ctx.get(u) for u in nominal_functions)}: va tracciata alla stessa "
+                               "funzione.", [nominal, primary])
 
 
 @check("SA3-11", "Registro e tracciatura delle funzioni discordanti", "A", "SA-2 ↔ SA-3")
@@ -682,7 +686,7 @@ def sa3_register_vs_functions(ctx):
             continue
         for f in _record_functions(r, ctx):
             if not ctx.traces(f, item):
-                where = "primary_function" if f.uuid == r.get("primary_function") else "secondary_functions"
+                where = "primary_functions" if f.uuid in _primaries(r) else "secondary_functions"
                 yield issue(r, f"{ctx.label(f)} è nel registro ma non traccia la voce {item.get('id')} né la sua "
                                "sezione.", [f, item], field=where)
         listed = {f.uuid for f in _record_functions(r, ctx)}
@@ -695,30 +699,33 @@ def sa3_register_vs_functions(ctx):
 @check("SA3-12", "Funzione primaria di un dominio estraneo alla voce", "A", "B5 (unità di lavoro)")
 def sa3_primary_domain(ctx):
     for r in ctx.of("trace_record"):
-        item, function = ctx.get(r.get("requirement")), ctx.get(r.get("primary_function"))
-        if item is None or function is None:
+        item = ctx.get(r.get("requirement"))
+        if item is None:
             continue
-        domain, domains = ctx.domain_of(function), ctx.domains_of_item(item)
-        if domain is not None and domains and domain.uuid not in domains:
-            yield issue(r, f"La funzione primaria è del dominio {ctx.label(domain)}, la voce {item.get('id')} è "
-                           f"allocata a {ctx.labels(ctx.get(d) for d in domains)}.", [function, item, domain])
+        domains = ctx.domains_of_item(item)
+        for function in filter(None, (ctx.get(u) for u in _primaries(r))):
+            domain = ctx.domain_of(function)
+            if domain is not None and domains and domain.uuid not in domains:
+                yield issue(r, f"La funzione primaria {ctx.label(function)} è del dominio {ctx.label(domain)}, la "
+                               f"voce {item.get('id')} è allocata a {ctx.labels(ctx.get(d) for d in domains)}.",
+                            [function, item, domain])
 
 
 @check("SA3-13", "Funzione primaria ripetuta tra le secondarie", "A", "SA-3")
 def sa3_primary_secondary(ctx):
     for r in ctx.of("trace_record"):
-        if r.get("primary_function") and r.get("primary_function") in (r.get("secondary_functions") or []):
-            yield issue(r, f"{ctx.label(r.get('primary_function'))} è sia primaria sia secondaria.",
-                        [r.get("primary_function")])
+        for primary in _primaries(r):
+            if primary in (r.get("secondary_functions") or []):
+                yield issue(r, f"{ctx.label(primary)} è sia primaria sia secondaria.", [primary])
 
 
 @check("SA3-14", "Funzione primaria di tipo logico", "A", "SA-3")
 def sa3_logical_primary(ctx):
     for r in ctx.of("trace_record"):
-        f = ctx.get(r.get("primary_function"))
-        if f is not None and f.kind == "logical_function":
-            yield issue(r, f"La funzione primaria {ctx.label(f)} è una funzione logica: il registro SA-3 traccia "
-                           "sulle funzioni di sistema.", [f])
+        for f in filter(None, (ctx.get(u) for u in _primaries(r))):
+            if f.kind == "logical_function":
+                yield issue(r, f"La funzione primaria {ctx.label(f)} è una funzione logica: il registro SA-3 "
+                               "traccia sulle funzioni di sistema.", [f])
 
 
 @check("SA3-15", "Voce di bordo senza esito nel registro", "A", "Parte VI, checklist di revisione 7")

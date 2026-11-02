@@ -61,6 +61,8 @@ def table_rows(model, element, field):
                 cells.append(label(model, value))
             elif column.choices:  # an SRS item, a domain written in the ADR
                 cells.append(short(model, value) or str(value or ""))
+            elif isinstance(value, (list, tuple)):  # e.g. the IDs of the accounts of a member, one per PC
+                cells.append(", ".join(map(str, value)))
             else:
                 cells.append(str(value or ""))
         rows.append(cells)

@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.7.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.8.0</sub>
 </p>
 
 > [!WARNING]
@@ -33,7 +33,8 @@ repository serve solo per scaricare e pubblicare le versioni.
   - team (EPBS-1), con referente e membri. Un solo team può essere la **Design Authority**: solo i suoi membri
     creano e modificano i team e assegnano i domini ai team. La DA aggiunge ogni membro con l'**ID del suo
     account locale**, che la persona le comunica: ATLAS la riconosce come membro, anche nelle versioni che
-    pubblica. Il progetto si apre solo agli account che sono tra i membri dei team;
+    pubblica. Chi lavora su più PC ha un account, e un ID, su ciascuno: la DA li aggiunge tutti alla lista degli
+    ID del membro. Il progetto si apre solo agli account che sono tra i membri dei team;
   - decisioni architetturali (X-1) e richieste di chiarimento (X-2), ciascuna con un elenco in tabella (doppio
     clic sul nodo dell'albero) da cui crearle, aprirle ed eliminarle;
   - domini funzionali (SA-1): il doppio clic sul nodo dell'albero apre una tab con ID, nome, team assegnatario,
@@ -68,6 +69,18 @@ repository serve solo per scaricare e pubblicare le versioni.
   Le schede di dominio e di funzione elencano le ADR che le riguardano, con «Nuova ADR…» per crearne una.
 - La Design Authority approva un'ADR di nuovo dominio con «Approva e crea il dominio»: ATLAS crea il dominio con
   il primo ID libero e gli alloca le sezioni indicate.
+- **Importa ADR…** (clic destro sulle ADR nell'albero del modello) legge le schede X-1 compilate in Excel: un file
+  per ADR, come le compilano i team, o il file delle ADR generato da ATLAS, con un foglio per ADR. Vale per i
+  template di tutti i tipi e per quello delle prime versioni.
+  - **Riconoscimento:** il tipo si ricava dalla scheda e ogni riga si abbina al campo con la stessa etichetta. I
+    testi guida del template si ignorano. Voci SRS (anche le sottovoci, come «3.15.9.5 a)»), domini, team (anche
+    per sigla, come «FBK» o «Unimib»), membri («G. Ioele») e funzioni si cercano nel modello.
+  - **ID e stato:** l'ID è quello del nome del file o del titolo, se nel modello è libero, altrimenti lo dà ATLAS.
+    Lo stato è «Proposta», perché la Design Authority decide in ATLAS. Un'ADR con un ID già presente non si
+    reimporta.
+  - **Anteprima:** prima di creare le ADR mostra, ADR per ADR, i campi che si importano e gli avvisi, con la
+    spunta «Applica». Ciò che non si può impostare così com'è scritto, come una destinazione di più domini o un
+    dominio «da definire», resta nelle note della motivazione.
 - «Esporta ADR aperte…» nell'elenco X-1 salva in Excel le ADR non ancora decise (ID, descrizione, team
   proponente, stato); lo stesso registro è anche un template (`Template_X-1.00_Registro_ADR_aperte.xlsx`).
 - **Progetto › Genera › Schede Arcadia** scrive in Excel gli artefatti SA-1…SA-7 e le ADR scelti in **Progetto ›
@@ -171,11 +184,14 @@ repository serve solo per scaricare e pubblicare le versioni.
     la colonna «Importa» per scegliere voce per voce e le voci allocate a più di un dominio indicate);
   - funzioni di sistema → sezioni e clausole; dalla scheda di una funzione («Importa funzioni da Excel SA-2…») o
     dal clic destro su «SA-2 Funzioni di sistema» nell'albero («Importa funzioni…») si importa il catalogo delle
-    funzioni ipotizzate dai team (un foglio per dominio): ogni funzione va nel dominio del suo foglio con l'ID dato
-    da ATLAS ed è allocata alle clausole indicate (una sottovoce, «3.5.3.4 b) f)», con la sua clausola), anche se
-    non ne ha ancora. Reimportando lo stesso file le funzioni esistenti non si sovrascrivono: si allineano le loro
-    clausole e si eliminano le funzioni non più nel file. Prima di applicare, un riepilogo mostra cosa cambia nel
-    modello, con la spunta «Applica» per ogni funzione;
+    funzioni ipotizzate dai team (un foglio per dominio): ogni funzione va nel dominio del suo foglio con un ID
+    generato da ATLAS (gli ID del file non si importano) ed è allocata alle clausole indicate, anche se non ne ha
+    ancora. Ogni clausola si alloca una volta sola: una sottovoce («3.5.3.4 b) f)») con la sua clausola, una
+    clausola contenuta in una sezione anch'essa nel file attraverso la sezione, una già allocata alla funzione
+    resta com'è. Reimportando lo stesso file le funzioni esistenti (riconosciute per nome nel dominio) non si
+    sovrascrivono: si allineano le loro clausole e si eliminano le funzioni non più nel file. Prima di applicare,
+    l'anteprima mostra cosa cambia nel modello, funzione per funzione e clausola per clausola, con la spunta
+    «Applica» per ogni funzione;
   - funzioni logiche → sezioni, clausole e requisiti derivati.
 - Il catalogo delle voci SRS si apre anche in una finestra separata (pulsante o menu contestuale dell'albero).
   Dalle righe si allocano le sezioni ai domini e le clausole alle funzioni di sistema, e si derivano uno o più
@@ -190,6 +206,12 @@ repository serve solo per scaricare e pubblicare le versioni.
   Gli identificativi automatici in conflitto vengono rinumerati.
 - Rami: elenco dei rami di questo PC e del repository, nuovo ramo da una versione scelta, cambio di ramo. Si può
   pubblicare sul ramo attuale o su un nuovo ramo creato al momento della pubblicazione.
+- **Checkout di una versione…** (finestra Rami): il modello completo torna a una versione di un ramo, di questo PC
+  o del repository, e il progetto passa su quel ramo. Le modalità sono due:
+  - **ripristino**, consigliato: il ramo resta alla sua ultima versione e le differenze si pubblicano come una
+    nuova versione;
+  - **riporto forzato del ramo:** le versioni successive escono dal ramo su questo PC. Il repository non cambia e
+    ATLAS avvisa se vanno perse versioni mai inviate.
 - Cronologia e dettaglio di ogni versione pubblicata, di qualsiasi ramo.
 - Confronto semantico tra versioni e tra rami (anche del repository e con lo stato attuale), anche limitato a ciò
   che un ramo ha cambiato dal punto di partenza comune.

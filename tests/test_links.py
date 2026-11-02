@@ -74,7 +74,7 @@ def test_functions_of_a_record_trace_its_item(p):
     other = p.new_element("system_function", name="Gestire i freni", sections=[section.uuid])
     lf = p.new_element("logical_function", name="Rilevare il movimento", refines=sf.uuid)
     record = p.new_element("trace_record", requirement=clause.uuid)
-    changed = save(p, record, primary_function=sf.uuid, secondary_functions=[other.uuid, lf.uuid])
+    changed = save(p, record, primary_functions=[sf.uuid], secondary_functions=[other.uuid, lf.uuid])
     assert changed == {sf.uuid, lf.uuid}
     assert sf.get("sections") == [clause.uuid] and lf.get("detail_requirements") == [clause.uuid]
     assert other.get("sections") == [section.uuid]  # already traces it through its section

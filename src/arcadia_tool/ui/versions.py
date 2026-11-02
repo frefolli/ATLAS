@@ -216,6 +216,54 @@ class PublishDialog(QDialog):
         self.accept()
 
 
+class UnpublishedDialog(QDialog):
+    """Before receiving: the changes not published on the working branch, shown as in «Pubblica», to publish or
+    discard first. choice: PUBLISH, DISCARD or None (cancelled)."""
+    PUBLISH, DISCARD = "publish", "discard"
+
+    def __init__(self, project, parent=None):
+        super().__init__(parent)
+        self.choice = None
+        self.setWindowTitle("Ricevi dal repository")
+        self.resize(1240, 760)
+        versions = project.versions()
+        base_label = version_label(versions[0]) if versions else "Nessuna versione pubblicata"
+        self.diff = diff_models(project.published_model(), project.model)
+        intro = QLabel(f"Ci sono modifiche non ancora pubblicate sul ramo «{project.push_branch()}». Pubblicale, "
+                       "così vengono integrate con le versioni ricevute, oppure scartale: il progetto torna alla sua "
+                       "ultima versione pubblicata e riceve quelle del repository.")
+        intro.setWordWrap(True)
+        changes, changes_layout = card("Modifiche non pubblicate rispetto all'ultima pubblicazione")
+        if self.diff:
+            changes_layout.addWidget(DiffView(self.diff, base_label, WORKING_LABEL), 1)
+        else:
+            changes_layout.addWidget(QLabel("Nessuna modifica al modello · cambiate le impostazioni condivise del "
+                                            "progetto (verifiche, nome, descrizione…).", objectName="muted"))
+        self.publish_button = primary(QPushButton(icon("mdi6.cloud-upload-outline", "white"), "Pubblica…"))
+        self.publish_button.clicked.connect(lambda: self._choose(self.PUBLISH))
+        self.discard_button = QPushButton(icon("mdi6.delete-outline", "#B42318"), "Scarta le modifiche")
+        self.discard_button.clicked.connect(lambda: self._choose(self.DISCARD))
+        cancel = QPushButton("Annulla")
+        cancel.clicked.connect(self.reject)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        for b in (cancel, self.discard_button, self.publish_button):
+            buttons.addWidget(b)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(intro)
+        layout.addWidget(changes, 1 if self.diff else 0)
+        if not self.diff:
+            layout.addStretch()
+        layout.addLayout(buttons)
+        self.publish_button.setFocus()
+
+    def _choose(self, choice):
+        self.choice = choice
+        self.accept()
+
+
 class CompareSide:
     """One side of a comparison: a branch (of this PC or of the remote) and one of its versions; on the branch in
     use, also the working state."""

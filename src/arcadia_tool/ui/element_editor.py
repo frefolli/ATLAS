@@ -1580,6 +1580,9 @@ class ElementEditor(QScrollArea):
                 from arcadia_tool.ui.srs_trace import choose_items
                 picker = lambda uuids, name=f.name, only=f.sections_only: choose_items(
                     self.project, self.draft, name, uuids, self, sections_only=only)
+            elif set(f.ref_kinds) <= {"system_function", "logical_function"}:  # grouped by domain, with ticks
+                from arcadia_tool.ui.srs_trace import choose_functions
+                picker = lambda uuids, name=f.name: choose_functions(self.project, self.draft, name, uuids, self)
             w = RefsWidget(model, f.ref_kinds, picker)
             w.set_value(value)
             w.open_item = self.show_reference
@@ -1590,6 +1593,7 @@ class ElementEditor(QScrollArea):
             from arcadia_tool.ui.team_members import MembersWidget
             w = MembersWidget(model)
             w.set_value(member_rows(self.draft))
+            w.editable, w.locked = self.editing, self.ask_to_edit  # read-only: asks to switch to edit mode
 
             def locks_out(rows):
                 if self.locks_out is None:

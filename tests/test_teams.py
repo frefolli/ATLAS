@@ -31,7 +31,7 @@ def test_trace_record_sheet_follows_the_sa3_register(app, tmp_path):
     captions = [l.text() for l in page.findChildren(QLabel) if l.objectName() == "sectionCaption"]
     assert captions[0] == "ESITO DI TRACCIATURA (SA-3)"
     labels = [l.text() for l in page.findChildren(QLabel) if l.objectName() == "formLabel"]
-    assert labels[:9] == ["ID voce", "Categoria cap. 9", "Funzione primaria", "Funzioni secondarie",
+    assert labels[:9] == ["ID voce", "Categoria cap. 9", "Funzioni primarie", "Funzioni secondarie",
                           "Derivati / dizionario", "Domanda B5 decisiva", "Esito", "Note", "ADR"]
     category = editor.widgets["category"]
     assert category.isReadOnly() and category.text() == "Bordo"  # from chapter 9, through the SRS item
@@ -79,24 +79,38 @@ def test_trace_record_item_and_primary_function_are_chosen_in_windows(app, tmp_p
     shown = []
     real_init = TickPickerDialog.__init__
 
-    def spy(self, *args, **kwargs):  # «Funzione primaria»: one function, grouped
+    def spy(self, *args, **kwargs):  # «Funzioni primarie»: one or more functions, grouped
         real_init(self, *args, **kwargs)
         shown.append(self)
-        self.single and self._clicked(self.items[logical.uuid], 1)
+        self._clicked(self.items[logical.uuid], 1)
+        self._clicked(self.items[system.uuid], 1)
     monkeypatch.setattr(TickPickerDialog, "__init__", spy)
     monkeypatch.setattr(TickPickerDialog, "exec", lambda self: True)
     editor = ElementEditor()
     editor.edit(p, record, editing=True)
     assert editor.widgets["category"].text() == "Bordo"
-    editor._pick(record.schema.field("primary_function"))
+    editor.widgets["primary_functions"]._pick()
     picker = shown[0]
-    assert picker.single and picker.items[system.uuid].parent().text(0) == p.model.choice_label(domain)
+    assert not picker.single and picker.items[system.uuid].parent().text(0) == p.model.choice_label(domain)
     assert picker.items[logical.uuid].parent().text(0) == p.model.choice_label(system)
-    assert record.get("primary_function") is None  # in the draft until «Salva»
+    assert record.get("primary_functions") is None  # in the draft until «Salva»
     editor.save_changes()
-    assert record.get("primary_function") == logical.uuid
-    assert isinstance(editor.widgets["primary_function"], type(editor.widgets["requirement"]))  # no combo
+    assert set(record.get("primary_functions")) == {logical.uuid, system.uuid}  # both primary
     p.close()
+
+
+def test_a_record_with_one_primary_function_of_earlier_versions_gets_a_list(tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    item = p.new_element("requirement", id="3.4.1.3", item_type="Requisito")
+    function = p.new_element("system_function", name="Verifica il gruppo")
+    record = p.new_element("trace_record", requirement=item.uuid)
+    record.values["primary_function"] = function.uuid  # as saved up to 0.7.0
+    p.save()
+    p.close()
+    again = Project.open(tmp_path / "p")
+    record = again.model.get(record.uuid)
+    assert record.get("primary_functions") == [function.uuid] and "primary_function" not in record.values
+    again.close()
 
 
 def test_referent_chosen_among_members_and_copied_to_the_domain(app, tmp_path):
@@ -253,7 +267,7 @@ def test_members_are_added_changed_and_removed_with_the_id_of_their_account(app,
     def fill(name, account, email="", role=""):
         def run(dialog):
             dialog.name.setText(name)
-            dialog.account.setText(account)
+            dialog.account.set_text(account)
             dialog.email.setText(email)
             dialog.role.setText(role)
             dialog._accept()
@@ -468,7 +482,7 @@ def test_only_the_members_of_the_teams_open_the_project(app, tmp_path, monkeypat
     assert len(errors) == 2 and members.rows == [{"name": "Anna Bianchi", "account": ANNA}]
 
     def change_id(dialog):
-        dialog.account.setText(MARIO)
+        dialog.account.set_text(MARIO)
         dialog._accept()
         return dialog.result()
     monkeypatch.setattr(team_members.MemberDialog, "exec", change_id)
@@ -489,3 +503,207 @@ def test_only_the_members_of_the_teams_open_the_project(app, tmp_path, monkeypat
     window._set_project(None)
     window.close()
     p.close()
+
+
+def test_publish_asks_first_for_the_changes_of_a_sheet_not_saved(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui import main_window as mw
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Odometria", members=[{"name": "Mario Rossi", "account": "a" * 32}])
+    p.save()
+    p.publish("Prima versione", "Prova <prova@example.com>")
+    window = mw.MainWindow()
+    window._set_project(p)
+    window._open_finding(team.uuid)
+    editor = window.editors[team.uuid]
+    editor.start_editing()
+    members = editor.findChild(MembersWidget)
+    members.set_value([{"name": "Mario Rossi", "account": "b" * 32}])  # the ID changed, «Salva» of the sheet not
+    members.changed.emit()
+    asked, seen = [], []
+    monkeypatch.setattr(mw, "resolve_unsaved", lambda e, parent: asked.append(e) or e.save_changes() or True)
+    monkeypatch.setattr(mw.PublishDialog, "exec", lambda dialog: seen.append(dialog.diff) and False)
+    window.publish()
+    assert asked == [editor] and seen and seen[0]  # saved when asked: the change is there to publish
+    assert team.get("members")[0]["account"] == "b" * 32
+    monkeypatch.setattr(mw, "resolve_unsaved", lambda e, parent: False)  # cancelled: nothing is published
+    editor.start_editing()
+    members.set_value([{"name": "Mario Rossi", "account": "c" * 32}])
+    members.changed.emit()
+    seen.clear()
+    window.publish()
+    assert not seen
+    editor.cancel_changes(ask=False)
+    p.save()
+    window.close()
+
+
+def test_the_changes_not_published_are_discarded_back_to_the_last_version(tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Odometria")
+    p.save()
+    p.publish("Prima versione", "Prova <prova@example.com>")
+    team.set("name", "Localizzazione")
+    p.update(team)
+    added = p.new_element("team", name="Freno")
+    p.save()
+    assert p.has_unpublished_changes()
+    p.discard_unpublished()
+    reopened = Project.open(tmp_path / "p")
+    assert reopened.model.get(team.uuid).get("name") == "Odometria" and reopened.model.get(added.uuid) is None
+    assert not reopened.has_unpublished_changes()
+
+
+def test_receive_asks_first_to_publish_or_discard_the_changes_not_published(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui import main_window as mw
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Odometria")
+    p.save()
+    p.publish("Prima versione", "Prova <prova@example.com>")
+    window = mw.MainWindow()
+    window._set_project(p)
+    assert window._ready_to_receive()  # nothing to publish: received at once
+    team.set("name", "Localizzazione")
+    p.update(team)
+    p.save()
+
+    shown = []
+
+    def answer(text):
+        def click(box):  # the changes not published are shown, then a button is pressed
+            shown.append(box.diff)
+            buttons = {"Pubblica…": box.publish_button, "Scarta le modifiche": box.discard_button}
+            buttons[text].click() if text in buttons else box.reject()
+        monkeypatch.setattr(mw.UnpublishedDialog, "exec", click)
+
+    answer("Annulla")
+    assert not window._ready_to_receive() and p.has_unpublished_changes()
+    assert any(c.uuid == team.uuid for c in shown[0].changes)  # the team renamed, among the changes shown
+    published = []
+    monkeypatch.setattr(mw.PublishDialog, "exec", lambda d: published.append(d.diff) or False)
+    answer("Pubblica…")
+    assert not window._ready_to_receive() and published and published[0]  # not published: not received
+    answer("Scarta le modifiche")
+    monkeypatch.setattr(mw.QMessageBox, "question", lambda *a, **k: mw.QMessageBox.Yes)
+    assert window._ready_to_receive()
+    assert window.project is not p and window.project.model.get(team.uuid).get("name") == "Odometria"
+    assert not window.project.has_unpublished_changes()
+    window.close()
+
+
+def test_the_members_of_a_read_only_team_sheet_ask_to_switch_to_edit_mode(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui import element_editor, team_members
+    from arcadia_tool.ui.main_window import MainWindow
+    p = Project.create(tmp_path / "p", "Prova")
+    team = p.new_element("team", name="Odometria", members=[{"name": "Mario Rossi", "account": "0" * 31 + "2"}])
+    p.save()
+    window = MainWindow()
+    window._set_project(p)
+    window._open_finding(team.uuid)
+    editor = window.editors[team.uuid]
+    assert not editor.editing
+    asked = []
+
+    def answer(reply):
+        monkeypatch.setattr(element_editor.QMessageBox, "question",
+                            lambda *a, **k: asked.append(True) or reply)
+    opened = []
+
+    def fake_exec(dialog):  # the ID of the account written, «Salva» of the window of the member
+        opened.append(True)
+        dialog.account.set_text("1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9")
+        dialog._accept()
+        return dialog.result()
+    monkeypatch.setattr(team_members.MemberDialog, "exec", fake_exec)
+    answer(element_editor.QMessageBox.No)
+    members = editor.findChild(MembersWidget)
+    members.edit_member(0)  # the pencil, or a double click on the row
+    assert asked and not opened and members.value()[0]["account"] == "0" * 31 + "2"  # nothing changed only here
+    assert members.add_member() is None and len(members.value()) == 1
+    answer(element_editor.QMessageBox.Yes)
+    members.edit_member(0)
+    app.processEvents()  # the sheet switches to edit mode
+    assert editor.editing
+    members = editor.findChild(MembersWidget)
+    members.edit_member(0)
+    assert editor.dirty
+    editor.save_changes()
+    assert team.get("members")[0]["account"] == "1f2e3d4c5b6a49788695a4b3c2d1e0f9" and not editor.dirty
+    window.close()
+
+
+def test_a_member_working_on_more_pcs_has_an_id_for_each(app, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from arcadia_tool.model.teams import access_denied, account_ids, accounts_value, is_da_member, memberships
+    from arcadia_tool.ui import team_members
+    office, laptop, other = "a" * 32, "b" * 32, "c" * 32
+    p = Project.create(tmp_path / "p", "Prova")
+    da = p.new_element("team", name="DA", design_authority=True,
+                       members=[{"name": "Anna Bianchi", "account": [office, laptop]}])
+    p.new_element("team", name="Odometria", members=[{"name": "Mario Rossi", "account": other}])
+    p.save()
+    reopened = Project.open(tmp_path / "p")  # kept as written: a text for one ID, a list for more
+    rows = {r["name"]: r for t in reopened.model.of_kind("team") for r in t.get("members")}
+    assert rows["Anna Bianchi"]["account"] == [office, laptop] and rows["Mario Rossi"]["account"] == other
+    for pc in (office, laptop):  # from either PC: the same member of the DA
+        user = SimpleNamespace(id=pc, full_name="Anna Bianchi")
+        assert access_denied(reopened.model, user) is None and is_da_member(reopened.model, user)
+        assert [t.get("name") for t, _row in memberships(reopened.model, user)] == ["DA"]
+    assert access_denied(reopened.model, SimpleNamespace(id="d" * 32, full_name="Anna Bianchi"))
+    assert account_ids({"account": f"{office.upper()}, {laptop}; {office}"}) == [office, laptop]
+    assert accounts_value([office]) == office and accounts_value([office, laptop]) == [office, laptop]
+    assert accounts_value([]) == ""
+
+    # The window of the member: a list of IDs, added (with or without dashes) and removed; invalid ones and those of
+    # others refused.
+    warned = []
+    monkeypatch.setattr(team_members.QMessageBox, "warning", lambda *a: warned.append(a[2]))
+    dialog = team_members.MemberDialog(rows["Anna Bianchi"], [rows["Mario Rossi"]])
+    accounts = dialog.account
+    assert accounts.ids() == [office, laptop] and not accounts.add_button.isEnabled()
+    accounts.list.setCurrentRow(1)
+    accounts.remove_button.click()
+    assert accounts.ids() == [office]
+    accounts.entry.setText("non-un-id")
+    accounts.add_button.click()
+    assert "«non-un-id» non è un ID valido" in warned[-1] and accounts.entry.text() == "non-un-id"
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    accounts.entry.setText(laptop.upper())
+    QTest.keyClick(accounts.entry, Qt.Key_Return)  # Invio: the ID added, the window still open
+    assert accounts.ids() == [office, laptop] and accounts.entry.text() == "" and not dialog.result()
+    accounts.entry.setText(office)  # already in the list: once
+    accounts.add()
+    assert accounts.ids() == [office, laptop]
+    accounts.entry.setText("1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f8")  # written, not added: taken by «Salva»
+    dialog._accept()
+    assert dialog.result() and dialog.row["account"] == [office, laptop, "1f2e3d4c5b6a49788695a4b3c2d1e0f8"]
+    dialog = team_members.MemberDialog(rows["Anna Bianchi"], [rows["Mario Rossi"]])
+    dialog.account.set_text(f"{office}\nnon-un-id\n{other}")
+    dialog._accept()
+    assert "L'ID «non-un-id» non è valido" in warned[-1] and not dialog.result()
+    dialog.account.set_text(f"{office}\n{other}")
+    dialog._accept()
+    assert "è già di un altro membro del team (Mario Rossi)" in warned[-1]
+    third = "1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9"
+    dialog.account.set_text(f"{office}\n{laptop}\n{third}\n{office}")
+    dialog._accept()
+    assert dialog.result() and dialog.row["account"] == [office, laptop, "1f2e3d4c5b6a49788695a4b3c2d1e0f9"]
+    single = team_members.MemberDialog(rows["Mario Rossi"], [])
+    single._accept()
+    assert single.row["account"] == other  # one ID: a text, as before
+
+    # The table of the sheet: the first ID and how many more, all of them in the tooltip.
+    members = MembersWidget(reopened.model)
+    members.set_value([rows["Anna Bianchi"], rows["Mario Rossi"]])
+    assert members.table.item(0, 3).text() == f"{office[:8]}… (+1)"
+    assert members.table.item(0, 3).toolTip() == f"{office}\n{laptop}"
+    assert members.table.item(1, 3).text() == f"{other[:8]}…"
+
+    # The comparison of the versions and the sheets in Excel: the IDs as a list.
+    from arcadia_tool.documents.values import table_rows
+    from arcadia_tool.model.schema import KINDS_BY_NAME
+    from arcadia_tool.ui.diff_view import _cell_text
+    field = KINDS_BY_NAME["team"].field("members")
+    column = next(c for c in field.columns if c.name == "account")
+    assert _cell_text(None, column, rows["Anna Bianchi"]) == f"{office}, {laptop}"
+    assert table_rows(reopened.model, reopened.model.get(da.uuid), field)[0][3] == f"{office}, {laptop}"

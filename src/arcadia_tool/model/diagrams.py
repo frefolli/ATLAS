@@ -146,7 +146,7 @@ def breakdown(model):
         item = model.get(record.get("requirement"))
         if item is None:
             continue
-        for f in {record.get("primary_function"), *(record.get("secondary_functions") or [])}:
+        for f in {*(record.get("primary_functions") or []), *(record.get("secondary_functions") or [])}:
             if f and not _within(model, item, traced[f]):
                 traced[f].add(item.uuid)
     by_domain = defaultdict(list)

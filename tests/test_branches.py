@@ -320,3 +320,92 @@ def test_the_branches_shown_can_be_all_local_or_remote(app, server):
     actions = [a.text() for a in window.findChildren(QToolBar)[0].actions()]
     assert actions.index("Rami…") == actions.index("Pubblica…") - 1  # right before «Pubblica»
     window.close()
+
+
+def test_the_model_is_checked_out_at_a_version_of_this_pc_restored_or_with_the_branch_moved(server):
+    url, download, reopen = server
+    mine = download("mine")
+    mine.new_element("domain", name="Solo qui")
+    mine.publish("v3 solo qui", AUTHOR)  # a version of this PC, not sent
+    v3, v2, v1 = (v.sha for v in mine.versions())
+    # Restored: the branch stays at its last version, the model of v1 is a change to publish.
+    mine.checkout_version("main", v1)
+    mine = reopen(mine)
+    assert names(mine) == ["Protezione"] and mine.repository.head() == v3 and mine.has_unpublished_changes()
+    assert [v.title for v in mine.unsent_versions()] == ["v3 solo qui"]
+    mine.publish("ripristino di v1", AUTHOR)
+    assert names(reopen(mine)) == ["Protezione"]
+    mine = reopen(mine)
+    # Moved: the branch goes back to v2, the later versions are no longer on it here.
+    mine.checkout_version("main", v2, move_branch=True)
+    mine = reopen(mine)
+    assert mine.repository.head() == v2 and not mine.has_unpublished_changes()
+    assert names(mine) == ["Localizzazione", "Protezione"] and mine.unsent_versions() == []
+    assert [v.title for v in mine.versions()] == ["v2", "v1"]
+    with pytest.raises(ProjectError):
+        mine.checkout_version("main", "0" * 40)
+
+
+def test_the_model_is_checked_out_at_a_version_of_a_branch_of_the_remote(server):
+    url, download, reopen = server
+    mine = download("mine")
+    colleague = download("colleague")
+    colleague.switch_branch("att/T3-chain", colleague.versions()[0].sha)
+    colleague = reopen(colleague)
+    colleague.new_element("domain", name="Chain")
+    colleague.publish("chain", AUTHOR)
+    colleague.new_element("domain", name="Chain 2")
+    colleague.publish("chain 2", AUTHOR)
+    colleague.push()
+    mine.fetch_branches()
+    chain = next(b for b in mine.branches() if b.name == "att/T3-chain")
+    assert chain.local is None
+    first = mine.branch_versions(chain.remote)[1].sha  # «chain», only in the repository
+    mine.checkout_version("att/T3-chain", first, move_branch=True)
+    mine = reopen(mine)
+    assert mine.current_branch() == "att/T3-chain" and "Chain" in names(mine) and "Chain 2" not in names(mine)
+    assert mine.repository.head() == first and mine.unsent_versions() == []  # behind the repository: nothing new
+    # Restored: the branch of this PC stays at «chain», the model of the last version of the repository is to publish.
+    mine.checkout_version("att/T3-chain", chain.remote)
+    mine = reopen(mine)
+    assert "Chain 2" in names(mine) and mine.repository.head() == first and mine.has_unpublished_changes()
+
+
+def test_the_window_of_the_branches_asks_for_the_checkout_of_a_version(app, server, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    import arcadia_tool.ui.main_window as main_window
+    from arcadia_tool.ui.branches import BranchesDialog, CheckoutDialog
+
+    url, download, reopen = server
+    mine = download("mine")
+    mine.new_element("domain", name="Solo qui")
+    mine.publish("v3 solo qui", AUTHOR)
+    v3, v2, v1 = (v.sha for v in mine.versions())
+    dialog = CheckoutDialog(mine, "local:main")
+    assert [dialog.version.itemData(i) for i in range(dialog.version.count())] == [v3, v2, v1]
+    assert dialog.restore.isChecked() and "modifica da pubblicare" in dialog.note.text()
+    dialog.version.setCurrentIndex(2)
+    dialog.move.setChecked(True)
+    later, only_here = dialog.later()
+    assert len(later) == 2 and [v.sha for v in only_here] == [v3]
+    assert "1 di esse sono solo su questo PC e vanno perse" in dialog.note.text()
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.No)
+    dialog._accept()
+    assert dialog.sha is None  # cancelled: the version of this PC would be lost
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.Yes)
+    dialog._accept()
+    assert (dialog.name_value, dialog.sha, dialog.move_branch) == ("main", v1, True)
+
+    branches = BranchesDialog(mine, {})
+    assert branches.checkout_button.isEnabled()
+    monkeypatch.setattr(CheckoutDialog, "exec", lambda d: (d.version.setCurrentIndex(1), d._accept(), True)[2])
+    branches.checkout()
+    assert branches.request == ("checkout", "main", v2, False)
+    window = main_window.MainWindow()
+    window._set_project(mine)
+    window.open_project = lambda path, confirmed=False: window._set_project(Project.open(path))
+    window.branch_request(branches.request)
+    assert names(window.project) == ["Localizzazione", "Protezione"] and window.project.has_unpublished_changes()
+    assert "le differenze sono da pubblicare" in window.statusBar().currentMessage()
+    window._set_project(None)
+    window.close()

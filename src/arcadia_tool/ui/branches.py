@@ -1,14 +1,14 @@
 """Versioni › Rami: the branches of the project, on this PC and on the remote (as last downloaded, «Aggiorna dal
 repository»). A new branch starts from a chosen version of any branch; the project moves to a branch, or one of
-the remote; the history of every branch, and the comparison between branches (also those of the remote, and the
-working state).
+the remote, or the whole model to a version of one (restored on the branch, or the branch brought back to it); the
+history of every branch, and the comparison between branches (also those of the remote, and the working state).
 
 The windows do not change the project: they leave the request (`request`) to the main window, which publishes or
 discards the changes not yet published first, then moves the project and opens it again."""
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
+                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
 from arcadia_tool.accounts import git_host
@@ -182,8 +182,118 @@ class NewBranchDialog(QDialog):
         self.accept()
 
 
+class CheckoutDialog(QDialog):
+    """The whole model at a version of a branch, of this PC or of the repository: restored on the branch (a change
+    to publish) or the branch brought back to it. On OK: name, sha, move_branch."""
+
+    def __init__(self, project, start=None, parent=None):
+        super().__init__(parent)
+        self.project = project
+        self.name_value = self.sha = None
+        self.move_branch = False
+        self.setWindowTitle("Checkout di una versione del modello")
+        self.setMinimumWidth(860)
+        self.branch = QComboBox()
+        self.version = QComboBox()
+        self.version.setMinimumWidth(440)
+        self.choices = branch_sources(project)
+        fill_sources(self.branch, self.choices, start)
+        self.branch.currentIndexChanged.connect(lambda _i: self._fill_versions())
+        self.version.currentIndexChanged.connect(lambda _i: self._explain())
+        self.restore = QRadioButton("Ripristina il modello di questa versione sul ramo (consigliato)")
+        self.restore.setToolTip("Il ramo resta alla sua ultima versione: il modello diventa quello della versione "
+                                "scelta e le differenze sono modifiche da pubblicare, inviate come le altre")
+        self.move = QRadioButton("Riporta il ramo a questa versione (forzato)")
+        self.move.setToolTip("Le versioni successive non sono più sul ramo su questo PC; il repository non cambia")
+        self.restore.setChecked(True)
+        for b in (self.restore, self.move):
+            b.toggled.connect(lambda _on: self._explain())
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(16)
+        form.addRow("Ramo", self.branch)
+        form.addRow("Versione", self.version)
+        self.note = QLabel(objectName="muted")
+        self.note.setWordWrap(True)
+        self.go = QPushButton(icon("mdi6.source-commit", "white"), "Checkout")
+        self.go.setProperty("primary", True)
+        self.go.clicked.connect(self._accept)
+        cancel = QPushButton("Annulla")
+        cancel.clicked.connect(self.reject)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(self.go)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.restore)
+        layout.addWidget(self.move)
+        layout.addWidget(self.note)
+        layout.addLayout(buttons)
+        self._fill_versions()
+
+    def selected_branch(self):
+        return find_source(self.choices, self.branch.currentData())
+
+    def _fill_versions(self):
+        self.version.blockSignals(True)
+        self.version.clear()
+        b = self.selected_branch()
+        for v in self.project.branch_versions(b.head) if b is not None and b.head else []:
+            self.version.addItem(icon("mdi6.history"), f"{version_text(v)} · {author_name(v)} · {v.short}", v.sha)
+        self.version.blockSignals(False)
+        self._explain()
+
+    def later(self):
+        """The versions of the branch on this PC after the one chosen: (all, those only on this PC)."""
+        b, sha = self.selected_branch(), self.version.currentData()
+        local = self.project.repository.local_heads().get(b.name) if b is not None else None
+        if not sha or not local or not self.project.repository.is_ancestor(sha, local):
+            return [], []
+        later = self.project.repository.versions_between(sha, local)
+        remote = self.project.repository.remote_heads().get(b.name)
+        on_remote = {v.sha for v in self.project.branch_versions(remote)} if remote else set()
+        return later, [v for v in later if v.sha not in on_remote]
+
+    def _explain(self):
+        b, sha = self.selected_branch(), self.version.currentData()
+        self.go.setEnabled(bool(sha))
+        if b is None or not sha:
+            self.note.setText("Nessuna versione su questo ramo.")
+            return
+        where = "" if b.current else f" Il progetto passa sul ramo «{b.name}»."
+        if self.restore.isChecked():
+            self.note.setText(f"Il modello completo diventa quello della versione scelta.{where} Il ramo resta alla "
+                              "sua ultima versione: ciò che cambia rispetto a essa è una modifica da pubblicare "
+                              "(«Pubblica»), che viene inviata al repository come le altre.")
+            return
+        later, only_here = self.later()
+        text = (f"Il ramo «{b.name}» su questo PC torna alla versione scelta.{where} "
+                f"Le {len(later)} versioni successive non sono più sul ramo" if later else
+                f"Il ramo «{b.name}» su questo PC torna alla versione scelta.{where}")
+        if later and only_here:
+            text += f": {len(only_here)} di esse sono solo su questo PC e vanno perse"
+        elif later:
+            text += " su questo PC, ma restano nel repository: ricevendo le versioni tornano"
+        self.note.setText(text + ". Il repository non cambia.")
+
+    def _accept(self):
+        b, sha = self.selected_branch(), self.version.currentData()
+        if b is None or not sha:
+            return
+        _later, only_here = self.later() if self.move.isChecked() else ([], [])
+        if only_here and QMessageBox.warning(
+                self, self.windowTitle(), f"{len(only_here)} versioni pubblicate solo su questo PC, dopo quella "
+                "scelta, andranno perse. Continuare?", QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.name_value, self.sha, self.move_branch = b.name, sha, self.move.isChecked()
+        self.accept()
+
+
 class BranchesDialog(QDialog):
-    """The branches of the project. request, on accept: ("switch", name) or ("create", name, sha, send)."""
+    """The branches of the project. request, on accept: ("switch", name), ("create", name, sha, send) or
+    ("checkout", name, sha, move_branch)."""
 
     def __init__(self, project, credentials, user=None, parent=None):
         super().__init__(parent)
@@ -233,6 +343,10 @@ class BranchesDialog(QDialog):
         self.switch_button.clicked.connect(self.switch)
         self.new_button = QPushButton(icon("mdi6.source-branch-plus"), "Nuovo ramo…")
         self.new_button.clicked.connect(lambda: self.new_branch())
+        self.checkout_button = QPushButton(icon("mdi6.source-commit"), "Checkout di una versione…")
+        self.checkout_button.setToolTip("Il modello completo a una versione del ramo selezionato, di questo PC o "
+                                        "del repository")
+        self.checkout_button.clicked.connect(self.checkout)
         self.history_button = QPushButton(icon("mdi6.history"), "Cronologia")
         self.history_button.clicked.connect(self.history)
         self.compare_working = QPushButton(icon("mdi6.pencil-outline"), "Confronta con il mio stato attuale")
@@ -244,8 +358,8 @@ class BranchesDialog(QDialog):
         close = QPushButton("Chiudi")
         close.clicked.connect(self.reject)
         buttons = QHBoxLayout()
-        for b in (self.switch_button, self.new_button, self.history_button, self.compare_working,
-                  self.compare_main):
+        for b in (self.switch_button, self.new_button, self.checkout_button, self.history_button,
+                  self.compare_working, self.compare_main):
             buttons.addWidget(b)
         buttons.addStretch()
         buttons.addWidget(close)
@@ -325,6 +439,7 @@ class BranchesDialog(QDialog):
         b = self.selected()
         self.switch_button.setEnabled(b is not None and not b.current)
         self.history_button.setEnabled(b is not None)
+        self.checkout_button.setEnabled(b is not None)
         self.compare_working.setEnabled(b is not None and not b.current)
         main = self.project.main_branch()
         self.compare_main.setEnabled(b is not None and main is not None and b.name != main)
@@ -366,6 +481,15 @@ class BranchesDialog(QDialog):
                                                                     None), self)
         if dialog.exec():
             self.request = ("create", dialog.name_value, dialog.sha, dialog.send)
+            self.accept()
+
+    def checkout(self):
+        b = self.selected()
+        if b is None:
+            return
+        dialog = CheckoutDialog(self.project, self._key(b), self)
+        if dialog.exec():
+            self.request = ("checkout", dialog.name_value, dialog.sha, dialog.move_branch)
             self.accept()
 
     def history(self):

@@ -8,11 +8,12 @@ then on the account is recognized as that member of the project, also when the n
 The members were a list of names in the first versions: they are read as members without ID, recognized by name
 and surname (case, accents, spaces and order do not matter) until the DA writes their ID.
 """
+import re
 import unicodedata
 
 DA_FIELD = "design_authority"
 MEMBERS = "members"
-ACCOUNT = "account"  # the ID of the local account of a member
+ACCOUNT = "account"  # the ID of the local account of a member: one, or a list (one per PC the person works on)
 
 
 def da_teams(model):
@@ -57,6 +58,19 @@ def normalize_account_id(text):
     return value if len(value) == 32 and all(c in "0123456789abcdef" for c in value) else ""
 
 
+def account_ids(row):
+    """The IDs of the accounts of a member (one per PC the person works on), valid and without repetitions."""
+    value = (row or {}).get(ACCOUNT)
+    texts = value if isinstance(value, (list, tuple)) else re.split(r"[\s,;]+", str(value or ""))
+    return list(dict.fromkeys(a for a in (normalize_account_id(t) for t in texts if t) if a))
+
+
+def accounts_value(ids):
+    """The IDs as kept in the row of a member: one as a text (as written by the first versions), more as a list."""
+    ids = list(dict.fromkeys(ids))
+    return ids[0] if len(ids) == 1 else ids if ids else ""
+
+
 def _name_of(user):
     return user if isinstance(user, str) else getattr(user, "full_name", "")
 
@@ -67,13 +81,13 @@ def member_of(team, user):
     rows = member_rows(team)
     account = normalize_account_id(getattr(user, "id", ""))
     if account:
-        found = next((r for r in rows if normalize_account_id(r.get(ACCOUNT)) == account), None)
+        found = next((r for r in rows if account in account_ids(r)), None)
         if found is not None:
             return found
     key = person_key(_name_of(user))
     if not key:
         return None
-    return next((r for r in rows if not r.get(ACCOUNT) and person_key(r.get("name")) == key), None)
+    return next((r for r in rows if not account_ids(r) and person_key(r.get("name")) == key), None)
 
 
 def is_member(team, user):
@@ -120,8 +134,7 @@ def edit_denied(model, user, kind, field=None):
 
 def member_accounts(model):
     """The IDs of the accounts written in the teams of the project."""
-    return {a for t in model.of_kind("team") for r in member_rows(t) for a in [normalize_account_id(r.get(ACCOUNT))]
-            if a}
+    return {a for t in model.of_kind("team") for r in member_rows(t) for a in account_ids(r)}
 
 
 def access_denied(model, user):
@@ -150,8 +163,8 @@ def locks_out(model, team, user):
         return False
     mine = normalize_account_id(getattr(user, "id", ""))
     accounts = {a for t in model.of_kind("team") if t.uuid != team.uuid for r in member_rows(t)
-                for a in [normalize_account_id(r.get(ACCOUNT))] if a}
-    accounts |= {a for r in member_rows(team) for a in [normalize_account_id(r.get(ACCOUNT))] if a}
+                for a in account_ids(r)}
+    accounts |= {a for r in member_rows(team) for a in account_ids(r)}
     if mine and mine in member_accounts(model) and mine not in accounts:
         return True
     return bool(accounts) and mine not in accounts

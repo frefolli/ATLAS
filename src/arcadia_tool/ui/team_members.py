@@ -1,14 +1,15 @@
 """The members of a team in its sheet (EPBS-1): a table of the users of the team, added, changed and removed with
 their own window by a member of the Design Authority. Each member has the ID of their local account, which the
-person tells the DA (Utente › Modifica account): the account is then recognized as that member (see model.teams)."""
+person tells the DA (Utente › Modifica account): the account is then recognized as that member (see model.teams).
+A person who works on more PCs has an account on each, so more IDs, all of them written in their row."""
 import re
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
-                               QWidget)
+                               QListWidget, QListWidgetItem, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+                               QToolButton, QVBoxLayout, QWidget)
 
-from arcadia_tool.model.teams import ACCOUNT, normalize_account_id, person_key
+from arcadia_tool.model.teams import ACCOUNT, account_ids, accounts_value, normalize_account_id, person_key
 from arcadia_tool.ui.theme import icon
 
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -25,6 +26,91 @@ def own_id_error(parent):
     QMessageBox.critical(parent, "Errore: rimozione del tuo ID", OWN_ID)
 
 
+class AccountsList(QWidget):
+    """The IDs of the accounts of a member, one per PC: a list, a field to add one (pasted, Invio or «Aggiungi»;
+    more at once, separated by spaces or commas) and «Rimuovi» for the one selected."""
+
+    def __init__(self, ids=(), parent=None):
+        super().__init__(parent)
+        self.list = QListWidget()
+        self.list.setToolTip("Gli ID degli account della persona, uno per ogni PC su cui lavora")
+        line = max(self.list.fontMetrics().lineSpacing(), 16) + 10  # a line with its icon
+        self.list.setFixedHeight(line * 4 + 6)  # four PCs at sight, then it scrolls
+        self.list.itemSelectionChanged.connect(self._update)
+        self.entry = QLineEdit()
+        self.entry.setPlaceholderText("Incolla un ID, es. 87d54dd9af00427385b975fbf98baeba")
+        self.entry.setToolTip("Chiedilo alla persona: è l'«ID» in alto nella finestra Utente › Modifica account del "
+                              "suo ATLAS, generato quando ha creato l'account. Chi lavora su più PC ha un account, e "
+                              "un ID, su ciascuno: aggiungili tutti")
+        self.entry.returnPressed.connect(lambda: self.add())
+        self.entry.installEventFilter(self)  # Invio adds the ID: it does not also press «Salva» of the window
+        self.entry.textChanged.connect(lambda _t: self._update())
+        self.add_button = QPushButton(icon("mdi6.plus"), "Aggiungi")
+        self.add_button.setAutoDefault(False)
+        self.add_button.clicked.connect(lambda _checked=False: self.add())
+        self.remove_button = QPushButton(icon("mdi6.minus"), "Rimuovi")
+        self.remove_button.setAutoDefault(False)
+        self.remove_button.clicked.connect(self.remove)
+        row = QHBoxLayout()
+        row.addWidget(self.entry, 1)
+        row.addWidget(self.add_button)
+        row.addWidget(self.remove_button)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.list)
+        layout.addLayout(row)
+        self.set_ids(ids)
+
+    def eventFilter(self, watched, event):
+        enter = event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter)
+        if watched is self.entry and enter:
+            if self.entry.text().strip():
+                self.add()
+                return True
+        return super().eventFilter(watched, event)
+
+    def set_ids(self, ids):
+        self.list.clear()
+        for a in dict.fromkeys(ids):
+            self.list.addItem(QListWidgetItem(icon("mdi6.laptop"), a))
+        self._update()
+
+    def set_text(self, text):
+        """The IDs written in a text (e.g. pasted all at once): the valid ones in the list, the others left in the
+        field."""
+        self.set_ids([])
+        self.entry.setText(text)
+        self.add(warn=False)
+
+    def ids(self):
+        return [self.list.item(i).text() for i in range(self.list.count())]
+
+    def pending(self):
+        """What is written in the field and not added yet."""
+        return [t for t in re.split(r"[\s,;]+", self.entry.text()) if t]
+
+    def add(self, warn=True):
+        written = self.pending()
+        invalid = [t for t in written if not normalize_account_id(t)]
+        for a in (normalize_account_id(t) for t in written):
+            if a and a not in self.ids():
+                self.list.addItem(QListWidgetItem(icon("mdi6.laptop"), a))
+        self.entry.setText(" ".join(invalid))
+        if invalid and warn:
+            QMessageBox.warning(self, "ID account", f"«{invalid[0]}» non è un ID valido: un ID ha 32 caratteri "
+                                "(cifre e lettere da a a f), come appare in Utente › Modifica account.")
+        self._update()
+
+    def remove(self):
+        for item in self.list.selectedItems():
+            self.list.takeItem(self.list.row(item))
+        self._update()
+
+    def _update(self):
+        self.add_button.setEnabled(bool(self.entry.text().strip()))
+        self.remove_button.setEnabled(bool(self.list.selectedItems()))
+
+
 class MemberDialog(QDialog):
     """A new member (row None) or the details of one. `row` is the member on OK."""
 
@@ -36,21 +122,20 @@ class MemberDialog(QDialog):
         self.setMinimumWidth(640)
         self.name = QLineEdit(self.row.get("name") or "")
         self.name.setPlaceholderText("es. Mario Rossi")
-        self.account = QLineEdit(self.row.get(ACCOUNT) or "")
-        self.account.setPlaceholderText("32 caratteri, es. 87d54dd9af00427385b975fbf98baeba")
-        self.account.setToolTip("Chiedilo alla persona: è l'«ID» in alto nella finestra Utente › Modifica account "
-                                "del suo ATLAS, generato quando ha creato l'account")
+        # A list: one ID for each PC the person works on (each PC has its own local account).
+        self.account = AccountsList(account_ids(self.row))
         self.email = QLineEdit(self.row.get("email") or "")
         self.role = QLineEdit(self.row.get("role") or "")
         self.role.setPlaceholderText("es. Analista di sistema")
         form = QFormLayout()
         form.addRow("Nome e cognome *", self.name)
-        form.addRow("ID account *", self.account)
+        form.addRow("ID account *\n(uno per postazione)", self.account)
         form.addRow("E-mail", self.email)
         form.addRow("Ruolo", self.role)
         note = QLabel("Chiedi alla persona l'ID del suo account locale: è in alto nella finestra Utente › Modifica "
                       "account del suo ATLAS, che lo copia con un clic. Da quel momento ATLAS la riconosce come membro "
-                      "di questo team, anche nelle versioni che pubblica.", objectName="muted")
+                      "di questo team, anche nelle versioni che pubblica. Se lavora su più PC, ha un ID per ciascuno: "
+                      "aggiungili tutti alla lista.", objectName="muted")
         note.setWordWrap(True)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Aggiungi" if row is None else "Salva")
@@ -66,25 +151,35 @@ class MemberDialog(QDialog):
     def _accept(self):
         name = " ".join(self.name.text().split())
         email = self.email.text().strip()
-        account = normalize_account_id(self.account.text())
+        # The IDs of the list, and one written in the field and not added yet: taken too.
+        pending = self.account.pending()
+        written = self.account.ids() + pending
+        invalid = [t for t in pending if not normalize_account_id(t)]
+        accounts = list(dict.fromkeys(normalize_account_id(t) for t in written if normalize_account_id(t)))
         problems = []
         if not name:
             problems.append("Indica nome e cognome.")
         elif any(person_key(o.get("name")) == person_key(name) for o in self.others):
             problems.append(f"{name} è già tra i membri del team.")
-        if not self.account.text().strip():
+        if not written:
             problems.append("Indica l'ID dell'account della persona (Utente › Modifica account nel suo ATLAS).")
-        elif not account:
-            problems.append("L'ID account non è valido: sono 32 caratteri (cifre e lettere da a a f), come appare in "
-                            "Utente › Modifica account.")
-        elif any(normalize_account_id(o.get(ACCOUNT)) == account for o in self.others):
-            problems.append("Questo ID account è già di un altro membro del team.")
+        elif invalid:
+            listed = ", ".join(f"«{t}»" for t in invalid)
+            said = f"L'ID {listed} non è valido" if len(invalid) == 1 else f"Gli ID {listed} non sono validi"
+            problems.append(f"{said}: un ID ha 32 caratteri (cifre e lettere da a a f), come appare in Utente › "
+                            "Modifica account.")
+        else:
+            for other in self.others:
+                shared = [a for a in accounts if a in account_ids(other)]
+                if shared:
+                    problems.append(f"L'ID {shared[0][:8]}… è già di un altro membro del team "
+                                    f"({other.get('name') or 'senza nome'}).")
         if email and not EMAIL.match(email):
             problems.append("L'indirizzo e-mail non è valido.")
         if problems:
             QMessageBox.warning(self, self.windowTitle(), "\n".join(problems))
             return
-        self.row.update(name=name, email=email, role=self.role.text().strip(), **{ACCOUNT: account})
+        self.row.update(name=name, email=email, role=self.role.text().strip(), **{ACCOUNT: accounts_value(accounts)})
         self.row = {k: v for k, v in self.row.items() if v}
         self.accept()
 
@@ -97,6 +192,9 @@ class MembersWidget(QWidget):
         super().__init__(parent)
         self.model, self.rows = model, []
         self.locks_out = None  # function(rows) → True if the rows would leave the user outside the project
+        # A read-only sheet: the members are only shown; adding, changing or removing one asks to switch to edit
+        # mode (locked), else the change would stay in the table and never reach the model.
+        self.editable, self.locked = True, None
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
@@ -133,11 +231,13 @@ class MembersWidget(QWidget):
         for i, row in enumerate(self.rows):
             for column, key in enumerate(KEYS):
                 value = row.get(key) or ""
-                item = QTableWidgetItem(value)
+                item = QTableWidgetItem(value if isinstance(value, str) else "")
                 if key == ACCOUNT:
-                    item.setText(f"{value[:8]}…" if value else "da indicare")
-                    item.setToolTip(value or "ID dell'account locale del membro non ancora indicato: finché manca, "
-                                             "è riconosciuto da nome e cognome")
+                    ids = account_ids(row)
+                    more = f" (+{len(ids) - 1})" if len(ids) > 1 else ""
+                    item.setText(f"{ids[0][:8]}…{more}" if ids else "da indicare")
+                    item.setToolTip("\n".join(ids) if ids else "ID dell'account locale del membro non ancora "
+                                    "indicato: finché manca, è riconosciuto da nome e cognome")
                 self.table.setItem(i, column, item)
             self.table.setCellWidget(i, ACTIONS, self._actions(i))
         self.table.setVisible(bool(self.rows))
@@ -164,7 +264,16 @@ class MembersWidget(QWidget):
     def _others(self, i=None):
         return [r for n, r in enumerate(self.rows) if n != i]
 
+    def _may_change(self):
+        if self.editable:
+            return True
+        if self.locked is not None:
+            self.locked()
+        return False
+
     def add_member(self):
+        if not self._may_change():
+            return None
         dialog = MemberDialog(None, self._others(), self)
         if dialog.exec():
             self.rows.append(dialog.row)
@@ -174,7 +283,7 @@ class MembersWidget(QWidget):
         return None
 
     def edit_member(self, i):
-        if not self.isEnabled() or not 0 <= i < len(self.rows):
+        if not self.isEnabled() or not 0 <= i < len(self.rows) or not self._may_change():
             return
         dialog = MemberDialog(self.rows[i], self._others(i), self)
         if dialog.exec():
@@ -187,7 +296,7 @@ class MembersWidget(QWidget):
             self.changed.emit()
 
     def remove_member(self, i):
-        if not 0 <= i < len(self.rows):
+        if not 0 <= i < len(self.rows) or not self._may_change():
             return
         name = self.rows[i].get("name")
         if self.locks_out is not None and self.locks_out(self._others(i)):  # the DA removing themselves

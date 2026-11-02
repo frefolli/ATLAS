@@ -507,7 +507,8 @@ class Project:
           the Design Authority.
         - The ADR of a reallocation had one SRS item («Sezione o clausola da riallocare»): now a list, one or
           more items («Sezioni o clausole da riallocare»).
-        - The system functions had «Disponibilità nei modi (X / O)»: removed from the sheet, its values too."""
+        - The system functions had «Disponibilità nei modi (X / O)»: removed from the sheet, its values too.
+        - An SA-3 record had one «Funzione primaria»: now a list, one or more («Funzioni primarie»)."""
         by_id = {}
         for item in self.model.of_kind("requirement"):
             by_id.setdefault(item.get("id"), item.uuid)
@@ -536,6 +537,16 @@ class Project:
         for function in self.model.of_kind("system_function"):  # «Disponibilità nei modi»: removed
             if function.values.pop("mode_availability", None) is not None:
                 self.update(function)
+            if "catalogue_id" in function.values:  # the ID of the SA-2 catalogue: no longer kept, only the import
+                if function.values.pop("catalogue_id"):
+                    function.values["imported"] = True
+                self.update(function)
+        for record in self.model.of_kind("trace_record"):  # the primary function: one, now a list
+            if "primary_function" in record.values:
+                primary = record.values.pop("primary_function")
+                if primary and not record.values.get("primary_functions"):
+                    record.values["primary_functions"] = [primary]
+                self.update(record)
         teams = self.model.of_kind("team")
         for team in teams:  # members of the first versions (only names): rows, to which the DA adds the ID
             members = team.values.get("members") or []
@@ -1060,6 +1071,35 @@ class Project:
         self.discard_recovery()
         return target
 
+    def checkout_version(self, name, sha, move_branch=False):
+        """The whole model becomes the version `sha` (of this PC or downloaded from the remote), on the branch
+        `name`, which becomes the one in use (created from the remote if it is not here yet). The changes saved and
+        not published are lost (published first, or discarded, by the caller). The project must then be opened
+        again.
+
+        move_branch False: the branch stays at its last version; what differs from it is a change to publish (the
+        restore of an earlier version, sent as any other). True: the branch goes back to `sha`, the later versions
+        are no longer on it on this PC (the remote is not changed: receiving brings them back)."""
+        self.save()
+        local, remote = self.repository.local_heads(), self.repository.remote_heads()
+        try:
+            files = self.repository.files_at(sha)
+        except KeyError:
+            raise ProjectError(f"La versione {sha[:8]} non è su questo PC: aggiorna i rami dal repository.")
+        working = self._version_files()
+        head = sha if move_branch else (local.get(name) or remote.get(name) or sha)
+        self._write_files(files, working)
+        self.repository.checkout(name, head, files)
+        # The last version of the branch known to be on the remote: its own, or the last one it shares with it.
+        remote_head = remote.get(name)
+        sent = ""
+        if remote_head:
+            sent = head if self.repository.is_ancestor(head, remote_head) else (
+                self.repository.merge_base(head, remote_head) or "")
+        self.set_local_settings(branch=name, sent=sent)
+        self.discard_recovery()
+        return head
+
     # --- receiving the versions of the others ----------------------------------------------------------
 
     def prepare_receive(self, **credentials):
@@ -1094,6 +1134,17 @@ class Project:
                               base=self.repository.files_at(base), ours=head_files, theirs_files=theirs_files)
         receive.result = receive.merge()
         return receive
+
+    def discard_unpublished(self):
+        """The project on disk goes back to the last published version of its branch: the changes saved and not
+        published are lost. The project must then be opened again."""
+        self.save()
+        head = self.repository.head()
+        files = self.repository.files_at(head)
+        self._write_files(files, self._version_files())
+        if head:
+            self.repository.move_to(head, files)
+        self.discard_recovery()
 
     def apply_receive(self, receive, choices=None, author=None):
         """Receive the versions as prepared, with the choices for the conflicts ({conflict key: ours/theirs}).

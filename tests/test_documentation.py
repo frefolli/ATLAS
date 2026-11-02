@@ -74,7 +74,7 @@ def build(tmp_path):
                        exchange_item=ei.uuid, nature="FLOW", production_condition="Sempre", clauses=[c1.uuid])
     derived = p.new_element("derived_requirement", name="Frenare", parent=c1.uuid, obligation="Il treno frena.",
                             function=lf.uuid, domain=d2.uuid)
-    p.new_element("trace_record", requirement=c1.uuid, primary_function=sf1.uuid, secondary_functions=[sf2.uuid],
+    p.new_element("trace_record", requirement=c1.uuid, primary_functions=[sf1.uuid], secondary_functions=[sf2.uuid],
                   exchange_items=[derived.uuid], outcome="Tracciata a funzione", status="Proposto")
     chain = p.new_element("functional_chain", id="FC-frenatura", title="Frenatura", responsible_domain=d2.uuid,
                           steps=[{"cycle": "C0", "function": sf1.uuid, "what": "Stima", "data": "Velocità",
@@ -158,7 +158,7 @@ def test_the_artefacts_are_filled_in_from_the_model(tmp_path):
 
     # SA-3: one sheet, a row per item traced, with its section and domain, and its derived requirements.
     sa3 = table(book["SA-3"].active, "Sezione SRS")
-    assert [(r["Sezione SRS"], r["Dominio principale"], r["ID voce"], r["Funzione primaria"],
+    assert [(r["Sezione SRS"], r["Dominio principale"], r["ID voce"], r["Funzioni primarie"],
              r["Funzioni secondarie"], r["Derivati / dizionario"]) for r in sa3] == [
         ("3.4.1", "DF01", "3.4.1.1", "SF-DF01-01", "SF-DF02-01", e["derived"].get("id"))]
     sa4 = table(book["SA-4"].active, "ID derivato")

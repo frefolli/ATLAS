@@ -92,7 +92,7 @@ def coherent():
 
     def record(clause, function):
         return add("trace_record", requirement=clause.uuid, b5_question=Q[6], outcome="Tracciata a funzione",
-                   primary_function=function.uuid, status="Approvato")
+                   primary_functions=[function.uuid], status="Approvato")
     g.rec3142 = record(g.cl3142, g.sf06)
     g.rec3143 = record(g.cl3143, g.sf06)
     g.rec3611 = record(g.cl3611, g.sf02)
@@ -272,23 +272,23 @@ MUTATIONS = {
     "SA2-18": lambda g: g.add("system_function", name="Gestire la manovra", domain=g.df06.uuid),
     "SA3-01": lambda g: g.add("trace_record", outcome="Non tracciata"),
     "SA3-02": lambda g: g.add("trace_record", requirement=g.cl3142.uuid, b5_question=Q[6],
-                              outcome="Tracciata a funzione", primary_function=g.sf06.uuid),
+                              outcome="Tracciata a funzione", primary_functions=[g.sf06.uuid]),
     "SA3-03": lambda g: g.rec3142.set("outcome", "Non tracciata"),
     "SA3-04": lambda g: (g.rec3142.set("b5_question", Q[1]), g.rec3142.set("outcome", "Non tracciata"),
-                         g.rec3142.set("primary_function", None)),
-    "SA3-05": lambda g: g.rec3142.set("primary_function", None),
+                         g.rec3142.set("primary_functions", [])),
+    "SA3-05": lambda g: g.rec3142.set("primary_functions", []),
     "SA3-06": lambda g: g.rec3142.set("secondary_functions", [g.sf02.uuid, g.lf06a.uuid, g.lf06b.uuid]),
     "SA3-07": lambda g: (g.rec3142.set("b5_question", Q[4]), g.rec3142.set("outcome", "Scomposta in requisiti derivati"),
-                         g.rec3142.set("primary_function", None)),
+                         g.rec3142.set("primary_functions", [])),
     "SA3-08": lambda g: (g.rec3142.set("b5_question", Q[3]), g.rec3142.set("outcome", "Tracciata al dizionario"),
-                         g.rec3142.set("primary_function", None)),
+                         g.rec3142.set("primary_functions", [])),
     "SA3-09": lambda g: g.add("trace_record", requirement=ground_item(g).uuid, b5_question=Q[2],
                               outcome="Ipotesi d'ambiente / dato atteso"),
     "SA3-10": lambda g: (g.rec3142.set("b5_question", Q[5]), g.rec3142.set("outcome", "Collegata alla voce nominale")),
     "SA3-11": lambda g: g.rec3142.set("secondary_functions", [g.sf02.uuid]),
-    "SA3-12": lambda g: g.rec3611.set("primary_function", g.sf06.uuid),
+    "SA3-12": lambda g: g.rec3611.set("primary_functions", [g.sf06.uuid]),
     "SA3-13": lambda g: g.rec3142.set("secondary_functions", [g.sf06.uuid]),
-    "SA3-14": lambda g: g.rec3142.set("primary_function", g.lf06a.uuid),
+    "SA3-14": lambda g: g.rec3142.set("primary_functions", [g.lf06a.uuid]),
     "SA3-15": lambda g: g.add("requirement", id="3.14.4.5", item_type="Requisito", parent=g.sec314.uuid,
                               category=["Bordo"]),
     "SA3-16": lambda g: g.add("requirement", id="3.14.4.5", item_type="Requisito", parent=g.sec314.uuid,

@@ -221,7 +221,7 @@ def write_sa2(w, doc, domain):
 
 SA3_COLUMNS = [("Sezione SRS", 1, ()), ("Dominio principale", 1, ()), ("ID voce", 1, ()), ("Categoria cap. 9", 1, ()),
                ("Domanda B5 decisiva", 1, B5_QUESTIONS), ("Esito", 1, _f("trace_record", "outcome").options),
-               ("Funzione primaria", 1, ()), ("Funzioni secondarie", 1, ()), ("Derivati / dizionario", 1, ()),
+               ("Funzioni primarie", 1, ()), ("Funzioni secondarie", 1, ()), ("Derivati / dizionario", 1, ()),
                ("Note", 1, ()), ("ADR", 1, ()), ("Stato", 1, _f("trace_record", "status").options)]
 SA3_EXAMPLE = ["3.14.4", "DF06", "3.14.4.2", "Bordo", B5_QUESTIONS[5], "Tracciata a funzione", "SF-DF06-04",
                "SF-DF02-01, SF-DF13-02", "3.14.4.2-D1", "", "", "Proposto"]
@@ -234,7 +234,8 @@ def sa3_records(doc):
     for r in model.of_kind("trace_record"):
         item = model.get(r.get("requirement")) if r.get("requirement") else None
         domain = model.get(principal_of(model, item) or "") if item is not None else None
-        functions = [model.get(u) for u in [r.get("primary_function"), *(r.get("secondary_functions") or [])] if u]
+        functions = [model.get(u) for u in [*(r.get("primary_functions") or []), *(r.get("secondary_functions") or [])]
+                     if u]
         if doc.domains is not None and not doc.in_scope(domain) and not any(
                 doc.in_scope(domain_of(model, f.uuid)) for f in functions if f is not None):
             continue
@@ -256,7 +257,7 @@ def write_sa3(w, doc, records):
                      short(model, principal_of(model, item)) if item is not None else "",
                      short(model, r.get("requirement")), ", ".join(item.get("category") or []) if item else "",
                      text_of(model, r, _f("trace_record", "b5_question")), r.get("outcome") or "",
-                     short(model, r.get("primary_function")), shorts(model, r.get("secondary_functions")),
+                     shorts(model, r.get("primary_functions")), shorts(model, r.get("secondary_functions")),
                      shorts(model, r.get("exchange_items")), plain(r.get("notes")), shorts(model, r.get("adrs")),
                      r.get("status") or ""])
     w.table(SA3_COLUMNS, rows)

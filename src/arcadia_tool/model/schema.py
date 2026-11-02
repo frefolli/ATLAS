@@ -251,8 +251,10 @@ KINDS = (
         Field("requirement", "ID voce", REF, ref_kinds=("requirement",), section=TRACE_SECTION, picker=True),
         Field("category", "Categoria cap. 9", STRLIST, derived_from=("requirement", "category"), stored=False,
               section=TRACE_SECTION),
-        Field("primary_function", "Funzione primaria", REF, ref_kinds=FUNCTIONS, significant=True,
-              section=TRACE_SECTION, picker=True),
+        # One or more: an item can be realized by several functions, each of them primary (saved by earlier
+        # versions as one «primary_function», see Project._migrate).
+        Field("primary_functions", "Funzioni primarie", REFS, ref_kinds=FUNCTIONS, significant=True,
+              section=TRACE_SECTION),
         Field("secondary_functions", "Funzioni secondarie", REFS, ref_kinds=FUNCTIONS, section=TRACE_SECTION),
         # Name kept from the first version (it held only Exchange Items): saved projects stay valid.
         Field("exchange_items", "Derivati / dizionario", REFS, ref_kinds=("derived_requirement", "exchange_item"),
@@ -313,8 +315,9 @@ KINDS = (
         Field("adrs", "ADR", REFS, ref_kinds=("adr",), hidden=True),
         Field("related_adrs", "Decisioni architetturali (ADR)", REFS, ref_kinds=("adr",), stored=False,
               computed="related_adrs"),
-        # Imported from the SA-2 catalogue in Excel: its ID there (a re-import deletes it if no longer there).
-        Field("catalogue_id", "ID nel catalogo SA-2", hidden=True),
+        # Imported from the SA-2 catalogue in Excel (its ID there is not kept: ATLAS gives its own); a re-import
+        # deletes it if no longer there.
+        Field("imported", "Importata dal catalogo SA-2", BOOL, hidden=True),
         _common_status(("Proposta", "Rivista", "Approvata")),
     )),
     Kind("external_actor", "Attore esterno", "Attori esterni", "sa/actors", "System Analysis", "", "", (

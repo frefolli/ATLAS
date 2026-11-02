@@ -89,6 +89,22 @@ def choose_element(project, element, field, parent=None):
     return next(iter(dialog.selected), None)
 
 
+def choose_functions(project, element, field, uuids, parent=None):
+    """Window to tick the functions of a list field (e.g. the primary functions of an SA-3 record), grouped as in
+    choose_element; returns the uuids ticked, or None if cancelled."""
+    model = project.model
+    f = element.schema.field(field)
+    dialog = TickPickerDialog(
+        project, f"{model.label(element)}: {f.label.lower()}",
+        f"Spunta «{f.label}»: una o più. Le funzioni di sistema sono raggruppate per dominio, le funzioni logiche "
+        "per funzione di sistema raffinata.",
+        [e for e in model.of_kind(*f.ref_kinds) if e.uuid != element.uuid], selected=set(uuids), single=False,
+        group_of=lambda e: function_group(model, e), parent=parent)
+    if not dialog.exec():
+        return None
+    return [u for u in uuids if u in dialog.selected] + [u for u in dialog.selected if u not in uuids]
+
+
 def choose_logical_function(project, derived, parent=None):
     """Window to tick the logical function (LA-2) of a derived requirement; returns its uuid, None if no
     choice, or False if cancelled."""
