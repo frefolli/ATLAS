@@ -1,4 +1,4 @@
-"""«Aiuto › Verifica aggiornamenti…» and the check at the start (at most once a day): the window of a new version,
+"""«Info › Verifica aggiornamenti…» and the check at the start (at most once a day): the window of a new version,
 with its notes, and its download with a progress bar, before ATLAS closes and the new version is installed."""
 from datetime import date
 

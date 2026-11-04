@@ -18,10 +18,15 @@ from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, enabled_count, run_che
 from arcadia_tool.ui.diff_view import DiffView
 from arcadia_tool.ui.dialogs import settings
 from arcadia_tool.ui.element_editor import card
-from arcadia_tool.ui.theme import BORDER, MUTED, icon
+from arcadia_tool.ui.theme import ACCENT, BORDER, MUTED, icon
 
 WORKING = "working"
 WORKING_LABEL = "Stato attuale (non pubblicato)"
+
+
+def maximizable(dialog):
+    """The buttons to maximize and minimize the window (a dialog on Windows has only the one to close it)."""
+    dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint)
 
 
 def version_label(v):
@@ -53,10 +58,15 @@ class PublishDialog(QDialog):
         super().__init__(parent)
         self.project, self.sha, self.user = project, None, user
         self.setWindowTitle("Pubblica versione")
+        maximizable(self)
         self.resize(1240, 760)
         versions = project.versions()
         base_label = version_label(versions[0]) if versions else "Nessuna versione pubblicata"
-        self.diff = diff_models(project.published_model(), project.model)
+        published = project.published_model()
+        self.diff = diff_models(published, project.model)
+        # Each change with a tick: some only can be published, with those they need (see storage.selective).
+        from arcadia_tool.storage.selective import dependencies
+        self.needs = dependencies(published, project.model, [c.uuid for c in self.diff.changes])
         # Changed only in the files of the project shared with the team (checks.yaml, project.yaml): also to publish.
         self.settings_changed = not self.diff and project.has_unpublished_changes()
         publishable = bool(self.diff) or self.settings_changed
@@ -115,11 +125,23 @@ class PublishDialog(QDialog):
                          "Stato attuale: modello identico, cambiate le impostazioni del progetto"
                          if self.settings_changed else "Stato attuale: identico, nulla da pubblicare")
         changes, changes_layout = card("Modifiche rispetto all'ultima pubblicazione")
-        changes_layout.addWidget(DiffView(self.diff, base_label, working_label), 1)
+        self.view = DiffView(self.diff, base_label, working_label, needs=self.needs if self.diff else None)
+        changes_layout.addWidget(self.view, 1)
+        self.chosen_label = QLabel(objectName="muted")
+        self.chosen_label.setWordWrap(True)
+        changes_layout.addWidget(self.chosen_label)
+        # The settings shared with the team (project.yaml, checks.yaml), when they changed with the model.
+        self.with_settings = QCheckBox("Pubblica anche le impostazioni condivise del progetto (verifiche, nome, "
+                                       "descrizione…)")
+        self.with_settings.setChecked(True)
+        self.with_settings.setVisible(bool(self.diff) and project.settings_unpublished())
+        changes_layout.addWidget(self.with_settings)
 
         self.publish_button = primary(QPushButton(icon("mdi6.cloud-upload-outline", "white"), "Pubblica"))
         self.publish_button.setEnabled(publishable)
         self.publish_button.clicked.connect(self._publish)
+        self.view.selection_changed.connect(self._chosen_changed)
+        self._chosen_changed()
         cancel = QPushButton("Annulla")
         cancel.clicked.connect(self.reject)
         buttons = QHBoxLayout()
@@ -148,6 +170,27 @@ class PublishDialog(QDialog):
         layout.addWidget(info)
         layout.addWidget(changes, 1)
         layout.addLayout(buttons)
+
+    def chosen(self):
+        """(the uuids of the changes to publish, None for all; the settings too)."""
+        if not self.diff:
+            return None, True
+        everything = len(self.view.chosen) == len(self.diff.changes)
+        return (None if everything else set(self.view.chosen)), (
+            self.with_settings.isChecked() or not self.with_settings.isVisible())
+
+    def _chosen_changed(self):
+        if not self.diff:
+            self.chosen_label.setVisible(False)
+            return
+        total, chosen = len(self.diff.changes), len(self.view.chosen)
+        left = total - chosen
+        self.chosen_label.setText(
+            f"Da pubblicare: {chosen} di {total} modifiche" + (f" · {left} restano locali, da pubblicare dopo"
+                                                                 if left else "") +
+            " · togli la spunta a ciò che non vuoi pubblicare ora: si escludono anche le modifiche che ne dipendono.")
+        self.publish_button.setEnabled(chosen > 0 or (self.with_settings.isVisible() and
+                                                      self.with_settings.isChecked()))
 
     def _checks_summary(self, project):
         """Findings of the active checks on what is being published: shown, they never block the publication."""
@@ -206,10 +249,11 @@ class PublishDialog(QDialog):
         s = settings()
         s.setValue("author/name", name)
         s.setValue("author/email", email)
+        only, with_settings = self.chosen()
         try:
             text, author = with_member(message, self.project, self.user), f"{name} <{email}>"
-            self.sha = (self.project.publish_on_new_branch(new_branch, text, author) if new_branch else
-                        self.project.publish(text, author))
+            self.sha = (self.project.publish_on_new_branch(new_branch, text, author, only, with_settings)
+                        if new_branch else self.project.publish(text, author, only, with_settings))
         except NothingToSave:
             QMessageBox.information(self, "Pubblica versione", "Non ci sono modifiche da pubblicare.")
             return
@@ -225,6 +269,7 @@ class UnpublishedDialog(QDialog):
         super().__init__(parent)
         self.choice = None
         self.setWindowTitle("Ricevi dal repository")
+        maximizable(self)
         self.resize(1240, 760)
         versions = project.versions()
         base_label = version_label(versions[0]) if versions else "Nessuna versione pubblicata"
@@ -323,6 +368,7 @@ class CompareDialog(QDialog):
         super().__init__(parent)
         self.project, self.credentials, self.worker = project, credentials, None
         self.setWindowTitle("Confronta versioni")
+        maximizable(self)
         self.resize(1320, 780)
         self.versions = project.versions()
         current = project.current_branch()
@@ -420,10 +466,12 @@ class CompareDialog(QDialog):
         self._fetched_text(message)
         self.fetched.setStyleSheet("color: #B42318;")
 
-    def reject(self):
+    def done(self, result):
+        """Closed (X, Esc, «Chiudi»), also while downloading the branches: the download ends by itself."""
         if self.worker is not None and self.worker.isRunning():
-            return  # not while downloading
-        super().reject()
+            from arcadia_tool.ui.branches import finish_in_background
+            finish_in_background(self.worker)
+        super().done(result)
 
     def _swap(self):
         lb, ls = self.left.branch.currentData(), self.left.state
@@ -533,13 +581,17 @@ HISTORY_COLUMNS = (("Data", 140), ("Autore", 190), ("Descrizione", 0), ("Reposit
 
 
 class HistoryDialog(QDialog):
-    """The published versions of a branch (the one in use, or another of this PC or of the remote). request, on
-    accept: ("create", name, sha, send), a new branch from a version (see ui.branches)."""
+    """«Versioni Modello»: the versions of a branch (the one in use, or another of this PC or of the remote); on the
+    branch in use, first, the local version (the changes of this PC not published yet), to publish or discard.
+    request, on accept: ("create", name, sha, send), a new branch from a version (see ui.branches); ("publish",);
+    ("discard",): the local changes are published, or discarded."""
 
     def __init__(self, project, parent=None, branch=None, user=None):
         super().__init__(parent)
         self.project, self.user, self.request = project, user, None
-        self.setWindowTitle("Cronologia delle pubblicazioni")
+        self.local = None  # the local version shown (a summary of its changes), or None
+        self.setWindowTitle("Versioni del modello")
+        maximizable(self)
         self.resize(1080, 600)
         from arcadia_tool.ui.branches import branch_sources, fill_sources
         self.choices = branch_sources(project)
@@ -570,21 +622,28 @@ class HistoryDialog(QDialog):
         self.table.doubleClicked.connect(lambda index: self.show_version(index.row()))
         self.empty = QLabel("Nessuna versione pubblicata.", alignment=Qt.AlignCenter, objectName="muted")
 
-        previous = QPushButton(icon("mdi6.compare-horizontal"), "Confronta con la precedente")
-        current = QPushButton(icon("mdi6.pencil-outline"), "Confronta con lo stato attuale")
-        two = QPushButton(icon("mdi6.select-compare"), "Confronta le due selezionate")
-        previous.clicked.connect(self.compare_previous)
-        current.clicked.connect(self.compare_current)
-        two.clicked.connect(self.compare_two)
+        # The comparisons: «Confronta» of the toolbar; a double click shows what a version (or the local one)
+        # changed.
         new = QPushButton(icon("mdi6.source-branch-plus"), "Crea ramo da questa versione…")
         new.setToolTip("Un nuovo ramo di attività che parte dalla versione selezionata")
         new.clicked.connect(self.new_branch)
+        # The local version: published (a new version) or discarded (back to the last one).
+        self.discard_button = QPushButton(icon("mdi6.undo-variant", "#B42318"), "Scarta le modifiche locali…")
+        self.discard_button.setToolTip("Il modello torna all'ultima versione pubblicata: le modifiche di questo PC "
+                                       "non pubblicate vanno perse")
+        self.discard_button.clicked.connect(lambda _c=False: self.discard())
+        self.publish_button = QPushButton(icon("mdi6.cloud-upload-outline", "white"), "Pubblica…")
+        self.publish_button.setProperty("primary", True)
+        self.publish_button.setToolTip("Pubblica le modifiche locali come nuova versione del ramo")
+        self.publish_button.clicked.connect(lambda _c=False: self.publish())
         close = QPushButton("Chiudi")
         close.clicked.connect(self.accept)
         buttons = QHBoxLayout()
-        for b in (previous, current, two, new):
+        for b in (new,):
             buttons.addWidget(b)
         buttons.addStretch()
+        buttons.addWidget(self.discard_button)
+        buttons.addWidget(self.publish_button)
         buttons.addWidget(close)
 
         top = QHBoxLayout()
@@ -617,8 +676,12 @@ class HistoryDialog(QDialog):
         if b is not None:
             remote_head = b.head if b.remote else self.project.repository.remote_heads().get(b.name)
         on_remote = set(v.sha for v in self.project.branch_versions(remote_head)) if remote_head else set()
-        self.table.setRowCount(len(self.versions))
-        for r, v in enumerate(self.versions):
+        self.local = self._local_version() if current else None
+        self.offset = 1 if self.local else 0  # the local version: the first row
+        self.table.setRowCount(len(self.versions) + self.offset)
+        if self.local:
+            self._local_row()
+        for r, v in enumerate(self.versions, start=self.offset):
             name, _, email = v.author.partition(" <")
             if not self.remote:
                 state = "solo su questo PC"
@@ -635,8 +698,59 @@ class HistoryDialog(QDialog):
                 if c == 4:
                     item.setFont(QFont("Consolas", 9))
                 self.table.setItem(r, c, item)
-        self.table.setVisible(bool(self.versions))
-        self.empty.setVisible(not self.versions)
+        self.table.setVisible(bool(self.versions) or bool(self.local))
+        self.empty.setVisible(not self.versions and not self.local)
+        self.publish_button.setEnabled(bool(self.local))
+        self.discard_button.setEnabled(bool(self.local) and bool(self.versions))
+        if self.local and not self.versions:
+            self.discard_button.setToolTip("Nessuna versione pubblicata a cui tornare")
+
+    def _local_version(self):
+        """The changes of this PC not published yet on the branch in use: (summary, changes, unsaved), or None."""
+        project = self.project
+        unsaved = project.pending_count
+        if not unsaved and not project.has_unpublished_changes():
+            return None
+        changes = len(diff_models(project.published_model(), project.model).changes)
+        if changes:
+            text = f"Versione locale: {changes} {'modifica' if changes == 1 else 'modifiche'} non pubblicate"
+        else:
+            text = "Versione locale: cambiate le impostazioni del progetto, non pubblicate"
+        if unsaved:
+            text += f" ({unsaved} non ancora salvate)"
+        return text, changes, unsaved
+
+    def _local_row(self):
+        text, _changes, _unsaved = self.local
+        author = self.user.full_name if self.user is not None else ""
+        bold = QFont()
+        bold.setBold(True)
+        for c, value in enumerate(("adesso", author, text, "solo su questo PC", "locale")):
+            item = QTableWidgetItem(value)
+            item.setFont(bold)
+            item.setForeground(QColor(ACCENT))
+            item.setToolTip("Le modifiche del modello su questo PC non ancora pubblicate: doppio clic per vederle, "
+                            "«Pubblica…» per farne una versione, «Scarta le modifiche locali…» per tornare "
+                            "all'ultima versione pubblicata")
+            self.table.setItem(0, c, item)
+
+    def publish(self):
+        if self.local:
+            self.request = ("publish",)
+            self.accept()
+
+    def discard(self):
+        if not self.local or not self.versions:
+            return
+        text, changes, unsaved = self.local
+        if QMessageBox.warning(
+                self, "Scarta le modifiche locali",
+                f"{text}.\n\nScartarle? Il modello torna all'ultima versione pubblicata del ramo "
+                f"«{self.project.current_branch()}» ({version_label(self.versions[0])}) e le modifiche vanno perse.",
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
+            return
+        self.request = ("discard",)
+        self.accept()
 
     def new_branch(self):
         from arcadia_tool.ui.branches import NewBranchDialog
@@ -650,7 +764,8 @@ class HistoryDialog(QDialog):
             self.accept()
 
     def _rows(self):
-        return sorted({i.row() for i in self.table.selectedIndexes()})
+        """The versions selected (their index in self.versions; the local version is not one of them)."""
+        return sorted({i.row() - self.offset for i in self.table.selectedIndexes() if i.row() >= self.offset})
 
     def _open(self, before, after):
         b = self.selected_branch()
@@ -659,7 +774,12 @@ class HistoryDialog(QDialog):
         CompareDialog(self.project, before, after, self, before_branch=name, after_branch=after_branch).exec()
 
     def show_version(self, row):
-        """Double click: what the version contains and where it is (sent to the repository or not)."""
+        """Double click: what the version contains and where it is (sent to the repository or not); the local
+        version: its changes, from the last version published."""
+        if self.offset and row == 0:
+            self._open(self.versions[0].sha if self.versions else None, WORKING)
+            return
+        row -= self.offset
         if 0 <= row < len(self.versions):
             b = self.selected_branch()
             VersionDialog(self.project, self.versions, row, self.remote, self.unsent, self,

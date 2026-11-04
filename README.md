@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.8.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.0</sub>
 </p>
 
 > [!WARNING]
@@ -81,6 +81,19 @@ repository serve solo per scaricare e pubblicare le versioni.
   - **Anteprima:** prima di creare le ADR mostra, ADR per ADR, i campi che si importano e gli avvisi, con la
     spunta «Applica». Ciò che non si può impostare così com'è scritto, come una destinazione di più domini o un
     dominio «da definire», resta nelle note della motivazione.
+- **Notifiche:** i membri di un team ricevono una notifica quando un altro team apre, modifica o elimina un'ADR
+  che coinvolge come destinazione un dominio del loro team, e quando arrivano messaggi nuovi nelle discussioni che
+  li riguardano. Si trovano nella campanella della barra in alto, in un avviso all'apertura del progetto e dopo
+  «Ricevi», e nell'albero (un pallino blu a sinistra dell'elemento da vedere). Si segnano come lette o di nuovo
+  come non lette («Nuova»). I membri della Design
+  Authority ricevono tutte le ADR non aperte dalla DA, in una scheda a parte del pannello («Il mio team», «Design
+  Authority», «Messaggi»). La lettura di un'ADR viene registrata nel progetto. Nella testata della scheda
+  dell'ADR l'indicatore «Vista da N» apre, con un clic, l'elenco di chi dei team di destinazione e della DA l'ha
+  letta.
+- **Discussione** in fondo alla scheda di ogni ADR e CQ: i membri dei team scrivono messaggi in fila, con risposta
+  a un messaggio precedente e file allegati. Il messaggio si salva subito e arriva ai colleghi con Pubblica e
+  Invia; l'albero indica i messaggi nuovi. L'autore modifica o elimina i propri messaggi, la DA può nasconderli e
+  la discussione si chiude quando la DA approva l'ADR o la CQ è chiusa.
 - «Esporta ADR aperte…» nell'elenco X-1 salva in Excel le ADR non ancora decise (ID, descrizione, team
   proponente, stato); lo stesso registro è anche un template (`Template_X-1.00_Registro_ADR_aperte.xlsx`).
 - **Progetto › Genera › Schede Arcadia** scrive in Excel gli artefatti SA-1…SA-7 e le ADR scelti in **Progetto ›
@@ -212,7 +225,10 @@ repository serve solo per scaricare e pubblicare le versioni.
     nuova versione;
   - **riporto forzato del ramo:** le versioni successive escono dal ramo su questo PC. Il repository non cambia e
     ATLAS avvisa se vanno perse versioni mai inviate.
-- Cronologia e dettaglio di ogni versione pubblicata, di qualsiasi ramo.
+- **Versioni Modello** (ex «Cronologia»): le versioni pubblicate di qualsiasi ramo, con il dettaglio di ognuna. Sul ramo in
+  uso, in cima, la «versione locale», cioè le modifiche di questo PC non ancora pubblicate, salvate o no: con un doppio
+  clic si vedono, con «Pubblica…» diventano una versione, con «Scarta le modifiche locali…» il modello torna
+  all'ultima versione pubblicata del ramo.
 - Confronto semantico tra versioni e tra rami (anche del repository e con lo stato attuale), anche limitato a ciò
   che un ramo ha cambiato dal punto di partenza comune.
 - Migrazione della storia del progetto da un server Git a un altro.
@@ -295,7 +311,7 @@ disinstalla da *Impostazioni → App*. Le versioni fino alla 0.6.0 potevano esse
 ### Aggiornamenti
 
 All'avvio, al massimo una volta al giorno, ATLAS controlla se su GitHub c'è una nuova versione. Si può anche
-controllare a mano da *Aiuto → Verifica aggiornamenti…*. Se c'è, una finestra ne mostra le note, con tre scelte:
+controllare a mano da *Info → Verifica aggiornamenti…*. Se c'è, una finestra ne mostra le note, con tre scelte:
 **Aggiorna ora**, **Più tardi** e **Salta questa versione**.
 
 Con **Aggiorna ora**:
@@ -308,7 +324,7 @@ Con **Aggiorna ora**:
 Su Linux ATLAS sostituisce la cartella dell'archivio, se l'utente può modificarla. Altrimenti apre la pagina della
 release.
 
-Senza rete il controllo non segnala nulla. Il controllo all'avvio si disattiva da *Aiuto → Controlla gli
+Senza rete il controllo non segnala nulla. Il controllo all'avvio si disattiva da *Info → Controlla gli
 aggiornamenti all'avvio*.
 
 ### Linux (x86_64)

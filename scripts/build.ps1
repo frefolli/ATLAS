@@ -13,6 +13,7 @@ Set-Location $root
     --paths src `
     --add-data "Templates;Templates" `
     --add-data "src\arcadia_tool\resources;arcadia_tool\resources" `
+    --add-data "CHANGELOG.md;." `
     src\arcadia_tool\__main__.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller fallito" }
 

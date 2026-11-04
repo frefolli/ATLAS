@@ -799,14 +799,18 @@ class Project:
             from arcadia_tool.model.links import EXCLUSION, set_exclusion
             if element.get("adr_type") == EXCLUSION:
                 from arcadia_tool.model.adr import excluded_items
-                for uuid in excluded_items(element):
-                    item = set_exclusion(self.model, uuid, element.get("excluding_domain"), False)
+                for item_uuid in excluded_items(element):  # not «uuid»: the ADR is removed below
+                    item = set_exclusion(self.model, item_uuid, element.get("excluding_domain"), False)
                     if item is not None:
                         self._touch(item.uuid)
         self.model.remove(uuid)
         self._modified.discard(uuid)
         self._deleted[uuid] = self.element_file(element)
         self._stamp(uuid)
+        if element.kind in ("adr", "clarification"):  # its discussion, and who read it, go with it
+            for other in [m for m in self.model.of_kind("message", "reading")
+                          if uuid in (m.get("subject"), m.get("adr"))]:
+                self.delete_element(other.uuid)
 
     def _touch(self, uuid):
         self._modified.add(uuid)
@@ -869,7 +873,9 @@ class Project:
         return file.read_bytes() if rel and file.is_file() else None
 
     def _referenced_assets(self):
-        return {e.values.get("figure") for e in self.model if e.values.get("figure")}
+        """The files used by the elements: the figures of the SRS items, the files attached to the messages."""
+        figures = {e.values.get("figure") for e in self.model if e.values.get("figure")}
+        return figures | {a for m in self.model.of_kind("message") for a in m.values.get("attachments") or []}
 
     def _asset_files(self):
         folder = self.path / ASSETS_DIR
@@ -969,15 +975,34 @@ class Project:
             files[self._relative(file)] = file.read_bytes()
         return files
 
+    def settings_unpublished(self):
+        """The settings shared with the team (project.yaml, checks.yaml…) differ from the last version."""
+        base = self.repository.files_at(self.repository.head())
+        return any(((self.path / name).read_bytes() if (self.path / name).exists() else None) != base.get(name)
+                   for name in TRACKED_FILES)
+
     def has_unpublished_changes(self):
         """True if the saved project differs from the last published version (computes hashes)."""
         return self.repository.has_unsaved_changes(self._version_files())
 
-    def publish(self, message, author):
-        """Save to disk and record a published version (a Git commit)."""
+    def publish(self, message, author, only=None, settings=True):
+        """Save to disk and record a published version (a Git commit). only: the uuids of the elements whose changes
+        are published (see storage.selective; None: all of them); settings: the shared settings of the project too.
+        What is not published stays as a local change."""
         self.save()
-        sha = self.repository.save_version(message, author, self._version_files())
-        return sha
+        working = self._version_files()
+        if only is None and settings:
+            return self.repository.save_version(message, author, working)
+        from arcadia_tool.storage.selective import files_to_publish
+        chosen = set(self.changed_elements()) if only is None else set(only)
+        files = files_to_publish(self.repository.files_at(self.repository.head()), working, self.published_model(),
+                                 self.model, chosen, settings, TRACKED_FILES)
+        return self.repository.save_version(message, author, files, working=working)
+
+    def changed_elements(self):
+        """The uuids of the elements added, changed or removed since the last version."""
+        from arcadia_tool.diff.semantic import diff_models
+        return [c.uuid for c in diff_models(self.published_model(), self.model).changes]
 
     # --- branches --------------------------------------------------------------------------------------
 
@@ -1035,7 +1060,7 @@ class Project:
             return f"Il ramo «{name}» esiste già."
         return None
 
-    def publish_on_new_branch(self, name, message, author):
+    def publish_on_new_branch(self, name, message, author, only=None, settings=True):
         """Publish the changes as the first version of a new branch, which starts from the current version and
         becomes the one in use (to send then)."""
         problem = self.check_branch_name(name)
@@ -1046,7 +1071,7 @@ class Project:
         self.repository.start_branch(name)
         self.set_local_settings(branch=name, sent="")
         try:
-            return self.publish(message, author)
+            return self.publish(message, author, only, settings)
         except Exception:  # not published: back on the branch it was on
             self.repository.start_branch(previous)
             self.repository.delete_branch(name)
@@ -1141,7 +1166,14 @@ class Project:
         self.save()
         head = self.repository.head()
         files = self.repository.files_at(head)
-        self._write_files(files, self._version_files())
+        # What is on disk, also what this session has not loaded (e.g. written by another ATLAS meanwhile): all of
+        # it goes, except what the version has.
+        on_disk = self._version_files()
+        for folder in (MODEL_DIR, ASSETS_DIR):
+            for file in (self.path / folder).rglob("*") if (self.path / folder).exists() else ():
+                if file.is_file():
+                    on_disk.setdefault(self._relative(file), b"")
+        self._write_files(files, on_disk)
         if head:
             self.repository.move_to(head, files)
         self.discard_recovery()

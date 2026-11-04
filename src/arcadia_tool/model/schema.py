@@ -617,6 +617,33 @@ KINDS = (
         Field("recipient_text", "Destinatario (testo)", hidden=True),
         Field("status", "Stato", ENUM, ("Aperta", "Chiusa"), significant=True),
     )),
+    # A message of the discussion of an ADR or of a CQ (see model.discussions): a file of its own, so that messages
+    # written at the same time on two branches are both kept by the merge. Shown in the sheet it belongs to, not in
+    # the model tree.
+    Kind("message", "Messaggio", "Messaggi delle discussioni", "x/discussions", "Trasversali", "", "", (
+        Field("subject", "Discussione di", REF, ref_kinds=("adr", "clarification")),
+        Field("author", "Autore"),
+        Field("author_account", "ID account dell'autore", hidden=True),
+        Field("team", "Team", REF, ref_kinds=("team",)),
+        Field("posted", "Scritto il"),  # «2026-11-04T10:15:30», the time of the PC of the author
+        Field("text", "Testo", TEXT),
+        Field("reply_to", "In risposta a", REF, ref_kinds=("message",)),
+        # The files attached: project-relative paths («assets/discussions/<uuid>/<name>»).
+        Field("attachments", "Allegati", STRLIST),
+        Field("edited", "Modificato il"),
+        Field("deleted", "Eliminato dall'autore", BOOL),
+        Field("hidden_by_da", "Nascosto dalla Design Authority", BOOL),
+    )),
+    # A member of a team concerned by an ADR (a destination of it) has read it (see model.notifications): one record
+    # per member and ADR, a file of its own (readings on two branches do not conflict). Shown in the sheet of the ADR.
+    Kind("reading", "Lettura", "Letture delle ADR", "x/readings", "Trasversali", "", "", (
+        Field("adr", "ADR", REF, ref_kinds=("adr",)),
+        Field("team", "Team", REF, ref_kinds=("team",)),
+        Field("member", "Membro"),
+        Field("account", "ID account", hidden=True),
+        Field("read_at", "Letta il"),
+        Field("version", "Versione letta", hidden=True),  # see notifications.fingerprint
+    )),
     # A graphic view of the SA, composed by the user with elements of the model (see model.diagrams): shown in the
     # model tree under the SA it belongs to, not as a kind of its own.
     Kind("diagram", "Vista grafica", "Viste grafiche", "sa/views", "System Analysis", "", "", (

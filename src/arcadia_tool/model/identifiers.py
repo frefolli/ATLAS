@@ -30,7 +30,7 @@ CREATION_CONTEXT = {
 }
 
 MANUAL_ID_KINDS = {"requirement"}
-NO_ID_KINDS = {"trace_record", "chain_realization"}
+NO_ID_KINDS = {"trace_record", "chain_realization", "message", "reading"}
 
 
 def is_automatic(kind):

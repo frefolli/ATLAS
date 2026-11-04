@@ -26,11 +26,31 @@ MODEL_TAB, VIEWS_TAB = 0, 1
 # Kinds shown first in their group of the tree (the others in the order of the schema): the external actors
 # before the domains (SA-1), as the context of the system comes before its decomposition.
 TREE_FIRST = ("external_actor",)
-# Not in the tree of the elements: the views have their own tab.
-NOT_IN_TREE = (DIAGRAM,)
+# Not in the tree of the elements: the views have their own tab, the messages and the readings are in the sheet
+# of their ADR or CQ.
+NOT_IN_TREE = (DIAGRAM, "message", "reading")
 
 
 TAB_ICONS = ("mdi6.file-tree-outline", "mdi6.vector-polyline")
+UNREAD_ROLE = Qt.UserRole + 20  # an ADR or a CQ with something to look at (its dot)
+_DOTS = {}
+
+
+def _dot(shown):
+    """The blue dot of an element to look at; else an empty space of the same size (the names stay aligned)."""
+    if shown not in _DOTS:
+        from PySide6.QtGui import QIcon, QPainter, QPixmap
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.transparent)
+        if shown:
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor("#2563EB"))
+            painter.drawEllipse(2, 2, 8, 8)
+            painter.end()
+        _DOTS[shown] = QIcon(pixmap)
+    return _DOTS[shown]
 
 
 def _navigator():
@@ -95,6 +115,7 @@ class ModelTree(QFrame):
         self.project = None
         self.edit_denied = None  # function(kind) → why the user may not create or delete it, or None
         self.locks_out = None  # function(team without members) → True if deleting it leaves the user outside
+        self.unread = None  # function(ADR or CQ) → what is new about it on this PC («da vedere · 2 nuovi»)
         self.srs_edit_mode = srs_edit_mode or SrsEditMode()
         # Two tabs: the elements of the model, and the graphic views (kept apart from the elements).
         self.tabs = QTabBar()
@@ -291,7 +312,30 @@ class ModelTree(QFrame):
         item.setData(0, UUID_ROLE, element.uuid)
         item.setToolTip(0, element.get("text") or label)
         self._items[element.uuid] = item
+        self._show_unread(item, element)
         return item
+
+    def _show_unread(self, item, element):
+        """An ADR or a CQ: a blue dot on its left while there is something to look at (its notification unread, new
+        messages); the number of the new messages of its discussion."""
+        if element.kind not in ("adr", "clarification") or self.unread is None:
+            return
+        to_see, messages = self.unread(element)
+        item.setIcon(0, _dot(to_see))
+        item.setData(0, UNREAD_ROLE, to_see)
+        item.setText(1, f"{messages} {'nuovo' if messages == 1 else 'nuovi'}" if messages else "")
+        item.setForeground(1, QBrush(QColor(ACCENT)))
+        item.setToolTip(1, "Messaggi nuovi della discussione" if messages else "")
+        item.setToolTip(0, ("Da vedere: " if to_see else "") + (element.get("text") or
+                                                                 self.project.model.choice_label(element)))
+
+    def refresh_unread(self):
+        if self.project is None:
+            return
+        for element in self.project.model.of_kind("adr", "clarification"):
+            item = self._items.get(element.uuid)
+            if item is not None:
+                self._show_unread(item, element)
 
     def _add_nested(self, parent_item, parent_uuid, children):
         # Imported SRS items keep their position in the document (procedure rows S0, S1, D2…).

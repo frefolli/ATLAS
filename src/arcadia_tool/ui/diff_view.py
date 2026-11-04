@@ -1,7 +1,7 @@
 """Presentation of a semantic model diff: grouped tree + detail of the selected change."""
 from html import escape
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QSplitter,
                                QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
@@ -121,9 +121,20 @@ def summary_badge(change, count):
 
 
 class DiffView(QWidget):
-    def __init__(self, diff, before_label, after_label):
+    """The changes between two states. needs (to choose them, e.g. to publish some only): {uuid: the uuids of the
+    changes it needs} (see storage.selective); each change has a tick, «chosen» the uuids ticked: leaving one out
+    leaves out those that need it, choosing one chooses those it needs (told in `note`)."""
+    selection_changed = Signal()
+
+    def __init__(self, diff, before_label, after_label, needs=None):
         super().__init__()
         self.diff = diff
+        self.needs = needs
+        self.chosen = {c.uuid for c in diff.changes} if needs is not None else set()
+        self._ticking = False
+        self.note = QLabel(objectName="muted")
+        self.note.setWordWrap(True)
+        self.note.setVisible(False)
         counts = diff.summary()
         header = QHBoxLayout()
         title = QLabel(f"<b>{escape(before_label)}</b>  →  <b>{escape(after_label)}</b>")
@@ -167,9 +178,20 @@ class DiffView(QWidget):
         layout.addLayout(header)
         layout.addLayout(filters)
         layout.addWidget(splitter, 1)
+        layout.addWidget(self.note)
+        if needs is not None:
+            self.tree.itemChanged.connect(self._ticked)
         self._populate()
 
     def _populate(self, *_):
+        """The changes shown (the filters); their ticks as chosen (not a choice of the user while they are made)."""
+        self._ticking = True
+        try:
+            self._fill()
+        finally:
+            self._ticking = False
+
+    def _fill(self):
         self.tree.clear()
         text = self.search.text().lower()
         wanted = self.change_filter.currentData()
@@ -193,9 +215,59 @@ class DiffView(QWidget):
                 item.setForeground(1, QBrush(QColor(CHANGE_COLORS[c.change])))
                 item.setForeground(2, QBrush(QColor(MUTED)))
                 item.setData(0, CHANGE_ROLE, c)
+                if self.needs is not None:
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(0, Qt.Checked if c.uuid in self.chosen else Qt.Unchecked)
+                    linked = self.needs.get(c.uuid)
+                    if linked:
+                        item.setToolTip(0, "Si pubblica insieme a: " + ", ".join(
+                            sorted(self.diff.label_of(u) for u in linked)))
                 first = first or item
+            if self.needs is not None:
+                group.setFlags(group.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
         if first:
             self.tree.setCurrentItem(first)
+
+    def _ticked(self, item, column):
+        """A tick changed: the changes it needs (chosen), or those that need it (left out) follow."""
+        change = item.data(0, CHANGE_ROLE)
+        if self._ticking or column != 0 or change is None:
+            return
+        from arcadia_tool.storage.selective import dependents, required
+        on = item.checkState(0) == Qt.Checked
+        if on == (change.uuid in self.chosen):
+            return
+        if on:
+            moved = required(self.needs, [change.uuid]) - self.chosen
+            self.chosen |= moved
+        else:
+            moved = dependents(self.needs, [change.uuid]) & self.chosen
+            self.chosen -= moved
+        others = sorted(self.diff.label_of(u) for u in moved - {change.uuid})
+        self.note.setText((("Selezionate anche, perché servono: " if on else
+                            "Escluse anche, perché ne dipendono: ") + ", ".join(others)) if others else "")
+        self.note.setVisible(bool(others))
+        self._refresh_ticks()
+        self.selection_changed.emit()
+
+    def _refresh_ticks(self):
+        self._ticking = True
+        try:
+            for i in range(self.tree.topLevelItemCount()):
+                group = self.tree.topLevelItem(i)
+                for j in range(group.childCount()):
+                    child = group.child(j)
+                    change = child.data(0, CHANGE_ROLE)
+                    child.setCheckState(0, Qt.Checked if change.uuid in self.chosen else Qt.Unchecked)
+        finally:
+            self._ticking = False
+
+    def set_chosen(self, uuids):
+        """Choose these changes (with those they need, and leaving out what needs one left out)."""
+        from arcadia_tool.storage.selective import required
+        self.chosen = required(self.needs or {}, uuids)
+        self._refresh_ticks()
+        self.selection_changed.emit()
 
     def _show_detail(self, current, _previous):
         change = current.data(0, CHANGE_ROLE) if current else None

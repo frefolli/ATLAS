@@ -240,6 +240,18 @@ class Repository:
         head = self.head()
         return self._repo[head.encode()].tree if head else None
 
+    def head_paths(self):
+        """The files of the last version (relative paths), without reading them; kept for that version (asked by
+        every discussion shown)."""
+        head = self.head()
+        cached = getattr(self, "_head_paths", None)
+        if cached is not None and cached[0] == head:
+            return cached[1]
+        tree = self._head_tree()
+        paths = {e.path.decode("utf-8") for e in iter_tree_contents(self._repo.object_store, tree)} if tree else set()
+        self._head_paths = (head, paths)
+        return paths
+
     def _head_blobs(self):
         tree = self._head_tree()
         return {e.sha for e in iter_tree_contents(self._repo.object_store, tree)} if tree else set()

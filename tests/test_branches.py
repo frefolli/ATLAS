@@ -147,7 +147,10 @@ def test_the_window_of_the_branches_lists_them_and_asks_for_a_new_one(app, serve
     dialog.table.selectRow(rows["main  (in uso)"])
     assert not dialog.switch_button.isEnabled()  # already in use
     dialog.table.selectRow(r)
-    assert dialog.switch_button.isEnabled() and dialog.compare_main.isEnabled()
+    assert dialog.switch_button.isEnabled()
+    labels = [b.text() for b in dialog.findChildren(type(dialog.switch_button))]
+    assert "Cronologia" not in labels and not any(t.startswith("Confronta con il mio") or "rispetto a main" in t
+                                                  for t in labels)  # the versions: in «Versioni Modello»
     dialog.switch()
     assert dialog.request == ("switch", "att/T3-chain")
 
@@ -409,3 +412,87 @@ def test_the_window_of_the_branches_asks_for_the_checkout_of_a_version(app, serv
     assert "le differenze sono da pubblicare" in window.statusBar().currentMessage()
     window._set_project(None)
     window.close()
+
+
+def test_the_versions_of_the_model_show_the_local_version_to_publish_or_discard(app, server, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    import arcadia_tool.ui.main_window as main_window
+    from arcadia_tool.ui.versions import HistoryDialog
+
+    url, download, reopen = server
+    mine = download("mine")
+    history = HistoryDialog(mine)
+    assert history.local is None and history.table.rowCount() == 2  # nothing local: the two versions
+    assert not history.publish_button.isEnabled() and not history.discard_button.isEnabled()
+    # Saved, not published; and not saved yet.
+    mine.new_element("domain", name="Salvata non pubblicata")
+    mine.save()
+    added = mine.new_element("domain", name="Non salvata")
+    history = HistoryDialog(mine)
+    assert history.table.rowCount() == 3 and history.table.item(0, 4).text() == "locale"
+    assert history.table.item(0, 2).text() == "Versione locale: 2 modifiche non pubblicate (1 non ancora salvate)"
+    assert history.publish_button.isEnabled() and history.discard_button.isEnabled()
+    history.table.selectRow(1)
+    assert history._rows() == [0]  # the versions keep their index: the local row is not one of them
+    history.table.selectRow(0)
+    assert history._rows() == []
+    history.publish()
+    assert history.request == ("publish",)
+    # Discarded from the window of the versions: back to the last version published of the branch, everything that
+    # is not in it removed (saved, not saved, new files).
+    window = main_window.MainWindow()
+    window._set_project(mine)
+    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    extra = mine.path / "model" / "x" / "readings"
+    extra.mkdir(parents=True, exist_ok=True)
+    (extra / "lettura.yaml").write_text("kind: reading\nuuid: 1\n", encoding="utf-8")
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.Yes)
+    monkeypatch.setattr(HistoryDialog, "exec", lambda d: d.discard())
+    window.history()
+    assert names(window.project) == ["Localizzazione", "Protezione"] and added.uuid not in window.project.model.elements
+    assert not window.project.has_unpublished_changes() and not window.project.is_modified
+    assert not (extra / "lettura.yaml").exists()
+    assert window.history_action.text() == "Versioni Modello"
+    window._set_project(None)
+    window.close()
+
+
+def test_the_window_of_the_versions_has_no_buttons_to_compare(app, server):
+    from PySide6.QtWidgets import QPushButton
+    from arcadia_tool.ui.versions import HistoryDialog
+
+    url, download, reopen = server
+    labels = [b.text() for b in HistoryDialog(download("mine")).findChildren(QPushButton)]
+    assert not any(t.startswith("Confronta") for t in labels)  # «Confronta» of the toolbar
+    assert "Crea ramo da questa versione…" in labels and "Pubblica…" in labels
+
+
+def test_the_windows_close_while_they_download_the_branches(app, server, monkeypatch):
+    import threading
+    from arcadia_tool.ui import branches
+    from arcadia_tool.ui.versions import CompareDialog
+
+    url, download, reopen = server
+    mine = download("mine")
+    release = threading.Event()
+    real = mine.fetch_branches
+    monkeypatch.setattr(mine, "fetch_branches", lambda **k: (release.wait(10), real(**k)))  # a slow network
+    compare = CompareDialog(mine, parent=None, credentials={})
+    compare.show()  # the download starts with the window
+    app.processEvents()
+    assert compare.worker is not None and compare.worker.isRunning()
+    compare.reject()  # the X
+    assert not compare.isVisible() and compare.worker in branches._RUNNING  # closed, the download goes on
+    worker = compare.worker
+    release.set()
+    worker.wait(10000)
+    app.processEvents()
+    assert worker not in branches._RUNNING and mine.fetched_at()  # ended by itself: the branches are up to date
+    window = branches.BranchesDialog(mine, {})
+    release.clear()
+    window.fetch()
+    window.accept()  # «Chiudi» too
+    assert not window.isVisible() and window.worker in branches._RUNNING
+    release.set()
+    window.worker.wait(10000)
+    app.processEvents()

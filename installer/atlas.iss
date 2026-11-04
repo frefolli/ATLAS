@@ -18,8 +18,10 @@ DefaultGroupName=ATLAS
 ; The folder and the Start menu group of the earlier versions are not reused (see [InstallDelete]).
 UsePreviousAppDir=no
 UsePreviousGroup=no
-; ATLAS still open during an update: closed by the installer (it closes itself before, after saving).
+; ATLAS still open during an update: closed by the installer (it closes itself before, after saving). Not started
+; again by Windows (Restart Manager): ATLAS is started again by [Run], once, when the installer has finished.
 CloseApplications=force
+RestartApplications=no
 UninstallDisplayName=ATLAS
 UninstallDisplayIcon={app}\ATLAS.exe
 SetupIconFile=..\src\arcadia_tool\resources\atlas.ico
@@ -48,13 +50,26 @@ Name: "desktopicon"; Description: "Crea un'icona sul desktop"; Flags: unchecked
 
 [Run]
 Filename: "{app}\ATLAS.exe"; Description: "Avvia ATLAS"; Flags: nowait postinstall skipifsilent
-; The update started by ATLAS (silent, /RELAUNCH=1): ATLAS opens again when it is installed.
-Filename: "{app}\ATLAS.exe"; Flags: nowait runasoriginaluser; Check: Relaunch
+; The update started by ATLAS (silent, /RELAUNCH=1): ATLAS opens again at the end, see CurStepChanged.
 
 [Code]
 function Relaunch: Boolean;
 begin
   Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;
+
+// The update started by ATLAS: ATLAS opens again when it is installed, a few seconds after the files are in place.
+// Started at once, the files just written could still be held by another process (the antivirus scanning them, the
+// ATLAS closed by the installer still exiting): «DLL load failed … il file è utilizzato da un altro processo».
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if (CurStep = ssDone) and Relaunch then
+  begin
+    Sleep(3000);
+    ExecAsOriginalUser(ExpandConstant('{app}\ATLAS.exe'), '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+  end;
 end;
 
 // The versions up to 0.6.0 could be installed for all the users (in Programmi, with administrator rights): this

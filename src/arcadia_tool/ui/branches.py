@@ -37,6 +37,21 @@ def suggested_name(project, user):
     return f"{BRANCH_PREFIX}{team}-" if team else BRANCH_PREFIX
 
 
+_RUNNING = set()  # downloads left to finish after their window was closed (kept alive until they end)
+
+
+def finish_in_background(worker):
+    """The window is closed while it downloads the branches: the download goes on and ends by itself (the branches
+    of the remote are then up to date), nothing is shown of it."""
+    for signal in (worker.done, worker.failed):
+        try:
+            signal.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+    _RUNNING.add(worker)
+    worker.finished.connect(lambda: _RUNNING.discard(worker))
+
+
 class FetchWorker(QThread):
     done = Signal()
     failed = Signal(str)
@@ -347,19 +362,11 @@ class BranchesDialog(QDialog):
         self.checkout_button.setToolTip("Il modello completo a una versione del ramo selezionato, di questo PC o "
                                         "del repository")
         self.checkout_button.clicked.connect(self.checkout)
-        self.history_button = QPushButton(icon("mdi6.history"), "Cronologia")
-        self.history_button.clicked.connect(self.history)
-        self.compare_working = QPushButton(icon("mdi6.pencil-outline"), "Confronta con il mio stato attuale")
-        self.compare_working.clicked.connect(lambda: self.compare("working"))
-        self.compare_main = QPushButton(icon("mdi6.compare-horizontal"), "Cosa ha cambiato rispetto a main")
-        self.compare_main.setToolTip("Le modifiche del ramo da quando è nato da main (senza quelle entrate nel "
-                                     "frattempo in main)")
-        self.compare_main.clicked.connect(lambda: self.compare("main"))
+        # The versions of a branch: «Versioni Modello» (a double click on the branch opens them).
         close = QPushButton("Chiudi")
         close.clicked.connect(self.reject)
         buttons = QHBoxLayout()
-        for b in (self.switch_button, self.new_button, self.checkout_button, self.history_button,
-                  self.compare_working, self.compare_main):
+        for b in (self.switch_button, self.new_button, self.checkout_button):
             buttons.addWidget(b)
         buttons.addStretch()
         buttons.addWidget(close)
@@ -438,11 +445,7 @@ class BranchesDialog(QDialog):
     def _update(self):
         b = self.selected()
         self.switch_button.setEnabled(b is not None and not b.current)
-        self.history_button.setEnabled(b is not None)
         self.checkout_button.setEnabled(b is not None)
-        self.compare_working.setEnabled(b is not None and not b.current)
-        main = self.project.main_branch()
-        self.compare_main.setEnabled(b is not None and main is not None and b.name != main)
         self.new_button.setEnabled(bool(self.project.branches()))
 
     # --- the repository -------------------------------------------------------------------------------
@@ -518,7 +521,8 @@ class BranchesDialog(QDialog):
             CompareDialog(self.project, before=main_head, after=self._head(b), parent=self, before_branch=main,
                           after_branch=self._key(b), since_common=True).exec()
 
-    def reject(self):
+    def done(self, result):
+        """Closed (X, Esc, «Chiudi»), also while downloading the branches: the download ends by itself."""
         if self.worker is not None and self.worker.isRunning():
-            return  # not while downloading
-        super().reject()
+            finish_in_background(self.worker)
+        super().done(result)

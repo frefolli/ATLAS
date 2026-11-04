@@ -12,6 +12,7 @@ cd "$root"
     --paths src \
     --add-data "Templates:Templates" \
     --add-data "src/arcadia_tool/resources:arcadia_tool/resources" \
+    --add-data "CHANGELOG.md:." \
     src/arcadia_tool/__main__.py
 
 version="$("$python" -c "import sys; sys.path.insert(0, 'src'); import arcadia_tool; print(arcadia_tool.__version__)")"

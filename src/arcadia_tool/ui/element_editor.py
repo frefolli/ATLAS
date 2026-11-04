@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
-                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
+                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from arcadia_tool.checks import CHECKS_BY_CODE, count
 from arcadia_tool.checks.fields import SRS_CARD
@@ -39,6 +40,7 @@ SECTION_ORDER = {"adr": ("Identificazione", ADR_DETAILS, "Relazioni", "Descrizio
 # The texts of the SRS items are those of the specification, imported: plain text, no styles.
 PLAIN_TEXT_KINDS = ("requirement",)
 HEADER = "@header"  # the header card of the sheet, in ElementEditor.widgets
+DISCUSSION = "@discussion"  # the discussion of an ADR or a CQ, in ElementEditor.widgets
 HIGHLIGHT_COLOR = "#F79009"  # the field with the problem found by a check
 HIGHLIGHT_MS = 2500
 
@@ -416,6 +418,7 @@ class ElementEditor(QScrollArea):
     dirty_changed = Signal(bool)  # the draft has (True) or no longer has changes not yet saved
     saved = Signal()  # «Salva»: the changes are in the model, the project is to be saved
     abandoned = Signal(object)  # «Annulla» on an element just created and never saved: it is to be removed
+    discussion_changed = Signal()  # a message of the discussion of the sheet written, changed or hidden (saved)
 
     def __init__(self, srs_edit_mode=None):
         super().__init__()
@@ -434,6 +437,7 @@ class ElementEditor(QScrollArea):
         self.locks_out = None
         # function() → the name of the user if a member of the Design Authority, else None: who approves an ADR
         self.approver = None
+        self.user_of = None  # function() → the account logged in (who writes in the discussions)
         # The element was just created («Nuovo…») and its sheet never saved: «Annulla» removes it.
         self.unsaved_new = False
         self.highlight = None  # frame around the field shown by reveal (removed after a moment)
@@ -656,7 +660,19 @@ class ElementEditor(QScrollArea):
         self.draft = element.copy()
         self.editing = editing and not self.denied()
         self._set_dirty(False)
+        read = self._notification_read()
         self._build()
+        if read:  # the bell and the tree no longer count it
+            QTimer.singleShot(0, self.discussion_changed.emit)
+
+    def _notification_read(self):
+        """An ADR of another team concerning a domain of the team of the user, shown: its notification is read
+        (and the reading recorded in the project)."""
+        from arcadia_tool.model.notifications import adr_opened
+        user = self.user_of() if self.user_of else None
+        if self.element.kind != "adr" or user is None or self.project.model.get(self.element.uuid) is None:
+            return False
+        return adr_opened(self.project, user, self.element)
 
     def _build(self):
         """The page, from the draft (the element with the changes in progress)."""
@@ -745,6 +761,15 @@ class ElementEditor(QScrollArea):
                 continue  # no empty image card on items without a figure
             if f.type in (MAP, TABLE, IMAGE):
                 outer.addWidget(self._field_card(f, element))
+        if element.kind in ("adr", "clarification") and not self.unsaved_new and \
+                self.project.model.get(element.uuid) is not None:  # its discussion (not of a new sheet yet)
+            from arcadia_tool.ui.discussion import DiscussionCard
+            discussion = DiscussionCard(self.project, self.element, self.user_of() if self.user_of else None)
+            discussion.changed.connect(self._discussion_changed)
+            self.widgets[DISCUSSION] = discussion
+            outer.addWidget(discussion)
+            if discussion.new:  # read now: the tree no longer counts them as new
+                QTimer.singleShot(0, self.discussion_changed.emit)
         outer.addStretch()
         if not self.editing:
             self._guard_view_mode(page)
@@ -788,6 +813,10 @@ class ElementEditor(QScrollArea):
         if schema.template:
             top.addWidget(QLabel(f"Template {schema.template}", objectName="badge"))
         top.addStretch()
+        self.seen_button = None  # only an ADR (saved) has it
+        if element.kind == "adr" and self.project.model.get(element.uuid) is not None:
+            self.seen_button = self._seen_button()
+            top.addWidget(self.seen_button)
         status_field = schema.field("status")
         if status_field:
             combo = StatusCombo(status_field.options, element.get("status"))
@@ -882,6 +911,74 @@ class ElementEditor(QScrollArea):
         overlay.raise_()
         self.highlight = overlay
         QTimer(overlay, singleShot=True, interval=HIGHLIGHT_MS, timeout=overlay.deleteLater).start()
+
+    def _seen_button(self):
+        """«Vista da N»: who of the teams the ADR concerns (its destinations, the Design Authority) has read it; a
+        click shows them (see show_readings)."""
+        from arcadia_tool.model.notifications import reading_rows
+        rows, missing = reading_rows(self.project.model, self.element)
+        current = sum(1 for *_r, now in rows if now)
+        button = QToolButton(autoRaise=True, objectName="seenIndicator")
+        button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        if not rows:
+            colour, text = MUTED, "Non ancora vista"
+        else:
+            complete = not missing and current == len(rows)
+            colour, text = ("#166534" if complete else "#92400E"), f"Vista da {len(rows)}"
+        button.setIcon(icon("mdi6.eye-check-outline" if rows else "mdi6.eye-outline", colour))
+        button.setText(text)
+        button.setStyleSheet(f"QToolButton#seenIndicator {{ color: {colour}; border: 1px solid {colour}; "
+                             "border-radius: 10px; padding: 1px 8px; }")
+        button.setToolTip("Chi dei team di destinazione e della Design Authority ha letto l'ADR: clic per i "
+                          "dettagli")
+        button.setProperty("keepEnabled", True)
+        button.clicked.connect(lambda _c=False: self.show_readings())
+        return button
+
+    def show_readings(self):
+        """The popup of the indicator: who read the ADR, when, which version; the teams that have not yet."""
+        from arcadia_tool.model.discussions import when
+        from arcadia_tool.model.notifications import reading_rows
+        model = self.project.model
+        rows, missing = reading_rows(model, self.element)
+        popup = QFrame(self, Qt.Popup)
+        popup.setObjectName("readingsPopup")
+        popup.setStyleSheet("QFrame#readingsPopup { background: white; border: 1px solid #C9D1DC; }")
+        layout = QVBoxLayout(popup)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.addWidget(QLabel("Letture dell'ADR", objectName="formLabel"))
+        for team, member, at, now in rows:
+            team_text = (team.get("id") or model.label(team)) if team is not None else "?"
+            line = QLabel(f"{team_text} · {member or 'membro'} · {when(at)}" +
+                          ("" if now else " · una versione precedente"))
+            line.setToolTip("Ha letto la versione attuale" if now else
+                            "Ha letto una versione precedente: poi l'ADR è cambiata")
+            if not now:
+                line.setStyleSheet("color: #92400E;")
+            layout.addWidget(line)
+        for team in missing:
+            line = QLabel(f"{team.get('id') or model.label(team)} · non ancora letta", objectName="muted")
+            layout.addWidget(line)
+        if not rows and not missing:
+            layout.addWidget(QLabel("Nessun team da cui attendere la lettura.", objectName="muted"))
+        note = QLabel("Registrate quando un membro di un team di destinazione o della Design Authority apre l'ADR: "
+                      "arrivano con le versioni pubblicate.", objectName="muted")
+        note.setWordWrap(True)
+        note.setMaximumWidth(420)
+        layout.addWidget(note)
+        anchor = getattr(self, "seen_button", None)
+        popup.adjustSize()
+        if anchor is not None:
+            popup.move(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+        popup.show()
+        self.readings_popup = popup
+        return popup
+
+    def _discussion_changed(self):
+        """A message saved: the sheet shows the discussion again (the draft of the sheet, if any, is kept)."""
+        self.flush()
+        self._build()
+        self.discussion_changed.emit()
 
     def update_findings(self):
         """The checks were run again: the sheet shows its findings (not while it is being edited)."""

@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         self._domain_refresh_pending = False  # the lists of the domain sheets to draw again (SRS items changed)
         self.tree.element_created.connect(self._just_created.add)
         self.tree.locks_out = self.locks_out
+        self.tree.unread = self.unread_notice
         self.tree.element_selected.connect(self._select)
         self.tree.model_changed.connect(self._model_changed)
         self.tree.srs_reader_requested.connect(self.open_srs_reader)
@@ -196,12 +197,14 @@ class MainWindow(QMainWindow):
                                            QKeySequence("Ctrl+Shift+P"), "Pubblica una nuova versione del modello")
         self.compare_action = self._action("Confronta…", "mdi6.compare-horizontal", self.compare, None,
                                            "Confronta due versioni del modello")
-        self.history_action = self._action("Cronologia", "mdi6.history", self.history, None,
-                                           "Cronologia delle pubblicazioni")
+        self.history_action = self._action("Versioni Modello", "mdi6.history", self.history, None,
+                                           "Le versioni del modello, con quella locale non ancora pubblicata, da "
+                                           "pubblicare o scartare")
         self.branches_action = self._action("Rami…", "mdi6.source-branch", self.show_branches, None,
                                             "Rami del progetto e del repository: nuovo ramo, cambio di ramo, "
                                             "cronologia e confronto")
-        self.close_action = self._action("Chiudi progetto", "mdi6.close", self.close_project)
+        self.close_action = self._action("Chiudi Progetto", "mdi6.close", self.close_project, None,
+                                         "Chiude il progetto aperto (chiede prima delle modifiche non salvate)")
         self.import_action = self._action("Importa SRS…", "mdi6.file-import-outline", self.import_srs, None,
                                           "Importa le voci SRS dai PDF del SUBSET-026")
         self.clean_action = self._action("Pulisci progetto…", "mdi6.broom", self.clean_project, None,
@@ -237,11 +240,14 @@ class MainWindow(QMainWindow):
                                            None, "Dati dell'utente e accesso ai repository Git")
         self.switch_user_action = self._action("Cambia utente…", "mdi6.account-switch-outline", self.switch_user,
                                                None, "Accedi con un altro account locale")
+        self.notifications_action = self._action(
+            "Notifiche", "mdi6.bell-outline", self.open_notifications, None,
+            "Le ADR di altri team che riguardano i domini del tuo team e i messaggi delle loro discussioni")
 
         bar = QToolBar("Principale", movable=False)
         bar.setIconSize(QSize(18, 18))
         bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        for a in (self.new_action, self.open_action, self.save_action):
+        for a in (self.new_action, self.open_action, self.save_action, self.close_action):
             bar.addAction(a)
         bar.addSeparator()  # «Importa SRS…» is in the menu of «Voci SRS» in the tree (and in File)
         bar.addAction(self.check_action)
@@ -255,9 +261,11 @@ class MainWindow(QMainWindow):
         self.profile_action = bar.addWidget(self.profile_combo)
         bar.addAction(self.check_settings_action)
         bar.addSeparator()
-        for a in (self.branches_action, self.publish_action, self.receive_action, self.compare_action,
-                  self.history_action):
+        for a in (self.history_action, self.branches_action, self.publish_action, self.receive_action,
+                  self.compare_action):
             bar.addAction(a)
+        bar.addSeparator()
+        bar.addAction(self.notifications_action)
         self.addToolBar(bar)
 
         file_menu = self.menuBar().addMenu("&File")
@@ -291,12 +299,16 @@ class MainWindow(QMainWindow):
         project_menu.addAction(self.settings_action)
         versions_menu = self.menuBar().addMenu("&Versioni")
         for a in (self.publish_action, self.send_action, self.receive_action, self.compare_action,
-                  self.history_action, self.branches_action):
+                  self.history_action, self.branches_action):  # «Versioni Modello» before «Rami», as in the bar
             versions_menu.addAction(a)
         user_menu = self.menuBar().addMenu("&Utente")
         user_menu.addAction(self.account_action)
         user_menu.addAction(self.switch_user_action)
-        help_menu = self.menuBar().addMenu("&Aiuto")
+        help_menu = self.menuBar().addMenu("&Info")
+        self.version_action = help_menu.addAction(icon("mdi6.information-outline"), "Versione Corrente…",
+                                                  self.show_version)
+        self.version_action.setToolTip("La versione di ATLAS in uso e le novità della sua release")
+        help_menu.addSeparator()
         self.updates_action = help_menu.addAction(icon("mdi6.update"), "Verifica aggiornamenti…",
                                                   lambda: self.updates.start(manual=True))
         self.updates_action.setToolTip("Cerca una nuova versione di ATLAS su GitHub e, se c'è, la installa")
@@ -304,6 +316,13 @@ class MainWindow(QMainWindow):
         self.auto_updates_action.setCheckable(True)
         self.auto_updates_action.setChecked(updates_ui.checks_at_start())
         self.auto_updates_action.toggled.connect(updates_ui.set_checks_at_start)
+
+    def show_version(self):
+        """Info › Versione Corrente: the version of ATLAS and the changes of its release."""
+        from arcadia_tool.ui.about import VersionDialog
+        dialog = VersionDialog(self)
+        dialog.exec()
+        return dialog
 
     def _build_status_bar(self):
         self.status_user = QLabel()
@@ -516,6 +535,61 @@ class MainWindow(QMainWindow):
 
     # --- state -------------------------------------------------------------------------------
 
+    def unread_messages(self, subject):
+        """The messages of the others in the discussion of an ADR or a CQ not seen yet on this PC."""
+        from arcadia_tool.model.discussions import unread_count
+        return unread_count(self.project, subject, self.user) if self.project is not None else 0
+
+    def unread_notice(self, subject):
+        """What the tree shows of an ADR or a CQ: (something to look at: its notification unread or new messages, the
+        number of its new messages)."""
+        from arcadia_tool.model.notifications import collect
+        if self.project is None:
+            return False, 0
+        count = self.unread_messages(subject)
+        pending = subject.kind == "adr" and self.user is not None and any(
+            x.subject == subject.uuid and x.unread and x.message is None for x in collect(self.project, self.user))
+        return pending or bool(count), count
+
+    # --- notifications ---------------------------------------------------------------------------------
+
+    def _show_notifications_count(self):
+        """The bell: how many notifications are unread."""
+        from arcadia_tool.model.notifications import DA, MESSAGES, TEAM, unread_by_scope, unread_count
+        count = unread_count(self.project, self.user) if self.project is not None and self.user else 0
+        self.notifications_action.setText(f"Notifiche ({count})" if count else "Notifiche")
+        self.notifications_action.setIcon(icon("mdi6.bell-badge", ACCENT) if count else icon("mdi6.bell-outline"))
+        tip = "Le ADR di altri team che riguardano i domini del tuo team e i messaggi delle loro discussioni"
+        if count:
+            by = unread_by_scope(self.project, self.user)
+            tip = (f"Non lette: {by[TEAM]} per il tuo team" + (f", {by[DA]} come Design Authority" if by[DA] else "")
+                   + f", {by[MESSAGES]} messaggi")
+        self.notifications_action.setToolTip(tip)
+
+    def open_notifications(self):
+        from arcadia_tool.ui.notifications import NotificationsDialog
+        if not self.project:
+            return None
+        dialog = NotificationsDialog(self.project, self.user, self)
+        dialog.open_requested.connect(self._open_finding)
+        dialog.exec()
+        self._discussion_changed()
+        return dialog
+
+    def alert_notifications(self, after=""):
+        """The explicit alert of the notifications unread (after the opening of the project, after «Ricevi»)."""
+        from arcadia_tool.ui.notifications import alert
+        if self.project is None or self.user is None:
+            return None
+        self._notifications_alert = alert(self, self.project, self.user, self.open_notifications, after)
+        return self._notifications_alert
+
+    def _discussion_changed(self):
+        """A message written, changed or hidden (and saved): the tree shows the new messages, the state the
+        changes to publish."""
+        self.tree.refresh_unread()
+        self._refresh_state()
+
     def _refresh_state(self):
         has_project = self.project is not None
         modified = has_project and self.project.is_modified
@@ -524,8 +598,10 @@ class MainWindow(QMainWindow):
         for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
                   self.close_action, self.import_action, self.settings_action, self.send_action,
                   self.reload_action, self.migrate_action, self.check_action, self.check_settings_action,
-                  self.receive_action, self.branches_action, self.sheets_action, self.sheets_settings_action):
+                  self.receive_action, self.branches_action, self.sheets_action, self.sheets_settings_action,
+                  self.notifications_action):
             a.setEnabled(has_project)
+        self._show_notifications_count()
         user = self.user.full_name if self.user else "nessuno"
         da = design_authority(self.project.model) if has_project else None
         teams = memberships(self.project.model, self.user) if has_project and self.user else []
@@ -713,13 +789,16 @@ class MainWindow(QMainWindow):
             if self.project is not None:
                 self.statusBar().showMessage(f"Progetto scaricato in {dialog.path}", 6000)
 
-    def open_project(self, path, confirmed=False, restore=None):
+    def open_project(self, path, confirmed=False, restore=None, alert=True):
+        """alert: the notifications unread are told at once (not after «Ricevi», which tells them itself)."""
         if not confirmed and not self._confirm_discard():
             return
         self._denied = None
         loading = LoadingDialog(path, self._open_loaded, self)
         if loading.exec() and self._denied is None:
             self.offer_recovery(restore)
+            if alert:
+                self.alert_notifications()
         elif self._denied is not None:
             show_access_denied(self, self._denied, self.user)
         elif loading.error:
@@ -889,6 +968,8 @@ class MainWindow(QMainWindow):
         editor.edit_denied = self.edit_denied
         editor.locks_out = self.locks_out
         editor.approver = self.da_name
+        editor.user_of = lambda: self.user
+        editor.discussion_changed.connect(self._discussion_changed)
         return editor
 
     def _save_local(self, page):
@@ -1219,6 +1300,8 @@ class MainWindow(QMainWindow):
             self.item_window.editor.edit_denied = self.edit_denied
             self.item_window.editor.locks_out = self.locks_out
             self.item_window.editor.approver = self.da_name
+            self.item_window.editor.user_of = lambda: self.user
+            self.item_window.editor.discussion_changed.connect(self._discussion_changed)
         self.item_window.show_element(self.project, element)
 
     def _reader_changed(self, elements):
@@ -1558,7 +1641,7 @@ class MainWindow(QMainWindow):
             return
         path, result = self.project.path, dialog.result
         self._set_project(None)  # its files changed
-        self.open_project(str(path), confirmed=True)
+        self.open_project(str(path), confirmed=True, alert=False)
         if self.project is None:
             return
         if result.renumbered:
@@ -1566,7 +1649,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Ricevi dal repository",
                                     "Alcuni identificativi dati qui erano già usati nelle versioni ricevute e sono "
                                     f"stati rinumerati:\n\n{lines}")
-        self.statusBar().showMessage(f"Versioni ricevute dal ramo «{self.project.push_branch()}»", 6000)
+        from arcadia_tool.model.discussions import SUBJECTS
+        waiting = [n for s in self.project.model.of_kind(*SUBJECTS) for n in [self.unread_messages(s)] if n]
+        news = (f" · {sum(waiting)} {'nuovo messaggio' if sum(waiting) == 1 else 'nuovi messaggi'} in "
+                f"{len(waiting)} {'discussione' if len(waiting) == 1 else 'discussioni'}" if waiting else "")
+        self.statusBar().showMessage(f"Versioni ricevute dal ramo «{self.project.push_branch()}»{news}", 10000)
+        self.alert_notifications(f"Versioni ricevute dal ramo «{self.project.push_branch()}»")
         if dialog.merged and QMessageBox.question(
                 self, "Ricevi dal repository", "Le versioni sono state integrate in una nuova versione. Inviarla "
                 "ora al repository?") == QMessageBox.Yes:
@@ -1607,8 +1695,28 @@ class MainWindow(QMainWindow):
             self._flush_editors()
             dialog = HistoryDialog(self.project, self, user=self.user)
             dialog.exec()
-            if dialog.request is not None:
+            if dialog.request == ("publish",):
+                self.publish()
+            elif dialog.request == ("discard",):
+                self.discard_local_changes()
+            elif dialog.request is not None:
                 self.branch_request(dialog.request)
+
+    def discard_local_changes(self):
+        """«Scarta le modifiche locali» of the versions: the model goes back to the last version published of the
+        branch (the sheets and the views in edit mode too); the project is opened again."""
+        if not self.project or not self.project.versions():
+            return False
+        for editor in self._unsaved_editors():  # their drafts go with the rest
+            editor.cancel_changes(ask=False)
+        path = self.project.path
+        self.project.discard_unpublished()
+        self._set_project(None)  # its files changed
+        self.open_project(str(path), confirmed=True, alert=False)
+        if self.project is not None:
+            self.statusBar().showMessage("Modifiche locali scartate: il modello è all'ultima versione pubblicata",
+                                         8000)
+        return True
 
     def show_branches(self):
         """Versioni › Rami: the branches of the project; a new one, or another one, is then taken here."""

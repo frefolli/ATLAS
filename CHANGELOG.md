@@ -6,6 +6,118 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.9.0] - 2026-11-04
+
+### Aggiunto
+- **Pubblicazione selettiva.** Nella finestra «Pubblica» ogni modifica ha una spunta, e si pubblicano solo quelle
+  spuntate. Ciò che resta fuori rimane come modifica locale, da pubblicare dopo.
+  - **Dipendenze:** la versione pubblicata non fa mai riferimento a un elemento che non contiene.
+    - Un elemento nuovo, o modificato, che usa un elemento nuovo si pubblica con lui. Ad esempio, una funzione
+      nuova in un dominio nuovo.
+    - L'eliminazione di un elemento si pubblica con le modifiche degli elementi che lo citavano.
+    - Togliendo la spunta a una modifica si tolgono anche quelle che ne dipendono; spuntandone una si spuntano
+      quelle che le servono. Una nota sotto l'elenco dice cosa è stato escluso o aggiunto e perché.
+  - **Allegati e impostazioni:** gli allegati seguono gli elementi pubblicati, ad esempio il file di un messaggio
+    si pubblica con il messaggio. Le impostazioni condivise del progetto si possono lasciare fuori con la loro
+    spunta.
+  - **Ingrandimento:** la finestra «Pubblica», come quelle delle versioni, del confronto e delle modifiche prima
+    di «Ricevi», si può ingrandire.
+- **Versione locale in «Versioni Modello».** Il pulsante «Cronologia» si chiama ora «Versioni Modello». Sul ramo in
+  uso la finestra mostra, in cima alle versioni pubblicate, la riga «Versione locale» con le modifiche di questo PC
+  non ancora pubblicate, ad esempio «2 modifiche non pubblicate (1 non ancora salvate)».
+  - **Doppio clic:** le mostra, a confronto con l'ultima versione pubblicata.
+  - **Pubblica…:** ne fa una nuova versione.
+  - **Scarta le modifiche locali…:** dopo una conferma, riporta il modello all'ultima versione pubblicata del ramo
+    in uso. Toglie tutto ciò che non ne fa parte: modifiche salvate e non salvate, schede in modifica, elementi
+    nuovi (anche letture e messaggi) e allegati, compresi i file comparsi sul disco nel frattempo. Senza versioni
+    pubblicate non c'è nulla a cui tornare, e il pulsante resta disattivato.
+- **Discussione delle ADR e delle richieste di chiarimento (CQ).** In fondo alla scheda di ogni ADR e di ogni CQ, i
+  membri dei team scrivono messaggi in fila, ciascuno con autore, team e data.
+  - **Scrittura:**
+    - con «Rispondi» un messaggio cita quello a cui risponde;
+    - il testo accetta la formattazione Markdown;
+    - chi è in più team sceglie per quale scrive.
+  - **Allegati:** file fino a 20 MB, salvati nel progetto, da aprire o salvare con nome.
+  - **Salvataggio:** il messaggio si salva subito, da solo, anche con la scheda in sola lettura o con modifiche in
+    corso, che non vengono salvate con lui. Arriva ai colleghi con «Pubblica» e «Invia», e per loro con «Ricevi».
+    Ogni messaggio è un file a sé, quindi due messaggi scritti in contemporanea su due rami si uniscono senza
+    conflitti.
+  - **Messaggi nuovi:**
+    - nell'albero ogni ADR e CQ mostra quanti messaggi degli altri non sono ancora stati letti su questo PC;
+    - aprendo la scheda diventano letti;
+    - dopo «Ricevi», la barra di stato dice quanti messaggi nuovi sono arrivati e in quante discussioni;
+    - nella discussione i messaggi nuovi e quelli non ancora pubblicati sono indicati come tali.
+  - **Regole:**
+    - l'autore modifica o elimina i propri messaggi; un messaggio eliminato resta come «messaggio eliminato»,
+      senza testo né allegati;
+    - la Design Authority può nascondere un messaggio agli altri;
+    - la discussione si chiude, e resta in sola lettura, quando la DA approva l'ADR o quando la CQ è chiusa;
+    - eliminando un'ADR o una CQ si elimina anche la sua discussione.
+
+- **Notifiche delle ADR ai team di destinazione.** Quando un team propone un'ADR che coinvolge come destinazione un
+  dominio di un altro team, tutti i membri di quel team ricevono una notifica.
+  - **Destinazione:** cosa conta come destinazione dipende dal tipo di ADR, ad esempio il dominio principale o i
+    contributori proposti per una riallocazione, il dominio proposto per lo spostamento di una funzione, i domini
+    da fondere o il team proposto. Chi propone non riceve notifiche sulla propria ADR.
+  - **Eventi:** l'ADR creata (se aperta), modificata in qualsiasi campo (con i campi cambiati) ed eliminata. Se la
+    destinazione passa a un altro team, la notifica lo segue. Il pannello raccoglie anche i messaggi nuovi delle
+    discussioni che riguardano l'utente.
+  - **Dove si vedono:**
+    - la campanella «Notifiche (N)» nella barra in alto apre il pannello delle notifiche, dove si aprono, si segnano
+      come lette o di nuovo come non lette, per riesaminarle. La colonna «Stato» dice «Letta» se l'hai aperta su
+      questo PC e «Nuova» se non l'hai ancora aperta o l'hai rimessa come non letta (le letture dei colleghi, anche
+      dello stesso team, non contano). Cosa è successo (modificata, eliminata, un messaggio) è nel dettaglio; il
+      pallino e il grassetto segnano ciò che è da vedere, anche una «Letta» cambiata dopo la lettura;
+    - all'apertura del progetto e dopo «Ricevi» un avviso dice quante notifiche ci sono da leggere;
+    - nell'albero un pallino blu a sinistra dell'ADR o della CQ segnala che c'è qualcosa da vedere (la notifica o
+      messaggi nuovi, di cui è indicato il numero) e sparisce quando l'hai vista.
+  - **Lettura:** aprire l'ADR ne segna la notifica come letta. Lo stato di lettura resta su questo PC, ma la lettura
+    viene registrata anche nel progetto, con il membro, il team e la versione letta. Nella testata della scheda
+    dell'ADR, accanto allo stato, un indicatore dice «Non ancora vista» o «Vista da N». È verde quando tutti i team
+    attesi hanno letto la versione attuale, ambra altrimenti. Un clic apre un riquadro con chi ha letto, quando, se
+    ha letto la versione attuale, e i team che non l'hanno ancora letta. Ogni lettura è un file a sé, quindi le
+    letture fatte su rami diversi non vanno in conflitto.
+  - **Nessun server:** le notifiche sono calcolate dal modello. Arrivano con l'ADR (Pubblica, Invia, Ricevi) e
+    funzionano senza rete.
+  - **Design Authority:** i suoi membri ricevono la notifica di ogni ADR, di qualsiasi team, tranne quelle aperte
+    dalla DA stessa, cioè proposte dal team DA o da un suo membro. Per loro il dettaglio dice chi propone, verso
+    quali domini e team, e lo stato, ad esempio «Proposta da T3 · verso DF04 (T2) · In revisione DA». La loro
+    lettura viene registrata con il team DA, e l'indicatore della scheda segnala se la DA non l'ha ancora letta.
+  - **Pannello diviso per motivo:** le notifiche sono separate in schede, ciascuna con le non lette, cioè «Tutte»,
+    «Il mio team», «Design Authority» (solo per i suoi membri) e «Messaggi». Anche l'avviso e il suggerimento della
+    campanella distinguono le notifiche per il proprio team, quelle da esaminare come DA e i messaggi.
+  - **Prestazioni:** le notifiche si calcolano una volta per ogni stato del progetto e di ciò che è stato letto, e
+    campanella, albero e pannello riusano il risultato. Su un progetto con 44 ADR l'aggiornamento dell'albero passa
+    da circa 3,5 s a meno di 20 ms. Anche l'elenco dei file pubblicati, usato dalle discussioni, si legge una volta
+    per versione.
+
+### Modificato
+- **Menu «Info» e «Chiudi Progetto».** Il menu «Aiuto» si chiama «Info» e ha la nuova voce «Versione Corrente…», che
+  mostra la versione di ATLAS in uso e le novità della sua release (il CHANGELOG è incluso nell'installazione).
+  Nella barra in alto, accanto a «Salva», c'è il pulsante «Chiudi Progetto».
+- **Barra in alto e finestra Rami.** «Versioni Modello» viene prima di «Rami». La finestra Rami non ha più i
+  pulsanti «Cronologia», «Confronta con il mio stato attuale» e «Cosa ha cambiato rispetto a main»: le versioni di
+  un ramo sono in «Versioni Modello», e il doppio clic su un ramo le apre.
+  Anche «Versioni Modello» non ha più i pulsanti di confronto: si confronta con «Confronta» della barra in
+  alto, e il doppio clic su una versione, o su quella locale, mostra cosa ha cambiato.
+- **Avviso delle notifiche.** All'apertura del progetto e dopo «Ricevi» dice solo quante notifiche ci sono da
+  leggere, per tipo, e chiede se aprire le Notifiche, senza elencarle.
+
+### Corretto
+- **Chiusura delle finestre Confronta e Rami durante il download dei rami.** La finestra «Confronta» scarica i
+  rami del repository appena si apre, e finché il download era in corso la X (ed Esc) non la chiudevano: con
+  una rete lenta restava aperta. Ora si chiude subito, come la finestra Rami durante «Aggiorna dal
+  repository»; il download finisce da solo in background e aggiorna i rami.
+- **Eliminazione di un'ADR di esclusione.** Eliminando un'ADR «Esclusione di sezione o clausola», durante la sessione
+  veniva tolta dal modello l'ultima voce SRS esclusa al posto dell'ADR, che restava visibile. Su disco veniva
+  cancellato il file dell'ADR, quindi alla riapertura del progetto tutto tornava a posto. Ora l'ADR si elimina
+  subito e le voci restano.
+- **Riavvio dopo l'aggiornamento automatico.** Alla fine dell'installazione ATLAS veniva riaperto subito, mentre
+  l'installer stava ancora chiudendo il lavoro. Su alcuni PC le librerie appena installate erano ancora bloccate e
+  compariva l'errore «DLL load failed while importing QtWidgets: … il file è utilizzato da un altro processo»,
+  anche se l'aggiornamento era riuscito. Ora ATLAS si riapre una volta sola, qualche secondo dopo la fine
+  dell'installazione, e Windows non lo riavvia per conto suo.
+
 ## [0.8.0] - 2026-11-02
 
 ### Aggiunto
@@ -596,7 +708,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.8.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.0...main
+[0.9.0]: https://github.com/salvodesi/ATLAS/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/salvodesi/ATLAS/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/salvodesi/ATLAS/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/salvodesi/ATLAS/compare/v0.5.0...v0.6.0

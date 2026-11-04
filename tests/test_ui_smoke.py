@@ -201,7 +201,7 @@ def test_project_menu_cleans_the_project(app, tmp_path, monkeypatch, choice):
     assert menus[:2] == ["&File", "&Progetto"]
     project_menu = window.menuBar().actions()[1].menu()
     assert [a.text() for a in project_menu.actions() if a.text()] == [
-        "Chiudi progetto", "Pulisci progetto…", "Rimuovi tutte le voci SRS…", "Ricarica dal repository…",
+        "Chiudi Progetto", "Pulisci progetto…", "Rimuovi tutte le voci SRS…", "Ricarica dal repository…",
         "Migra repository…", "Verifica modello", "Impostazioni verifiche…", "Genera", "Impostazioni…"]
     generate_menu = next(a.menu() for a in project_menu.actions() if a.text() == "Genera")
     assert [a.text() for a in generate_menu.actions()] == ["Schede Arcadia", "Impostazioni…"]
@@ -256,7 +256,7 @@ def test_publish_and_compare_compute_the_diff_on_request(app, tmp_path, diff_cal
     preset = versions.CompareDialog(project, v1, versions.WORKING)
     assert len(diff_calls) == calls_before + 2
     history = versions.HistoryDialog(project)
-    assert history.table.rowCount() == 1
+    assert history.table.rowCount() == 2 and history.local  # the version published, the local one (the function)
     project.close()
 
 

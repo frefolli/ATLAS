@@ -154,6 +154,11 @@ def test_an_adr_of_earlier_versions_with_one_clause_is_migrated_and_deleting_it_
     assert e["c1"].get("excluded_domains") == [e["d1"].uuid]
     p.delete_element(adr.uuid)
     assert not e["c1"].get("excluded_domains") and e["c1"].uuid in p.pending()
+    # The ADR is what goes, the SRS item stays (the loop over the items once removed the last one instead).
+    assert p.model.get(adr.uuid) is None and p.model.get(e["c1"].uuid) is e["c1"]
+    p.save()
+    reopened = Project.open(p.path)
+    assert reopened.model.get(adr.uuid) is None and reopened.model.get(e["c1"].uuid) is not None
 
 
 def test_the_domain_sheet_lists_the_exclusions_one_after_the_other(app, tmp_path, monkeypatch):

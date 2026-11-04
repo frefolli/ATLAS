@@ -20,11 +20,14 @@ def app():
 
 
 def captions(editor):
-    return [l.text() for l in editor.widget().findChildren(QLabel) if l.objectName() == "sectionCaption"]
+    """The sections of the fields of the sheet (not its discussion, the same for every type)."""
+    return [l.text() for l in editor.widget().findChildren(QLabel) if l.objectName() == "sectionCaption"
+            and not l.text().upper().startswith("DISCUSSIONE")]
 
 
 def shown_fields(editor):
-    return {name for name in editor.widgets}
+    from arcadia_tool.ui.element_editor import DISCUSSION
+    return {name for name in editor.widgets if name != DISCUSSION}
 
 
 def test_every_type_has_its_own_fields_and_they_are_in_its_template():
