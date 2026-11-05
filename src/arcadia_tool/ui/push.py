@@ -11,6 +11,10 @@ DIVERGED = ("Il ramo «{branch}» del repository contiene versioni che non hai a
             "questo PC.")
 
 
+def _branches(names):
+    return ", ".join(f"«{n}»" for n in names)
+
+
 class PushWorker(QThread):
     done = Signal(str)  # the branch
     failed = Signal(str)
@@ -45,7 +49,11 @@ class PushDialog(_Centered):
         url, branch = project.remote(), project.push_branch()
         count = len(project.unsent_versions())
         title = QLabel(f"Invio al ramo «{branch}» di {git_host(url) or url}", objectName="cardTitle")
-        detail = QLabel(f"{count} {'versione' if count == 1 else 'versioni'} da inviare · {url}", objectName="muted")
+        doomed = project.branches_to_delete()
+        detail = QLabel(f"{count} {'versione' if count == 1 else 'versioni'} da inviare"
+                        + (f" · {_branches(doomed)} da cancellare dal repository (integrat"
+                           + ("o" if len(doomed) == 1 else "i") + ")" if doomed else "") + f" · {url}",
+                        objectName="muted")
         detail.setWordWrap(True)
         self.status = QLabel("Connessione al repository…", objectName="muted")
         self.status.setWordWrap(True)
@@ -95,7 +103,14 @@ class PushDialog(_Centered):
         self.bar.setRange(0, 1)
         self.bar.setValue(1)
         self.status.setStyleSheet("color: #166534;")
-        self.status.setText(f"Invio completato: il ramo «{branch}» del repository è aggiornato.")
+        text = f"Invio completato: il ramo «{branch}» del repository è aggiornato."
+        deleted, kept = getattr(self.project, "deleted_branches", []), getattr(self.project, "kept_branches", [])
+        if deleted:
+            text += f" Cancellat{'o' if len(deleted) == 1 else 'i'} dal repository: {_branches(deleted)}."
+        if kept:
+            text += (f" Non cancellat{'o' if len(kept) == 1 else 'i'}: {_branches(kept)}, perché nel frattempo vi "
+                     "sono state inviate versioni non integrate.")
+        self.status.setText(text)
         self.close_button.setEnabled(True)
         self.close_button.setFocus()
 

@@ -116,6 +116,14 @@ class PublishDialog(QDialog):
         self.note.setWordWrap(True)
         self._where()
         info_layout.addWidget(self.note)
+        self.denied = project.main_denied(user)
+        if self.denied:  # the main branch: only the Design Authority publishes on it; the others on a new branch
+            self.on_current.setEnabled(False)
+            self.on_current.setToolTip(self.denied)
+            self.on_new.setChecked(True)
+            denied = QLabel(self.denied, styleSheet="color: #B42318;")
+            denied.setWordWrap(True)
+            info_layout.addWidget(denied)
         info_layout.addWidget(self._checks_summary(project))
 
         if versions and remote:  # where the last version is: on the repository or only here
@@ -228,8 +236,11 @@ class PublishDialog(QDialog):
         where = (f"e inviata al ramo «{branch}»{new} del repository {remote}" if remote else
                  f"sul ramo «{branch}»{new}, su questo PC (nessun repository remoto: impostalo in Progetto › "
                  "Impostazioni › Repository Git)")
+        doomed = self.project.branches_to_delete() if remote else []
+        also = (" Con l'invio vengono cancellati dal repository i rami integrati e cancellati: "
+                + ", ".join(f"«{n}»" for n in doomed) + "." if doomed else "")
         self.note.setText(f"La versione viene registrata nella cronologia del progetto {where}. Le modifiche non "
-                          "ancora salvate vengono salvate prima della pubblicazione.")
+                          f"ancora salvate vengono salvate prima della pubblicazione.{also}")
 
     def _publish(self):
         message = self.message.toPlainText().strip()
@@ -239,6 +250,9 @@ class PublishDialog(QDialog):
             return
         if not name or "@" not in email:
             QMessageBox.warning(self, "Pubblica versione", "Indica nome ed e-mail dell'autore.")
+            return
+        if self.denied and not self.on_new.isChecked():
+            QMessageBox.warning(self, "Pubblica versione", self.denied)
             return
         new_branch = self.new_branch.text().strip() if self.on_new.isChecked() else None
         if self.on_new.isChecked():

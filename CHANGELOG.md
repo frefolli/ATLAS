@@ -6,6 +6,40 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.9.1] - 2026-11-05
+
+### Aggiunto
+- **Integrazione dei rami in ATLAS.** Nella finestra *Versioni › Rami*, «Integra nel ramo in uso…» unisce le
+  versioni del ramo selezionato in quello in uso, con la stessa unione di «Ricevi»: per scheda e per campo, con gli
+  identificativi automatici doppi rinumerati e le tracciature riallineate. È l'alternativa all'unione con Git, che
+  unisce i file riga per riga e non sa né rinumerare né riallineare le tracciature.
+  - **Anteprima e annullamento:** la finestra mostra il modello del ramo in uso prima e dopo l'integrazione, come
+    «Pubblica». Quello che si unisce da solo è già unito; restano da scegliere solo i conflitti, e l'anteprima segue
+    le scelte. «Annulla integrazione» chiude senza cambiare nulla.
+  - **Cancellazione del ramo integrato:** dopo l'integrazione ATLAS chiede se cancellare il ramo integrato. Il ramo
+    sparisce subito da questo PC e dalla finestra Rami, e dal repository con il prossimo invio. «Pubblica» e
+    «Invia» lo indicano. Se nel frattempo un collega vi ha inviato versioni non integrate, il ramo resta sul
+    repository e l'invio lo segnala. Il ramo principale non si cancella.
+  - **Rami senza storia in comune**, cioè progetti nati separatamente: non si integrano, perché raddoppierebbero
+    voci SRS, domini, funzioni e team. La finestra lo spiega.
+  - **Unioni fatte con Git:** le unioni fatte da ATLAS sono marcate nel messaggio della versione. Se fra le versioni
+    ricevute o integrate c'è un'unione fatta fuori da ATLAS, un avviso invita a eseguire «Verifica modello»
+    (GEN-02, ID duplicati).
+- **Ramo principale riservato alla Design Authority.** Il ramo principale (master o main) lo modifica solo la DA:
+  pubblicare, inviare, integrare (anche con «Ricevi») e riportarlo a una versione con il checkout forzato. Chi non è
+  della DA lavora su un ramo suo, che la DA poi integra; può sempre integrare il ramo principale nel proprio, per
+  aggiornarlo. Finché il team DA non ha membri, il ramo principale lo modifica chiunque.
+  - **Pubblica:** sul ramo principale è disattivata la scelta del ramo in uso; la versione va su un nuovo ramo.
+  - **Invia e Ricevi:** se ci sono versioni non inviate sul ramo principale, ATLAS propone «Sposta le mie versioni
+    su un nuovo ramo…»: le versioni passano a un ramo nuovo, da inviare, e il ramo principale torna come sul
+    repository.
+
+### Modificato
+- **Tracciature riallineate dopo ogni unione.** Dopo «Ricevi» e «Integra», le schede unite campo per campo
+  riapplicano le regole delle schede collegate, come quando la modifica si fa nella scheda: il team di un dominio e
+  i domini del team, le funzioni di un record SA-3 e le loro voci SRS, le esclusioni. Ad esempio, se un ramo
+  assegna un dominio a FBK e l'altro a UniMiB e si sceglie FBK, UniMiB non lo elenca più tra i suoi.
+
 ## [0.9.0] - 2026-11-04
 
 ### Aggiunto
@@ -708,7 +742,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.1...main
+[0.9.1]: https://github.com/salvodesi/ATLAS/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/salvodesi/ATLAS/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/salvodesi/ATLAS/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/salvodesi/ATLAS/compare/v0.6.0...v0.7.0

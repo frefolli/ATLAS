@@ -3,9 +3,9 @@ those of this PC (see storage.merge). What both changed in different ways is cho
 import re
 
 import yaml
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QProgressBar, QPushButton,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout)
+                               QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from arcadia_tool.accounts import git_host
 from arcadia_tool.model.element import Model
@@ -25,32 +25,38 @@ class ReceiveWorker(QThread):
     done = Signal(object)  # the Receive
     failed = Signal(str)
 
-    def __init__(self, project, credentials):
+    def __init__(self, project, credentials, prepare=None):
         super().__init__()
-        self.project, self.credentials = project, credentials
+        self.project, self.credentials, self.prepare = project, credentials, prepare
 
     def run(self):
         try:
-            self.done.emit(self.project.prepare_receive(**self.credentials))
+            self.done.emit(self.prepare() if self.prepare else self.project.prepare_receive(**self.credentials))
         except Exception as exc:
-            self.failed.emit(f"Ricezione non riuscita: {exc or exc.__class__.__name__}")
+            self.failed.emit(f"Operazione non riuscita: {exc or exc.__class__.__name__}")
 
 
 class ReceiveDialog(QDialog):
     """applied: the versions were received (the project must be opened again); merged: a version of integration
-    was recorded (to send); publish_first: the user asked to publish the changes of this PC first."""
+    was recorded (to send); publish_first: the user asked to publish the changes of this PC first.
+    integrate: (branch, version): Rami › Integra, the branch integrated into the one in use (same merge)."""
 
-    def __init__(self, project, credentials, author=None, parent=None):
+    def __init__(self, project, credentials, author=None, parent=None, integrate=None, user=None):
         super().__init__(parent)
-        self.project, self.credentials, self.author = project, credentials, author
+        self.project, self.credentials, self.author, self.user = project, credentials, author, user
+        self.integrate = integrate
+        self.moved_to = None  # «Sposta su un nuovo ramo»: the branch the versions of this PC went to
         self.receive, self.worker, self._lookup = None, None, None
         self.applied = self.merged = self.publish_first = False
         self.result = None
-        self.setWindowTitle("Ricevi dal repository")
+        self.setWindowTitle("Integra ramo" if integrate else "Ricevi dal repository")
         self.resize(980, 380)
         url, branch = project.remote(), project.push_branch()
-        title = QLabel(f"Ricezione dal ramo «{branch}» di {git_host(url) or url}", objectName="cardTitle")
-        self.status = QLabel("Connessione al repository…", objectName="muted")
+        title = QLabel(f"Integrazione del ramo «{integrate[0]}» nel ramo in uso «{project.current_branch()}»"
+                       if integrate else f"Ricezione dal ramo «{branch}» di {git_host(url) or url}",
+                       objectName="cardTitle")
+        self.status = QLabel("Preparazione dell'integrazione…" if integrate else "Connessione al repository…",
+                             objectName="muted")
         self.status.setWordWrap(True)
         self.bar = QProgressBar()
         self.bar.setRange(0, 0)
@@ -76,6 +82,10 @@ class ReceiveDialog(QDialog):
         self.retry.clicked.connect(self.start)
         self.publish_button = QPushButton(icon("mdi6.cloud-upload-outline"), "Pubblica le modifiche…")
         self.publish_button.clicked.connect(self._publish_first)
+        self.move_button = QPushButton(icon("mdi6.source-branch-plus"), "Sposta le mie versioni su un nuovo ramo…")
+        self.move_button.setToolTip("Le tue versioni non inviate passano a un nuovo ramo, da inviare; il ramo "
+                                    "principale torna come sul repository. La DA integrerà poi il tuo ramo.")
+        self.move_button.clicked.connect(self._move_to_branch)
         self.apply_button = QPushButton(icon("mdi6.cloud-download-outline", "white"), "Ricevi")
         self.apply_button.setProperty("primary", True)
         self.apply_button.clicked.connect(self.apply)
@@ -85,14 +95,44 @@ class ReceiveDialog(QDialog):
         buttons.addWidget(self.all_ours)
         buttons.addWidget(self.all_theirs)
         buttons.addStretch()
-        for b in (self.retry, self.publish_button, self.close_button, self.apply_button):
+        for b in (self.retry, self.publish_button, self.move_button, self.close_button, self.apply_button):
             buttons.addWidget(b)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(10)
         for w in (title, self.bar, self.status, self.versions):
             layout.addWidget(w)
-        layout.addWidget(self.conflicts, 1)
+        # Integra: the preview of the result (the branch in use → after the merge, as in «Pubblica»), over the
+        # conflicts left to the user; it follows the choices.
+        self.preview = self.preview_view = None
+        self._preview_timer = QTimer(self, singleShot=True, interval=300)
+        self._preview_timer.timeout.connect(self._refresh_preview)
+        self.conflicts_title = QLabel(objectName="formLabel")
+        self.conflicts_title.setVisible(False)
+        if integrate:
+            from arcadia_tool.ui.versions import maximizable
+            maximizable(self)
+            self.resize(1240, 800)
+            self.apply_button.setText("Integra")
+            self.apply_button.setIcon(icon("mdi6.source-merge", "white"))
+            self.close_button.setText("Annulla integrazione")
+            self.close_button.setToolTip("Chiude senza integrare: il progetto non cambia")
+            self.preview = QWidget()
+            self.preview.setLayout(QVBoxLayout())
+            self.preview.layout().setContentsMargins(0, 0, 0, 0)
+            self.preview.setVisible(False)
+            lower = QWidget()
+            lower_layout = QVBoxLayout(lower)
+            lower_layout.setContentsMargins(0, 0, 0, 0)
+            lower_layout.addWidget(self.conflicts_title)
+            lower_layout.addWidget(self.conflicts, 1)
+            splitter = QSplitter(Qt.Vertical)
+            splitter.addWidget(self.preview)
+            splitter.addWidget(lower)
+            splitter.setSizes([520, 220])
+            layout.addWidget(splitter, 1)
+        else:
+            layout.addWidget(self.conflicts, 1)
         layout.addLayout(buttons)
         self._buttons()
 
@@ -105,13 +145,15 @@ class ReceiveDialog(QDialog):
         self.bar.setVisible(True)
         self.status.setStyleSheet(f"color: {MUTED};")
         self.status.setText("Download delle versioni del ramo…")
-        self.worker = ReceiveWorker(self.project, self.credentials)
+        prepare = (lambda: self.project.prepare_integration(*self.integrate)) if self.integrate else None
+        self.worker = ReceiveWorker(self.project, self.credentials, prepare)
         self.worker.done.connect(self.show_receive)
         self.worker.failed.connect(self._failed)
         self.worker.start()
 
-    def _buttons(self, apply=False, conflicts=False, retry=False, publish=False):
+    def _buttons(self, apply=False, conflicts=False, retry=False, publish=False, move=False):
         self.apply_button.setVisible(apply)
+        self.move_button.setVisible(move)
         self.all_ours.setVisible(conflicts)
         self.all_theirs.setVisible(conflicts)
         self.retry.setVisible(retry)
@@ -132,9 +174,23 @@ class ReceiveDialog(QDialog):
             self.worker.wait()
         self.receive = receive
         self.bar.setVisible(False)
-        branch = receive.branch
+        branch, into = receive.branch, receive.into
         if receive.state == Receive.UP_TO_DATE:
-            self.status.setText(f"Nessuna nuova versione sul ramo «{branch}»: il progetto è aggiornato.")
+            self.status.setText(f"Il ramo in uso «{into}» contiene già tutte le versioni di «{branch}»: nulla da "
+                                "integrare." if into else
+                                f"Nessuna nuova versione sul ramo «{branch}»: il progetto è aggiornato.")
+            return
+        if receive.state == Receive.UNRELATED:
+            self.status.setStyleSheet("color: #B42318;")
+            self.status.setText(f"I rami «{branch}» e «{into}» non hanno nessuna versione in comune: sono progetti "
+                                "nati separatamente, e integrarli raddoppierebbe voci SRS, domini, funzioni e team. "
+                                "Non si integrano: scegli uno dei due come base e riporta in esso il lavoro "
+                                "dell'altro.")
+            return
+        if receive.state == Receive.PUBLISH_FIRST and into:
+            self.status.setText("Qui ci sono modifiche non ancora pubblicate. Pubblicale (o scartale) prima di "
+                                "integrare un altro ramo: l'integrazione è una versione a sé.")
+            self._buttons(publish=True)
             return
         if receive.state == Receive.NO_BRANCH:
             self.status.setText(f"Il ramo «{branch}» non è ancora nel repository: inviando le tue versioni viene "
@@ -150,11 +206,35 @@ class ReceiveDialog(QDialog):
                                 "nuova versione.")
             self._buttons(publish=True)
             return
+        denied = self._merge_denied()
+        if denied:  # only the Design Authority merges into the main branch
+            self.status.setStyleSheet("color: #B42318;")
+            self.status.setText(denied if into else
+                                f"{denied}\n\nQui ci sono versioni tue non ancora inviate e sul repository versioni "
+                                "dei colleghi: unirle sarebbe un'unione nel ramo principale. Sposta le tue versioni su "
+                                "un nuovo ramo e invialo: la DA lo integrerà.")
+            self._buttons(move=not into)
+            return
         result = receive.result
-        what = (f"Le versioni ricevute e le tue ({len(self.project.unsent_versions())} non ancora inviate) vengono "
-                "integrate in una nuova versione, da inviare poi al repository." if receive.state == Receive.MERGE
-                else "Il progetto viene aggiornato con le versioni ricevute; le modifiche non ancora pubblicate "
-                     "restano da pubblicare.")
+        if into:
+            what = (f"Le versioni di «{branch}» e quelle di «{into}» vengono integrate in una nuova versione di "
+                    f"«{into}», da inviare poi al repository. Come con «Ricevi», l'unione è per scheda e per campo, "
+                    "gli identificativi doppi vengono rinumerati e le tracciature collegate riallineate."
+                    if receive.state == Receive.MERGE else
+                    f"«{into}» non ha versioni che «{branch}» non abbia: prende le versioni di «{branch}» così come "
+                    "sono.")
+        else:
+            what = (f"Le versioni ricevute e le tue ({len(self.project.unsent_versions())} non ancora inviate) "
+                    "vengono integrate in una nuova versione, da inviare poi al repository."
+                    if receive.state == Receive.MERGE else
+                    "Il progetto viene aggiornato con le versioni ricevute; le modifiche non ancora pubblicate "
+                    "restano da pubblicare.")
+        if receive.foreign:
+            count = len(receive.foreign)
+            which = "versione è un'unione fatta" if count == 1 else "versioni sono unioni fatte"
+            what += (f"\n\nAttenzione: {count} {which} "
+                     "fuori da ATLAS (con Git): gli identificativi potrebbero essere doppi e le tracciature non "
+                     "allineate. Dopo, esegui «Verifica modello» (GEN-02, ID duplicati) e correggi le schede.")
         if result.conflicts:
             what += (f"\n\n{len(result.conflicts)} modifiche sono state fatte in modo diverso qui e nelle versioni "
                      "ricevute: scegli quale tenere per ciascuna.")
@@ -165,6 +245,8 @@ class ReceiveDialog(QDialog):
         self._fill_conflicts(result.conflicts)
         self._buttons(apply=True, conflicts=bool(result.conflicts))
         self._update_apply()
+        if self.integrate:
+            self._show_preview(result)
 
     def _fill_conflicts(self, conflicts):
         self.conflicts.setRowCount(len(conflicts))
@@ -185,8 +267,40 @@ class ReceiveDialog(QDialog):
             for data, label in CHOICES:
                 choice.addItem(label, data)
             choice.currentIndexChanged.connect(self._update_apply)
+            choice.currentIndexChanged.connect(lambda _i: self._preview_timer.start())
             self.conflicts.setCellWidget(row, 3, choice)
         self.conflicts.resizeRowsToContents()
+
+    # --- the preview of the integration ---------------------------------------------------------------------------
+
+    def _show_preview(self, result):
+        """The branch in use → after the merge (the choices made so far; the conflicts not chosen yet as here)."""
+        from arcadia_tool.diff.semantic import diff_models
+        from arcadia_tool.storage.merge import merged_model
+        from arcadia_tool.ui.diff_view import DiffView
+
+        diff = diff_models(self.project.model, merged_model(result.files))
+        if self.preview_view is not None:
+            self.preview_view.setParent(None)
+            self.preview_view.deleteLater()
+        into, branch = self.receive.into, self.receive.branch
+        self.preview_view = DiffView(diff, f"«{into}» ora", f"«{into}» dopo l'integrazione di «{branch}»")
+        self.preview.layout().addWidget(self.preview_view)
+        self.preview.setVisible(True)
+        conflicts = self.conflicts.rowCount()
+        auto = len(result.received) + len(result.merged)
+        self.conflicts_title.setText(
+            f"Unite automaticamente: {auto} schede ({len(result.merged)} campo per campo"
+            + (f", {len(result.renumbered)} identificativi rinumerati" if result.renumbered else "")
+            + (f", {len(result.relinked)} tracciature riallineate" if result.relinked else "") + ")"
+            + (f" · da risolvere: {conflicts} {'conflitto' if conflicts == 1 else 'conflitti'} (scegli per ciascuno "
+               "quale versione tenere: l'anteprima si aggiorna)" if conflicts else " · nessun conflitto"))
+        self.conflicts_title.setVisible(True)
+        self.preview_result = result
+
+    def _refresh_preview(self):
+        if self.receive is not None and self.integrate:
+            self._show_preview(self.receive.merge(self.choices()))
 
     def _element(self, conflict):
         data = self.receive.ours.get(conflict.path) or self.receive.theirs_files.get(conflict.path)
@@ -254,8 +368,30 @@ class ReceiveDialog(QDialog):
         self.apply_button.setEnabled(missing == 0)
         self.apply_button.setToolTip(f"Scegli ancora {missing} modifiche" if missing else "")
 
+    def _merge_denied(self):
+        """Why the user may not make the merge prepared (into the main branch), or None."""
+        r = self.receive
+        if r is None or r.state != Receive.MERGE:
+            return None
+        return self.project.main_denied(self.user, r.into or r.branch)
+
+    def _move_to_branch(self):
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        from arcadia_tool.ui.branches import suggested_name
+        name, ok = QInputDialog.getText(self, "Sposta su un nuovo ramo", "Nome del nuovo ramo:",
+                                        text=suggested_name(self.project, self.user))
+        if not ok or not name.strip():
+            return
+        try:
+            self.project.move_unsent_to_branch(name.strip())
+        except Exception as exc:
+            QMessageBox.warning(self, "Sposta su un nuovo ramo", str(exc))
+            return
+        self.moved_to = name.strip()
+        self.accept()
+
     def apply(self):
-        if self.receive is None:
+        if self.receive is None or self._merge_denied():
             return
         self.result = self.project.apply_receive(self.receive, self.choices(), self.author)
         if self.result.resolved:

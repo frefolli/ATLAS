@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.0</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.1</sub>
 </p>
 
 > [!WARNING]
@@ -219,6 +219,15 @@ repository serve solo per scaricare e pubblicare le versioni.
   Gli identificativi automatici in conflitto vengono rinumerati.
 - Rami: elenco dei rami di questo PC e del repository, nuovo ramo da una versione scelta, cambio di ramo. Si può
   pubblicare sul ramo attuale o su un nuovo ramo creato al momento della pubblicazione.
+- **Integra nel ramo in uso…** (finestra Rami): unisce le versioni di un altro ramo in quello in uso, come «Ricevi»
+  (per scheda e per campo, ID doppi rinumerati, tracciature riallineate). Il ramo principale lo modifica
+  solo la Design Authority (pubblica, invia, integra, anche con «Ricevi»): un team lavora su un suo ramo; rami nati separatamente non si integrano. Prima di integrare mostra l'anteprima del risultato
+  e lascia da scegliere solo i conflitti («Annulla integrazione» non cambia nulla). Dopo, propone di cancellare il
+  ramo integrato: subito su questo PC, dal repository con il prossimo invio.
+  **I rami si uniscono con ATLAS, non con Git** (né con le merge request di GitLab): Git unisce i file riga per
+  riga e non rinumera gli ID né riallinea le tracciature. Conviene proteggere il ramo principale sul server: su
+  GitLab, *Settings › Repository › Protected branches*, con «Allowed to merge» e «Allowed to push» ai soli membri
+  della DA (Maintainer) e senza merge request dai team. Se arriva comunque un'unione fatta con Git, ATLAS lo segnala.
 - **Checkout di una versione…** (finestra Rami): il modello completo torna a una versione di un ramo, di questo PC
   o del repository, e il progetto passa su quel ramo. Le modalità sono due:
   - **ripristino**, consigliato: il ramo resta alla sua ultima versione e le differenze si pubblicano come una

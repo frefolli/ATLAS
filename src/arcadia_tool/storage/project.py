@@ -327,22 +327,35 @@ class Receive:
     - PUBLISH_FIRST: both have published versions, and there are changes here not yet published: they are
       published first (the merge is a version, it must not publish them unasked).
     """
-    UP_TO_DATE, NO_BRANCH, FAST_FORWARD, MERGE, PUBLISH_FIRST = (
-        "up_to_date", "no_branch", "fast_forward", "merge", "publish_first")
+    UP_TO_DATE, NO_BRANCH, FAST_FORWARD, MERGE, PUBLISH_FIRST, UNRELATED = (
+        "up_to_date", "no_branch", "fast_forward", "merge", "publish_first", "unrelated")
 
-    def __init__(self, state, branch, theirs=None, incoming=(), base=None, ours=None, theirs_files=None):
+    def __init__(self, state, branch, theirs=None, incoming=(), base=None, ours=None, theirs_files=None,
+                 into=None):
         self.state, self.branch, self.theirs = state, branch, theirs
         self.incoming = list(incoming)  # the versions received, newest first
         self.base, self.ours, self.theirs_files = base or {}, ours or {}, theirs_files or {}
+        self.into = into  # integration (Rami › Integra): the branch in use, the other one is `branch`
         self.result = None
+        # Versions merged outside ATLAS (with Git: no renumbering of the identifiers, no sheets kept in step).
+        self.foreign = [v for v in self.incoming if v.is_merge and not made_by_atlas(v)]
 
     def merge(self, choices=None):
-        from arcadia_tool.storage.merge import merge_files, renumber_ids
+        from arcadia_tool.storage.merge import merge_files, relink, renumber_ids
 
         result = merge_files(self.base, self.ours, self.theirs_files, choices)
         if result.resolved:
             renumber_ids(result, self.base, self.theirs_files)
+            relink(result, self.ours)
         return result
+
+
+ATLAS_MERGE = "Unione eseguita da ATLAS: identificativi rinumerati e tracciature riallineate."
+
+
+def made_by_atlas(version):
+    """A merge recorded by ATLAS (Ricevi, Integra): the line it writes, or the message of the first versions."""
+    return ATLAS_MERGE in version.message or version.title.startswith("Integrazione di ")
 
 
 class Project:
@@ -450,11 +463,65 @@ class Project:
         return self.push_branch() in self.repository.remote_heads()
 
     def push(self, **credentials):
-        """Send the published versions to the working branch of the remote. Returns the branch."""
-        branch = self.push_branch()
-        sha = self.repository.push(self.remote(), branch, **credentials)
-        self.set_local_settings(sent=sha, branch=branch)
+        """Send the published versions to the working branch of the remote, and remove from the remote the
+        branches integrated and deleted here (see delete_integrated_branch): only those whose versions are all in
+        what is sent; the others (a colleague sent versions to them meanwhile) stay, in `kept_branches`. Returns
+        the branch."""
+        branch, head = self.push_branch(), self.repository.head()
+        remote = self.repository.remote_heads()
+        delete, self.kept_branches = [], []
+        for name in self.branches_to_delete():
+            if name in remote and name != branch:
+                (delete if head and self.repository.is_ancestor(remote[name], head) else self.kept_branches).append(
+                    name)
+        sha = self.repository.push(self.remote(), branch, delete=delete, **credentials)
+        self.deleted_branches = delete
+        self.set_local_settings(sent=sha, branch=branch, delete_branches=[])
         return branch
+
+    def main_denied(self, user, branch=None):
+        """Why the user may not change `branch` (default: the one in use), or None: the main branch only the
+        Design Authority changes (see teams.main_denied)."""
+        from arcadia_tool.model.teams import main_denied
+        branch = branch or self.current_branch()
+        main = self.main_branch()
+        return main_denied(self.model, user, main) if main and branch == main else None
+
+    def move_unsent_to_branch(self, name):
+        """The versions published here and not sent yet go to the new branch `name` (from the last of them), which
+        becomes the one in use, to send then; the branch they were on goes back to its last version on the remote.
+        E.g. a team that may not merge into the main branch (see main_denied). The files do not change."""
+        problem = self.check_branch_name(name)
+        if problem:
+            raise ProjectError(problem)
+        self.save()
+        if self.has_unpublished_changes():
+            raise ProjectError("Pubblica o scarta prima le modifiche non pubblicate.")
+        previous = self.current_branch()
+        back = self.repository.remote_branch_head(self.push_branch())
+        self.repository.start_branch(name)
+        if back:
+            self.repository.set_branch_head(previous, back)
+        self.set_local_settings(branch=name, sent="")
+
+    def branches_to_delete(self):
+        """The branches integrated and deleted here, to remove from the remote with the next send."""
+        return list(self.local_settings().get("delete_branches") or [])
+
+    def delete_integrated_branch(self, name):
+        """After «Integra»: the branch `name` deleted on this PC and, if it is on the remote, from the remote with
+        the next send (see push). Never the branch in use nor the main one. Returns True if it waits for the
+        send."""
+        if name in (self.current_branch(), self.push_branch(), self.main_branch()):
+            raise ProjectError(f"Il ramo «{name}» non si può cancellare.")
+        local, head = self.repository.local_heads().get(name), self.repository.head()
+        if local and not (head and self.repository.is_ancestor(local, head)):
+            raise ProjectError(f"Il ramo «{name}» ha su questo PC versioni non integrate: non viene cancellato.")
+        self.repository.delete_branch(name)
+        if name not in self.repository.remote_heads():
+            return False
+        self.set_local_settings(delete_branches=sorted(set(self.branches_to_delete()) | {name}))
+        return True
 
     def rebuild_cache(self):
         """Rewrite the local copy of the saved model (see ModelCache) from the files on disk."""
@@ -1034,7 +1101,8 @@ class Project:
         current, main = self.current_branch(), self.main_branch()
         main_sha = remote.get(main) or local.get(main) if main else None
         result = []
-        for name in sorted(set(local) | set(remote), key=lambda n: (n != main, n.lower())):
+        deleted = set(self.branches_to_delete())  # integrated and deleted here: gone, also before the send
+        for name in sorted((set(local) | set(remote)) - deleted, key=lambda n: (n != main, n.lower())):
             b = Branch(name, local.get(name), remote.get(name), name == current, name == main)
             head = b.head
             b.last = self.repository.version(head)
@@ -1132,7 +1200,7 @@ class Project:
         edits first. Nothing changes in the project until apply_receive."""
         self.save()
         branch, url = self.push_branch(), self.remote()
-        if not url:
+        if not url:  # the receive of the versions of the others: see also prepare_integration
             raise ProjectError("Nessun repository remoto: indicalo in Progetto › Impostazioni › Repository Git.")
         heads = self.repository.fetch(url, **credentials)
         theirs = heads.get(branch)
@@ -1157,6 +1225,33 @@ class Project:
             base = self.repository.merge_base(head, theirs)
             receive = Receive(Receive.MERGE, branch, theirs, incoming=incoming,
                               base=self.repository.files_at(base), ours=head_files, theirs_files=theirs_files)
+        receive.result = receive.merge()
+        return receive
+
+    def prepare_integration(self, branch, sha):
+        """Integrate the version `sha` of the branch `branch` (of this PC or of the remote) into the branch in use,
+        as Ricevi does: field by field, the identifiers renumbered, the sheets kept in step. Nothing changes until
+        apply_receive. Branches with no version in common (projects created apart) are not integrated: their
+        elements would all be doubled."""
+        self.save()
+        into = self.current_branch()
+        if self.has_unpublished_changes():
+            return Receive(Receive.PUBLISH_FIRST, branch, sha, into=into)
+        head = self.repository.head()
+        if head is not None and self.repository.is_ancestor(sha, head):
+            return Receive(Receive.UP_TO_DATE, branch, sha, into=into)
+        incoming = self.repository.versions_between(head, sha) if head else self.repository.history(start=sha)
+        theirs_files = self.repository.files_at(sha)
+        if head is None or self.repository.is_ancestor(head, sha):
+            receive = Receive(Receive.FAST_FORWARD, branch, sha, incoming=incoming,
+                              base=self.repository.files_at(head), ours=self._version_files(),
+                              theirs_files=theirs_files, into=into)
+        else:
+            base = self.repository.merge_base(head, sha)
+            if base is None:
+                return Receive(Receive.UNRELATED, branch, sha, incoming=incoming, into=into)
+            receive = Receive(Receive.MERGE, branch, sha, incoming=incoming, base=self.repository.files_at(base),
+                              ours=self.repository.files_at(head), theirs_files=theirs_files, into=into)
         receive.result = receive.merge()
         return receive
 
@@ -1186,15 +1281,20 @@ class Project:
         if not result.resolved:
             return result
         self._write_files(result.files, receive.ours)
+        relinked = getattr(result, "relinked", [])
         if receive.state == Receive.FAST_FORWARD:
             self.repository.move_to(receive.theirs, result.files)
         else:
             count = len(receive.incoming)
-            message = (f"Integrazione di {count} {'versione ricevuta' if count == 1 else 'versioni ricevute'} "
-                       f"dal ramo «{receive.branch}»")
+            what = f"{count} {'versione' if count == 1 else 'versioni'}"
+            message = (f"Integrazione del ramo «{receive.branch}» in «{receive.into}» ({what})" if receive.into
+                       else f"Integrazione di {what} {'ricevuta' if count == 1 else 'ricevute'} dal ramo "
+                            f"«{receive.branch}»")
+            message += f"\n\n{ATLAS_MERGE}" + (f" Schede riallineate: {len(relinked)}." if relinked else "")
             self.repository.save_version(message, author or "ATLAS <atlas@localhost>", result.files,
                                          merged=receive.theirs)
-        self.set_local_settings(sent=receive.theirs, branch=receive.branch)
+        if receive.into is None:  # Ricevi: the working branch, now as on the remote
+            self.set_local_settings(sent=receive.theirs, branch=receive.branch)
         self.discard_recovery()
         return result
 

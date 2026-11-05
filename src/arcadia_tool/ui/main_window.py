@@ -1605,7 +1605,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Invia al repository", "Nessun repository remoto: indica l'URL in "
                                     "Progetto › Impostazioni › Repository Git.")
             return
-        if not self.project.unsent_versions() and self.project.branch_on_remote():
+        denied = self.project.main_denied(self.user, self.project.push_branch())
+        if denied and self.project.unsent_versions() and not self._move_unsent_to_branch(denied):
+            return
+        if not self.project.unsent_versions() and self.project.branch_on_remote() and \
+                not self.project.branches_to_delete():
             QMessageBox.information(self, "Invia al repository", "Tutte le versioni pubblicate sono già state "
                                     "inviate al repository.")
             return
@@ -1615,6 +1619,26 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Versioni inviate al ramo «{self.project.push_branch()}»", 5000)
         elif dialog.receive_requested:  # the remote has versions of the others: received first
             self.receive_versions()
+
+    def _move_unsent_to_branch(self, denied):
+        """A team member with versions not sent on the main branch: moved to a new branch (to send), if they want.
+        Returns True if moved."""
+        from PySide6.QtWidgets import QInputDialog
+        from arcadia_tool.ui.branches import suggested_name
+        if QMessageBox.question(self, "Invia al repository", f"{denied}\n\nSpostare le tue versioni non inviate su "
+                                "un nuovo ramo, da inviare al repository?") != QMessageBox.Yes:
+            return False
+        name, ok = QInputDialog.getText(self, "Sposta su un nuovo ramo", "Nome del nuovo ramo:",
+                                        text=suggested_name(self.project, self.user))
+        if not ok or not name.strip():
+            return False
+        try:
+            self.project.move_unsent_to_branch(name.strip())
+        except Exception as exc:
+            QMessageBox.warning(self, "Sposta su un nuovo ramo", str(exc))
+            return False
+        self._refresh_state()
+        return True
 
     def receive_versions(self):
         """Versioni › Ricevi dal repository: the versions of the others on the working branch, merged with those
@@ -1632,10 +1656,20 @@ class MainWindow(QMainWindow):
         if not self._ready_to_receive():
             return
         author = f"{self.user.full_name} <{self.user.email}>" if self.user else None
-        dialog = ReceiveDialog(self.project, git_credentials(self.user, self.project.remote()), author, self)
+        dialog = ReceiveDialog(self.project, git_credentials(self.user, self.project.remote()), author, self,
+                               user=self.user)
         dialog.exec()
         if dialog.publish_first:
             self.publish()
+            return
+        if dialog.moved_to:  # not merged into the main branch: the versions of this PC on a new branch
+            path = self.project.path
+            self._set_project(None)
+            self.open_project(str(path), confirmed=True, alert=False)
+            if self.project is not None and QMessageBox.question(
+                    self, "Ricevi dal repository", f"Le tue versioni sono ora sul ramo «{dialog.moved_to}». Inviarlo "
+                    "ora al repository, perché la DA lo integri?") == QMessageBox.Yes:
+                self.send_versions()
             return
         if not dialog.applied:
             return
@@ -1729,10 +1763,73 @@ class MainWindow(QMainWindow):
         if dialog.request is not None:
             self.branch_request(dialog.request)
 
+    def integrate_branch(self, name, sha):
+        """Rami › Integra nel ramo in uso: the versions of the branch `name` (up to `sha`) merged into the branch in
+        use by ATLAS, as Ricevi does; the project is then opened again, and the integration offered to send."""
+        if not self.project or not self._resolve_unsaved_pages():
+            return None
+        denied = self.project.main_denied(self.user)
+        if denied:
+            QMessageBox.warning(self, "Integra ramo", denied)
+            return None
+        if self.project.is_modified:
+            self.save()
+        author = f"{self.user.full_name} <{self.user.email}>" if self.user else None
+        dialog = ReceiveDialog(self.project, {}, author, self, integrate=(name, sha), user=self.user)
+        dialog.exec()
+        if dialog.publish_first:
+            self.publish()
+            return dialog
+        if not dialog.applied:
+            return dialog
+        path, result, into = self.project.path, dialog.result, self.project.current_branch()
+        self._set_project(None)  # its files changed
+        self.open_project(str(path), confirmed=True, alert=False)
+        if self.project is None:
+            return dialog
+        if result.renumbered:
+            lines = "\n".join(f"• {old} → {new}" for _uuid, old, new in result.renumbered)
+            QMessageBox.information(self, "Integra ramo", "Alcuni identificativi erano usati in entrambi i rami e "
+                                    f"sono stati rinumerati:\n\n{lines}")
+        self.statusBar().showMessage(f"Ramo «{name}» integrato in «{into}»", 8000)
+        dialog.branch_deleted = self._offer_to_delete_branch(name)
+        pending = self.project.unsent_versions() or self.project.branches_to_delete()
+        if pending and self.project.remote() and QMessageBox.question(
+                self, "Integra ramo", "Inviare ora al repository " + (
+                    "l'integrazione" if self.project.unsent_versions() else "la cancellazione del ramo") + "?") \
+                == QMessageBox.Yes:
+            self.send_versions()
+        return dialog
+
+    def _offer_to_delete_branch(self, name):
+        """After «Integra»: the branch integrated, deleted if the user wants (here at once; on the repository with
+        the next send). Not the main branch: it goes on. Returns True if deleted."""
+        if name in (self.project.main_branch(), self.project.current_branch()):
+            return False
+        remote = name in self.project.repository.remote_heads()
+        where = (" su questo PC e, al prossimo invio, anche dal repository (se nel frattempo nessuno vi ha inviato "
+                 "nuove versioni)") if remote else " su questo PC"
+        if QMessageBox.question(
+                self, "Integra ramo", f"Il ramo «{name}» è integrato in «{self.project.current_branch()}». "
+                f"Cancellarlo?\n\nViene cancellato{where}. Le sue versioni restano nella storia del ramo in uso.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return False
+        try:
+            self.project.delete_integrated_branch(name)
+        except Exception as exc:
+            QMessageBox.warning(self, "Integra ramo", str(exc))
+            return False
+        self.statusBar().showMessage(f"Ramo «{name}» cancellato" + (": dal repository al prossimo invio"
+                                                                     if remote else ""), 8000)
+        self._refresh_state()
+        return True
+
     def branch_request(self, request):
         """("switch", name), ("create", name, sha, send) or ("checkout", name, sha, move_branch): the project moves
         to that branch (the model to that version) and is opened again. The changes not yet published are
-        published first, or discarded, if the user wants."""
+        published first, or discarded, if the user wants. ("integrate", name, sha): see integrate_branch."""
+        if request[0] == "integrate":
+            return self.integrate_branch(request[1], request[2])
         if not self._ready_to_leave_branch():
             return
         path = self.project.path

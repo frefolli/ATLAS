@@ -97,6 +97,7 @@ def _version(commit):
         message=commit.message.decode("utf-8", "replace").strip(),
         author=commit.author.decode("utf-8", "replace"),
         timestamp=datetime.fromtimestamp(commit.commit_time, timezone.utc).astimezone(),
+        parents=tuple(p.decode() for p in commit.parents),
     )
 
 
@@ -106,6 +107,11 @@ class Version:
     message: str
     author: str
     timestamp: datetime
+    parents: tuple = ()  # two for a merge
+
+    @property
+    def is_merge(self):
+        return len(self.parents) > 1
 
     @property
     def short(self):
@@ -217,18 +223,25 @@ class Repository:
         except KeyError:
             return None
 
-    def push(self, url, branch, **credentials):
-        """Send the published versions of the local branch to `branch` of the remote `url` (created if missing).
+    def push(self, url, branch, delete=(), **credentials):
+        """Send the published versions of the local branch to `branch` of the remote `url` (created if missing),
+        and remove the branches `delete` from the remote in the same push.
 
         credentials: see accounts.git_credentials. Raises an exception with the reason if the remote refuses
         (e.g. it has versions that are not here: they must be received first)."""
         local = self.local_branch()
-        result = porcelain.push(self._repo, url, f"refs/heads/{local}:refs/heads/{branch}".encode(),
-                                outstream=io.BytesIO(), errstream=io.BytesIO(), **credentials)
+        refspecs = [f"refs/heads/{local}:refs/heads/{branch}".encode()] + [f":refs/heads/{d}".encode()
+                                                                          for d in delete]
+        result = porcelain.push(self._repo, url, refspecs, outstream=io.BytesIO(), errstream=io.BytesIO(),
+                                **credentials)
         refused = {ref: status for ref, status in (getattr(result, "ref_status", None) or {}).items() if status}
         if refused:
             raise PushRefused("; ".join(f"{ref.decode()}: {status}" for ref, status in refused.items()))
         self._repo.refs[f"refs/remotes/origin/{branch}".encode()] = self._repo.head()
+        for d in delete:
+            ref = f"refs/remotes/origin/{d}".encode()
+            if ref in self._repo.refs:
+                del self._repo.refs[ref]
         return self.head()
 
     @staticmethod
@@ -416,6 +429,11 @@ class Repository:
         if head is not None:
             self._repo.refs[ref] = head.encode()
         self._repo.refs.set_symbolic_ref(b"HEAD", ref)
+
+    def set_branch_head(self, branch, sha):
+        """The local branch `branch` (not the one in use) moves to the version `sha`."""
+        if branch != self.local_branch():
+            self._repo.refs[f"refs/heads/{branch}".encode()] = sha.encode()
 
     def delete_branch(self, branch):
         """Remove a local branch (not the one in use)."""

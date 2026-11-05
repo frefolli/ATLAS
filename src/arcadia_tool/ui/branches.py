@@ -362,11 +362,16 @@ class BranchesDialog(QDialog):
         self.checkout_button.setToolTip("Il modello completo a una versione del ramo selezionato, di questo PC o "
                                         "del repository")
         self.checkout_button.clicked.connect(self.checkout)
+        self.integrate_button = QPushButton(icon("mdi6.source-merge"), "Integra nel ramo in uso…")
+        self.integrate_button.setToolTip("Unisce le versioni del ramo selezionato in quello in uso, con ATLAS: per "
+                                         "scheda e per campo, gli identificativi doppi rinumerati e le tracciature "
+                                         "riallineate (un'unione fatta con Git non lo fa)")
+        self.integrate_button.clicked.connect(self.integrate)
         # The versions of a branch: «Versioni Modello» (a double click on the branch opens them).
         close = QPushButton("Chiudi")
         close.clicked.connect(self.reject)
         buttons = QHBoxLayout()
-        for b in (self.switch_button, self.new_button, self.checkout_button):
+        for b in (self.switch_button, self.new_button, self.checkout_button, self.integrate_button):
             buttons.addWidget(b)
         buttons.addStretch()
         buttons.addWidget(close)
@@ -446,6 +451,9 @@ class BranchesDialog(QDialog):
         b = self.selected()
         self.switch_button.setEnabled(b is not None and not b.current)
         self.checkout_button.setEnabled(b is not None)
+        denied = self.integrate_denied()
+        self.integrate_button.setEnabled(b is not None and not b.current and not denied)
+        self.integrate_button.setToolTip(denied or self.integrate_button.toolTip())
         self.new_button.setEnabled(bool(self.project.branches()))
 
     # --- the repository -------------------------------------------------------------------------------
@@ -486,12 +494,28 @@ class BranchesDialog(QDialog):
             self.request = ("create", dialog.name_value, dialog.sha, dialog.send)
             self.accept()
 
+    def integrate_denied(self):
+        """Why the user may not integrate into the branch in use, or None: the main branch only by the Design
+        Authority (its members), once it has members."""
+        return self.project.main_denied(self.user)
+
+    def integrate(self):
+        b = self.selected()
+        if b is None or b.current or self.integrate_denied():
+            return
+        self.request = ("integrate", b.name, self._head(b) or b.head)
+        self.accept()
+
     def checkout(self):
         b = self.selected()
         if b is None:
             return
         dialog = CheckoutDialog(self.project, self._key(b), self)
         if dialog.exec():
+            denied = dialog.move_branch and self.project.main_denied(self.user, dialog.name_value)
+            if denied:  # the main branch brought back to a version: a change only the DA makes
+                QMessageBox.warning(self, "Checkout", denied)
+                return
             self.request = ("checkout", dialog.name_value, dialog.sha, dialog.move_branch)
             self.accept()
 

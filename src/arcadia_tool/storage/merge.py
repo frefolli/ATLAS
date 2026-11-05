@@ -59,6 +59,7 @@ class MergeResult:
     renumbered: list = field(default_factory=list)  # (uuid, old id, new id)
     received: list = field(default_factory=list)  # paths that take content from the other side
     merged: list = field(default_factory=list)  # paths merged field by field
+    relinked: list = field(default_factory=list)  # paths changed to keep the sheets in step (see relink)
 
     @property
     def resolved(self):
@@ -179,6 +180,36 @@ def _merge_yaml(merger, path, base, ours, theirs):
     merged = merger.element(path, loads(_text(base)) if base is not None else None, loads(_text(ours)),
                             loads(_text(theirs)))
     return dumps(merged).encode("utf-8")
+
+
+def relink(result, ours):
+    """The elements merged field by field (changes of both sides on the same sheet): the sheets kept in step with
+    them follow (see model.links: the team of a domain and its domains, the functions of an SA-3 record and their
+    SRS items, the exclusions…), as when the change is made in a sheet. Changes result.files and returns the paths
+    changed."""
+    from arcadia_tool.model.links import keep_in_step
+
+    merged = [p for p in result.merged if _is_model_file(p) and p in result.files]
+    if not merged:
+        return []
+    elements = {p: loads(_text(d)) for p, d in result.files.items() if _is_model_file(p)}
+    model = Model(list(elements.values()))
+    path_of = {e.uuid: p for p, e in elements.items()}
+    changed = []
+    for p in merged:
+        previous = loads(_text(ours[p])) if p in ours else None
+        for other in keep_in_step(model, elements[p], previous):
+            target = path_of.get(other.uuid)
+            if target is not None:
+                result.files[target] = dumps(other).encode("utf-8")
+                changed.append(target)
+    result.relinked = sorted(set(changed))
+    return result.relinked
+
+
+def merged_model(files):
+    """The model of a project content ({path: bytes}): e.g. the result of a merge, for its preview."""
+    return Model([loads(_text(d)) for p, d in files.items() if _is_model_file(p)])
 
 
 def _is_model_file(path):

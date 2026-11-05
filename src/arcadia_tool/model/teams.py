@@ -105,6 +105,17 @@ def is_da_member(model, user):
     return team is not None and is_member(team, user)
 
 
+def main_denied(model, user, main):
+    """Why the user may not change the main branch `main` (publish on it, send versions to it, merge into it with
+    Rami › Integra or with Ricevi, bring it back to a version), or None: only the members of the Design Authority;
+    while no DA team has members yet, anyone (as edit_denied)."""
+    da = design_authority(model)
+    if da is None or not member_rows(da) or (user is not None and is_member(da, user)):
+        return None
+    return (f"Solo la Design Authority modifica il ramo principale «{main}» (pubblica, invia, integra). Lavora "
+            f"su un ramo tuo e chiedi alla DA di integrarlo; puoi integrare «{main}» nel tuo ramo, per aggiornarlo.")
+
+
 # --- who may change the teams ------------------------------------------------------------------------------------
 
 DA_ONLY_KINDS = ("team",)  # sheets that only the members of the Design Authority create, change and delete
