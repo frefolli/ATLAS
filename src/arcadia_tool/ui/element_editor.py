@@ -10,12 +10,13 @@ from PySide6.QtGui import QBrush, QColor, QFont, QImageReader, QKeySequence, QPa
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem,
-                               QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
+                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
                                QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QToolButton,
                                QVBoxLayout, QWidget)
 
 from arcadia_tool.checks import CHECKS_BY_CODE, count
 from arcadia_tool.checks.fields import SRS_CARD
+from arcadia_tool.model.coverage import derivable
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context, missing_context, rule
 from arcadia_tool.model.teams import DA_FIELD, MEMBERS, da_teams, member_rows
 from arcadia_tool.model.adr import approval_problems, approve_new_domain, can_approve, sections_taken
@@ -1060,12 +1061,12 @@ class ElementEditor(QScrollArea):
                         srs_trace.contributed_items(model, element)),
                        ("srsExcluded", "Sezioni e clausole escluse", srs_trace.excluded_items(model, element)))
         elif element.kind == "system_function":
-            title, label, tip = ("Allocazione alle voci SRS e ai requisiti derivati", "Alloca a sezioni e clausole SRS…",
+            title, label, tip = ("Clausole SRS mappate", "Alloca a sezioni e clausole SRS…",
                                  "Alloca la funzione a sezioni (es. 3.4.1) o clausole (es. 3.4.1.3)")
             columns = (("srsAllocated", "Sezioni e clausole SRS", srs_trace.allocated_items(model, element)),
                        ("derivedMapped", "Requisiti derivati (SA-4)", srs_trace.derived_of(model, element)))
         else:  # logical function: also the derived requirements it refines (LA-2)
-            title, label, tip = ("Allocazione alle voci SRS e ai requisiti derivati",
+            title, label, tip = ("Clausole SRS mappate",
                                  "Alloca a sezioni, clausole e requisiti derivati…",
                                  "Alloca la funzione a sezioni (es. 3.4.1), clausole (es. 3.4.1.3) o requisiti "
                                  "derivati (SA-4)")
@@ -1099,7 +1100,8 @@ class ElementEditor(QScrollArea):
         if element.kind == "system_function":  # the derived requirements (SA-4) mapped on it, with ticks
             mapped = QPushButton(icon("mdi6.call-split"), "Mappa requisiti derivati…")
             mapped.setToolTip("Spunta i requisiti derivati (SA-4) da mappare sulla funzione, sotto le clausole da cui "
-                              "sono derivati (si creano dalla voce SRS: clic destro, «Deriva…»)")
+                              "sono derivati (si creano con il clic destro su una clausola mappata, o dalla voce "
+                              "SRS: «Deriva…»)")
             mapped.clicked.connect(lambda _=False: self._map_derived())
             row.addWidget(mapped)
         if element.kind == "system_function":  # the catalogue of the functions of the teams, SA-2 in Excel
@@ -1133,10 +1135,45 @@ class ElementEditor(QScrollArea):
             view.setToolTip("Doppio clic per aprire la voce")
             view.itemDoubleClicked.connect(lambda entry: entry.data(Qt.UserRole)
                                            and self.open_requested.emit(entry.data(Qt.UserRole)))
+            if name == "srsAllocated":  # a right click: derive requirements, mapped on this function
+                view.setToolTip("Doppio clic per aprire la voce; clic destro per derivarne requisiti")
+                view.setContextMenuPolicy(Qt.CustomContextMenu)
+                view.customContextMenuRequested.connect(lambda pos, v=view: self._allocated_context_menu(v, pos))
             column.addWidget(view)
             lists.addLayout(column, 1)
         layout.addLayout(lists)
         return frame
+
+    def _allocated_menu(self, item):
+        """The menu of an SRS item mapped on the function: «Deriva requisiti…», not from a section."""
+        menu = QMenu(self)
+        can_derive = derivable(item)
+        action = menu.addAction(icon("mdi6.call-split"), "Deriva requisiti…" if can_derive else
+                                "Deriva requisiti – le sezioni non sono derivabili",
+                                lambda _=False: self._derive_from_allocated(item))
+        action.setEnabled(can_derive and not self.read_only)
+        return menu
+
+    def _allocated_context_menu(self, view, pos):
+        entry = view.itemAt(pos)
+        item = self.project.model.get(entry.data(Qt.UserRole)) if entry and entry.data(Qt.UserRole) else None
+        if item is not None:
+            self._allocated_menu(item).exec(view.viewport().mapToGlobal(pos))
+
+    @local_change
+    def _derive_from_allocated(self, item):
+        """Requirements derived from an SRS item mapped on the function, and mapped on it: they appear in its list
+        of derived requirements."""
+        from arcadia_tool.ui.srs_row_actions import DeriveDialog
+
+        self.flush()
+        dialog = DeriveDialog(self.project, item, self, function=self.element)
+        if dialog.exec():
+            self.elements_created.emit()  # the tree, the tables
+            for changed in dialog.changed:
+                self.element_changed.emit(changed)
+            self._build()  # shows the new list
+        return dialog
 
     def _derived_trace_card(self):
         """SA-4: the SRS item the requirement is derived from and its logical function, each chosen in a window

@@ -200,13 +200,17 @@ def test_derived_requirement_short_name_parent_and_logical_function(app, tmp_pat
 
     dialog = TraceParentDialog(p, derived)  # «Voce madre»: one only, with ticks
     assert dialog.state[e["clause"].uuid] == PARENT
-    dialog.click(dialog._items[e["section"].uuid], PARENT)
-    assert dialog.chosen(PARENT) == {e["section"].uuid}  # the tick moved
-    assert dialog.count.text().startswith("Voce madre: 3.4.1")
+    assert e["section"].uuid not in dialog.state  # the sections are not derivable: no box
+    sub = p.new_element("requirement", id="3.4.1.3.1", item_type="Requisito", parent=e["clause"].uuid,
+                        text="Each balise of a group is numbered.")
+    dialog = TraceParentDialog(p, derived)
+    dialog.click(dialog._items[sub.uuid], PARENT)
+    assert dialog.chosen(PARENT) == {sub.uuid}  # the tick moved, to a sub-clause
+    assert dialog.count.text().startswith("Voce madre: 3.4.1.3.1")
     dialog.search.setText("1 to 8")
     assert not dialog._items[e["clause"].uuid].isHidden() and dialog._items[e["other"].uuid].isHidden()
     dialog.accept()
-    assert derived.get("parent") == e["section"].uuid
+    assert derived.get("parent") == sub.uuid
 
     creating = TraceParentDialog(p, None)  # new derived requirement from the model tree: only the choice
     creating.click(creating._items[e["clause"].uuid], PARENT)
@@ -279,11 +283,15 @@ def test_derive_from_the_allocation_window(app, tmp_path):
     assert dialog._items[e["other"].uuid].isHidden()
     dialog.reject()  # «Annulla»: the requirement created here is removed
     assert p.model.get(derived.uuid) is None and p.model.get(orphan.uuid) is not None
+    assert not p.model.of_kind("trace_record")  # not confirmed: no record either
 
     dialog = TraceFunctionDialog(p, function)
     derived = dialog.derive(e["clause"], "Conta le boe del gruppo")
     dialog.accept()
     assert derived.get("function") == function.uuid and dialog.created == [derived]
+    record = p.model.of_kind("trace_record")[0]  # confirmed: the SA-3 record of the clause, as from the catalogue
+    assert record.get("requirement") == e["clause"].uuid and record.get("outcome") == "Scomposta in requisiti derivati"
+    assert record in dialog.changed
     p.close()
 
 

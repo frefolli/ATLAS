@@ -1,6 +1,7 @@
 """A project on disk: one YAML file per element under model/<folder>/, versioned with Git."""
 import io
 import json
+import threading
 import os
 import re
 import shutil
@@ -185,6 +186,9 @@ def _document_key(element):
 RECOVERY_NAME = ".arcadia/recovery.zip"
 LOCAL_SETTINGS = ".arcadia/local.json"
 RECOVERY_INFO = "recovery.json"
+
+
+SAVING = threading.RLock()  # the changes being written (see Project.save)
 
 
 def local_change(method):
@@ -792,20 +796,24 @@ class Project:
             changed.extend(e for e in self.update(sf, before) if all(e.uuid != c.uuid for c in changed))
         return changed
 
-    def derive_requirements(self, item, obligations, decompose=True):
-        """Derived requirements (SA-4) of an SRS clause, one per (name, obligation); with decompose, the SA-3
-        record of the clause says «Scomposta in requisiti derivati» (question B5 4). Returns (created, changed)."""
-        created = [self.new_element("derived_requirement", parent=item.uuid, name=name or None, obligation=text)
+    def derive_requirements(self, item, obligations, decompose=True, **values):
+        """Derived requirements (SA-4) of an SRS clause, one per (name, obligation), with the other values given
+        (e.g. the function they are mapped on); with decompose, see record_decomposition. Returns (created,
+        changed)."""
+        created = [self.new_element("derived_requirement", parent=item.uuid, name=name or None, obligation=text,
+                                    **values)
                    for name, text in obligations if (text or "").strip()]
-        changed = []
-        if decompose and created:
-            records = [r for r in self.model.of_kind("trace_record") if r.get("requirement") == item.uuid]
-            record = records[0] if records else self.new_element("trace_record", requirement=item.uuid)
-            before = record.copy()
-            record.set("b5_question", B5_QUESTIONS[3])
-            record.set("outcome", "Scomposta in requisiti derivati")
-            changed = [record, *self.update(record, before)]
-        return created, changed
+        return created, self.record_decomposition(item) if decompose and created else []
+
+    def record_decomposition(self, item):
+        """The SA-3 record of the SRS item (created if it has none) says «Scomposta in requisiti derivati» (question
+        B5 4), wherever the derived requirement is created. Returns the elements changed, the record first."""
+        records = [r for r in self.model.of_kind("trace_record") if r.get("requirement") == item.uuid]
+        record = records[0] if records else self.new_element("trace_record", requirement=item.uuid)
+        before = record.copy()
+        record.set("b5_question", B5_QUESTIONS[3])
+        record.set("outcome", "Scomposta in requisiti derivati")
+        return [record, *self.update(record, before)]
 
     def clean(self, keep_srs=False):
         """Remove every element, or every element but the imported SRS items (whose analysis data, e.g. the
@@ -878,6 +886,28 @@ class Project:
             for other in [m for m in self.model.of_kind("message", "reading")
                           if uuid in (m.get("subject"), m.get("adr"))]:
                 self.delete_element(other.uuid)
+        if element.kind == "derived_requirement":
+            self._forget_derived(element)
+
+    def _forget_derived(self, derived):
+        """A derived requirement removed: its SA-3 record no longer lists it. With the last one the item is no longer
+        «Scomposta in requisiti derivati»: the record goes too, unless it holds something else written by the user
+        (functions, dictionary items, notes, ADR), which stays, with the outcome to choose again."""
+        for record in [r for r in self.model.of_kind("trace_record")
+                       if derived.uuid in (r.get("exchange_items") or [])
+                       or (derived.get("parent") and r.get("requirement") == derived.get("parent"))]:
+            before = record.copy()
+            items = [u for u in record.get("exchange_items") or [] if u != derived.uuid]
+            record.set("exchange_items", items)
+            if not items and record.get("outcome") == "Scomposta in requisiti derivati":
+                if any(record.get(f) for f in ("primary_functions", "secondary_functions", "notes", "adrs")):
+                    record.set("outcome", None)
+                    record.set("b5_question", None)
+                else:
+                    if not self.discard_new(record.uuid):
+                        self.delete_element(record.uuid)
+                    continue
+            self.update(record, before)
 
     def _touch(self, uuid):
         self._modified.add(uuid)
@@ -908,6 +938,8 @@ class Project:
         self.model.remove(uuid)
         self._modified.discard(uuid)
         self._deleted.pop(uuid, None)
+        if element.kind == "derived_requirement":  # the SA-3 record written when it was created
+            self._forget_derived(element)
         return True
 
     def delete_elements(self, uuids):
@@ -962,7 +994,11 @@ class Project:
 
     def save(self, progress=None, only=None):
         """Write the changes to disk; only: just those of these elements (the «Salva» of a sheet or of a view), the
-        others stay to be saved."""
+        others stay to be saved. It may run in a thread (see ui.busy): the copy for the recovery waits for it."""
+        with SAVING:
+            self._save(progress, only)
+
+    def _save(self, progress, only):
         modified = self._modified if only is None else self._modified & set(only)
         deleted = self._deleted if only is None else {u: f for u, f in self._deleted.items() if u in set(only)}
         total = len(modified)
@@ -994,6 +1030,10 @@ class Project:
 
     def write_recovery(self):
         """Copy of the unsaved edits, written periodically; removed by save() and by a normal close."""
+        with SAVING:
+            self._write_recovery()
+
+    def _write_recovery(self):
         if not self.is_modified and not self._pending_assets:
             self.discard_recovery()
             return
@@ -1312,6 +1352,11 @@ class Project:
 
     def versions(self):
         return self.repository.history()
+
+    def saved_model(self):
+        """The model as it is on disk, without the changes not saved yet (read again: it takes a moment)."""
+        from arcadia_tool.storage.merge import merged_model
+        return merged_model(self._saved)
 
     def published_model(self, sha=None):
         sha = sha or self.repository.head()

@@ -14,6 +14,7 @@ from arcadia_tool.diff.semantic import diff_models
 from arcadia_tool.model.element import Model
 from arcadia_tool.model.teams import memberships
 from arcadia_tool.storage.repository import NothingToSave
+from arcadia_tool.ui.busy import run_busy
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, enabled_count, run_checks, summary
 from arcadia_tool.ui.diff_view import DiffView
 from arcadia_tool.ui.dialogs import settings
@@ -266,8 +267,9 @@ class PublishDialog(QDialog):
         only, with_settings = self.chosen()
         try:
             text, author = with_member(message, self.project, self.user), f"{name} <{email}>"
-            self.sha = (self.project.publish_on_new_branch(new_branch, text, author, only, with_settings)
-                        if new_branch else self.project.publish(text, author, only, with_settings))
+            self.sha = run_busy(self, "Pubblicazione in corso…", lambda _report: (
+                self.project.publish_on_new_branch(new_branch, text, author, only, with_settings)
+                if new_branch else self.project.publish(text, author, only, with_settings)))
         except NothingToSave:
             QMessageBox.information(self, "Pubblica versione", "Non ci sono modifiche da pubblicare.")
             return
@@ -321,6 +323,59 @@ class UnpublishedDialog(QDialog):
     def _choose(self, choice):
         self.choice = choice
         self.accept()
+
+
+LOADING = "Lettura delle modifiche locali…"  # thousands of sheets compared: seconds
+
+
+class DiscardDialog(QDialog):
+    """What is lost when the local changes are discarded, shown as in «Pubblica»; accepted: discard them.
+    unsaved: only the changes not saved yet are lost (else also those saved and not published); pending: the sheets and
+    views open with changes still in progress, which go with them."""
+
+    def __init__(self, project, parent=None, unsaved=False, pending=0):
+        super().__init__(parent)
+        self.setWindowTitle("Scarta le modifiche locali")
+        maximizable(self)
+        self.resize(1240, 760)
+        if unsaved:
+            base_label = "Ultimo salvataggio"
+            self.diff = run_busy(parent, LOADING, lambda _report: diff_models(project.saved_model(), project.model))
+            text = "Queste modifiche non salvate vanno perse: il modello resta com'era all'ultimo salvataggio."
+        else:
+            versions = project.versions()
+            base_label = version_label(versions[0]) if versions else "Nessuna versione pubblicata"
+            self.diff = run_busy(parent, LOADING, lambda _report: diff_models(project.published_model(), project.model))
+            text = (f"Queste modifiche locali vanno perse: il modello torna all'ultima versione pubblicata del ramo "
+                    f"«{project.current_branch()}» ({base_label}).")
+        if pending:
+            text += (f" Si perdono anche le modifiche in corso di {pending} "
+                     f"{'scheda o vista aperta' if pending == 1 else 'schede o viste aperte'}.")
+        intro = QLabel(text)
+        intro.setWordWrap(True)
+        changes, changes_layout = card("Modifiche che verranno scartate")
+        if self.diff:
+            changes_layout.addWidget(DiffView(self.diff, base_label, WORKING_LABEL), 1)
+        else:
+            changes_layout.addWidget(QLabel("Nessuna modifica alle schede del modello · cambiate le impostazioni "
+                                            "condivise del progetto o modifiche ancora in corso.", objectName="muted"))
+        self.discard_button = QPushButton(icon("mdi6.undo-variant", "#B42318"), "Scarta le modifiche")
+        self.discard_button.clicked.connect(self.accept)
+        cancel = QPushButton("Annulla")
+        cancel.clicked.connect(self.reject)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(cancel)
+        buttons.addWidget(self.discard_button)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(intro)
+        layout.addWidget(changes, 1 if self.diff else 0)
+        if not self.diff:
+            layout.addStretch()
+        layout.addLayout(buttons)
+        cancel.setFocus()  # what is lost is not recovered
 
 
 class CompareSide:
@@ -756,14 +811,7 @@ class HistoryDialog(QDialog):
     def discard(self):
         if not self.local or not self.versions:
             return
-        text, changes, unsaved = self.local
-        if QMessageBox.warning(
-                self, "Scarta le modifiche locali",
-                f"{text}.\n\nScartarle? Il modello torna all'ultima versione pubblicata del ramo "
-                f"«{self.project.current_branch()}» ({version_label(self.versions[0])}) e le modifiche vanno perse.",
-                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
-            return
-        self.request = ("discard",)
+        self.request = ("discard",)  # the main window shows what is lost, and asks
         self.accept()
 
     def new_branch(self):

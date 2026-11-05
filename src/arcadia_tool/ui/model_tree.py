@@ -606,6 +606,8 @@ class ModelTree(QFrame):
             if context is None:
                 return
         element = self.project.new_element(kind, **(context or {}))
+        if kind == "derived_requirement" and element.get("parent"):  # SA-4, or «Deriva requisito da…» of an SRS item
+            self.project.record_decomposition(self.project.model.get(element.get("parent")))
         self.element_created.emit(element.uuid)  # before its sheet opens (with the selection)
         self.reload(select_uuid=element.uuid)
         self.model_changed.emit()

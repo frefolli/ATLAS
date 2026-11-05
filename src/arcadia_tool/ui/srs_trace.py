@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QHeaderV
                                QMenu, QMessageBox, QPushButton, QTabBar, QTextBrowser, QTreeWidget, QTreeWidgetItem,
                                QTreeWidgetItemIterator, QVBoxLayout)
 
+from arcadia_tool.model.coverage import derivable
+from arcadia_tool.ui.busy import save_project
 from arcadia_tool.ui.element_editor import load_pixmap
 from arcadia_tool.ui.srs_reader import CATEGORIES, CATEGORY_COLORS, NO_CATEGORY, chapter_of, document_order
 from arcadia_tool.ui.theme import ACCENT, ACCENT_SOFT, BORDER, MUTED, SURFACE, TEXT, icon
@@ -52,10 +54,16 @@ def allocated_items(model, function):
     return [e for e in document_order(model) if e.uuid in sections]
 
 
+def derived_field(function):
+    """The field of a derived requirement (SA-4) naming the function: its «Funzione di sistema» (SA-2), its «Funzione
+    logica» (LA-2)."""
+    return "system_function" if function.kind == "system_function" else "function"
+
+
 def derived_of(model, function):
-    """Derived requirements (SA-4) of a function: allocated to a logical function (LA-2, their «Funzione logica»),
-    mapped on a system function (SA-2, their «Funzione di sistema»)."""
-    field = "system_function" if function.kind == "system_function" else "function"
+    """Derived requirements (SA-4) of a function: allocated to a logical function (LA-2), mapped on a system function
+    (SA-2)."""
+    field = derived_field(function)
     return [d for d in model.of_kind("derived_requirement") if d.get(field) == function.uuid]
 
 
@@ -399,8 +407,9 @@ class _TraceDialog(QDialog):
         if e is None or e.kind != "requirement" or e.get("item_type") not in self.CHOOSABLE:
             return
         menu = QMenu(self)
-        menu.addAction(icon("mdi6.call-split"), f"Deriva requisito da {e.get('id')}…",
-                       lambda _=False: self.derive(e))
+        if derivable(e):  # not from chapters and sections
+            menu.addAction(icon("mdi6.call-split"), f"Deriva requisito da {e.get('id')}…",
+                           lambda _=False: self.derive(e))
         menu.addAction(icon("mdi6.text-box-outline"), "Leggi il testo completo",
                        lambda _=False: self.show_item(e.uuid))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
@@ -587,6 +596,8 @@ class _TraceDialog(QDialog):
             if answer != QMessageBox.Yes:
                 return
         self.changed = self.apply()
+        for parent in {d.get("parent") for d in self.created if d.get("parent")}:  # confirmed: their SA-3 records
+            self.changed += self.project.record_decomposition(self.project.model.get(parent))
         super().accept()
 
     def reject(self):
@@ -721,8 +732,11 @@ class TraceParentDialog(_TraceDialog):
     FIELD = "parent"  # the reference set by the window
     COLUMNS = ((PARENT, "Voce madre"),)
     OWNER_HEADER = ""
-    HINT = ("Spunta la sezione (es. 3.4.1) o la clausola (es. 3.4.1.3) da cui il requisito è derivato: una sola, "
-            "spuntarne un'altra sposta la scelta. Doppio clic su una riga per leggerne il testo completo.")
+    CHOOSABLE = ("Titolo", "Requisito")  # not the sections (see coverage.derivable)
+    HINT = ("Spunta la clausola (es. 3.4.1.3) o la sottoclausola da cui il requisito è derivato: una sola, "
+            "spuntarne un'altra sposta la scelta; le sezioni (es. 3.4.1) non sono derivabili. Per un punto di elenco "
+            "o una riga di tabella, deriva dalla sua riga nel catalogo Voci SRS. Doppio clic su una riga per "
+            "leggerne il testo completo.")
     REPLACE_TITLE = REPLACE_TEXT = ""
 
     @property
@@ -775,6 +789,7 @@ class TraceItemDialog(TraceParentDialog):
     """SA-3 trace record: the SRS section or clause it records the outcome of («ID voce»), one only."""
     FIELD = "requirement"
     COLUMNS = ((PARENT, "Voce tracciata"),)
+    CHOOSABLE = TRACEABLE  # a section too: the outcome is recorded also for a whole section
     TITLE = "voce SRS tracciata"
     HINT = ("Spunta la sezione (es. 3.4.1) o la clausola (es. 3.4.1.3) di cui l'esito registra la tracciatura: "
             "una sola, spuntarne un'altra sposta la scelta. Doppio clic su una riga per leggerne il testo "
@@ -1106,7 +1121,7 @@ class TraceExclusionDialog(_TraceDialog):
         window.setModal(True)
         self.open_window(window)
         if saved:
-            project.save(only={adr.uuid, item.uuid})  # the ADR and the item excluded by it
+            save_project(self, project, {adr.uuid, item.uuid})  # the ADR and the item excluded by it
             self.adrs_saved.append(adr)
             return True
         project.discard_new(adr.uuid)

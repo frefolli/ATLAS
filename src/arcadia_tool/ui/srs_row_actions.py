@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QHeaderV
                                QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from arcadia_tool.ui.rich_text import RichTextEdit, to_markdown
-from arcadia_tool.ui.srs_trace import ROW_COLORS, TickPickerDialog, function_group
+from arcadia_tool.ui.srs_trace import ROW_COLORS, TickPickerDialog, derived_field, function_group
 from arcadia_tool.ui.theme import ACCENT, BORDER, MUTED, SURFACE, icon
 
 UUID_ROLE = Qt.UserRole
@@ -124,11 +124,13 @@ def choose_functions(project, item, parent=None):
 
 class DeriveDialog(QDialog):
     """One or more derived requirements (SA-4) of a clause. A row per requirement with its ID («<voce>-Dn», given at
-    once) and its optional short name; the obligation of the selected row is written in the box below the table."""
+    once) and its optional short name; the obligation of the selected row is written in the box below the table.
 
-    def __init__(self, project, item, parent=None):
+    function: the function (SA-2 or LA-2) the requirements are mapped on, when derived from its sheet."""
+
+    def __init__(self, project, item, parent=None, function=None):
         super().__init__(parent)
-        self.project, self.item = project, item
+        self.project, self.item, self.function = project, item, function
         self.setWindowTitle(f"Deriva requisiti da {item.get('id')}")
         self.resize(860, 640)
         header = QFrame(objectName="card")
@@ -140,7 +142,9 @@ class DeriveDialog(QDialog):
         header_layout.addWidget(text)
         note = QLabel("Un requisito derivato per riga, con un solo obbligo che spetta a un solo dominio (B5 domanda "
                       "4). L'ID è assegnato in automatico; l'obbligo della riga selezionata si scrive sotto la "
-                      "tabella. Funzione logica, dominio e motivazione si completano poi nella scheda.",
+                      "tabella. Funzione logica, dominio e motivazione si completano poi nella scheda."
+                      + (f" I requisiti vengono mappati sulla funzione {project.model.label(function)}."
+                         if function is not None else ""),
                       objectName="muted")
         note.setWordWrap(True)
 
@@ -291,6 +295,7 @@ class DeriveDialog(QDialog):
             self.table.setCurrentCell(missing[0], NAME_COLUMN)
             self.text.setFocus()
             return
+        values = {derived_field(self.function): self.function.uuid} if self.function is not None else {}
         self.created, self.changed = self.project.derive_requirements(self.item, self.obligations(),
-                                                                      self.decompose.isChecked())
+                                                                      self.decompose.isChecked(), **values)
         self.accept()

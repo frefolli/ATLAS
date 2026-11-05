@@ -527,6 +527,7 @@ def test_publish_asks_first_for_the_changes_of_a_sheet_not_saved(app, tmp_path, 
     assert team.get("members")[0]["account"] == "b" * 32
     monkeypatch.setattr(mw, "resolve_unsaved", lambda e, parent: False)  # cancelled: nothing is published
     editor.start_editing()
+    members = editor.findChild(MembersWidget)  # the page was rebuilt when saved
     members.set_value([{"name": "Mario Rossi", "account": "c" * 32}])
     members.changed.emit()
     seen.clear()

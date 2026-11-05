@@ -40,7 +40,8 @@ def build(tmp_path):
 def test_rows_of_sections_and_clauses(tmp_path):
     _, e = build(tmp_path)
     assert row_kind(e["section"]) == "section" and row_kind(e["clause"]) == "clause"
-    assert row_kind(e["chapter"]) is None and row_kind(e["item"]) is None  # list items: through their clause
+    assert row_kind(e["chapter"]) is None  # chapters and sections: not derivable
+    assert row_kind(e["item"]) == "item"  # list items: derivable, traced to the functions with their clause
     from arcadia_tool.model.element import Element
     assert row_kind(Element("requirement", values={"id": "5.4.3.2-S21", "item_type": "Requisito"})) == "clause"
     assert row_kind(Element("requirement", values={"id": "A.3.1.2", "item_type": "Requisito"})) == "clause"
@@ -139,7 +140,7 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     assert set(buttons) == {"functions", "derive"}
     opened = []
     reader.open_element.connect(opened.append)
-    _click(reader.view, buttons["functions"].center())  # «Funzioni…» of the clause row
+    _click(reader.view, buttons["functions"].center())  # «Mappa a Funzione» of the clause row
     assert e["sf"].get("sections") == [e["clause"].uuid] and opened == []  # done; the item was not opened
     assert reader._links_text(e["clause"]).startswith("Funzioni: SF-DF01-01 · SF-DF01-02 (sezione)")
 
@@ -158,3 +159,129 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     assert reader._links_text(e["section"]) == "Domini: DF01 (principale) · DF02 (contributo)"
     assert window.project.is_modified
     window.close()
+
+
+def test_everything_but_chapters_and_sections_is_derivable(app, tmp_path):
+    from arcadia_tool.model.coverage import DERIVED, coverage, derivable
+    from arcadia_tool.ui.srs_reader import ROW_ACTIONS, document_order
+
+    p, e = build(tmp_path)
+    sub = p.new_element("requirement", id="3.14.4.2.1", item_type="Requisito", parent=e["clause"].uuid,
+                        category=["Bordo"], text="a sub-clause")
+    assert not derivable(e["chapter"]) and not derivable(e["section"])  # e.g. 3.8.1
+    assert all(derivable(x) for x in (e["clause"], sub, e["item"]))  # 3.8.1.1, its sub-clauses, list items
+    assert [name for name, *_ in ROW_ACTIONS[row_kind(e["item"])]] == ["derive"]  # functions: with the clause
+    # Derived from a list item: «3.14.4.2 a)-D1», covering its clause at the level SA-4.
+    created, _ = p.derive_requirements(e["item"], [("", "Rileva il primo movimento.")])
+    assert [d.get("id") for d in created] == ["3.14.4.2 a)-D1"]
+    rows = {r.item.uuid: r for r in coverage(p.model, document_order(p.model), "Bordo").rows}
+    assert rows[e["clause"].uuid].at(DERIVED) and created[0] in rows[e["clause"].uuid].derived
+    # The menu of the catalogue: «Deriva» on clauses and list items, not on sections and chapters.
+    reader = SrsReader(p)
+    texts = lambda x: [a.text() for a in reader.context_menu(x).actions()]
+    assert not any(t.startswith("Deriva") for t in texts(e["section"]) + texts(e["chapter"]))
+    assert any(t.startswith("Deriva requisito") for t in texts(e["item"]))
+    assert "Deriva più requisiti…" in texts(e["item"]) and "Alloca alle funzioni di sistema…" not in texts(e["item"])
+    assert "Alloca alle funzioni di sistema…" in texts(sub)
+
+
+def records_of(p, item):
+    return [r for r in p.model.of_kind("trace_record") if r.get("requirement") == item.uuid]
+
+
+def test_a_requirement_created_from_sa4_has_its_trace_record_too(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui.model_tree import ModelTree
+
+    p, e = build(tmp_path)
+    window = MainWindow()
+    window._set_project(p)
+    monkeypatch.setattr(ModelTree, "_ask_context", lambda self, kind: {"parent": e["clause"].uuid})
+    window.tree.create("derived_requirement")  # SA-4 in the tree on the left
+    records = records_of(p, e["clause"])
+    derived = p.model.of_kind("derived_requirement")
+    assert len(derived) == 1 and len(records) == 1
+    assert records[0].get("outcome") == "Scomposta in requisiti derivati" and records[0].get("b5_question")
+    assert derived[0].uuid in records[0].get("exchange_items")
+    window.tree.create("derived_requirement", {"parent": e["clause"].uuid})  # «Deriva requisito da…» of the catalogue
+    assert len(records_of(p, e["clause"])) == 1  # the same record, listing both
+    assert len(records_of(p, e["clause"])[0].get("exchange_items")) == 2
+    window._set_project(None)
+    window.close()
+
+
+@pytest.mark.parametrize("kind", ["system_function", "logical_function"])
+def test_derive_from_a_clause_mapped_on_a_function(app, tmp_path, monkeypatch, kind):
+    from PySide6.QtWidgets import QLabel, QListWidget
+
+    p, e = build(tmp_path)
+    if kind == "system_function":
+        function = e["sf"]
+        function.set("sections", [e["section"].uuid, e["clause"].uuid])
+    else:
+        function = p.new_element("logical_function", name="Rileva", refines=e["sf"].uuid)
+        function.set("detail_requirements", [e["section"].uuid, e["clause"].uuid])
+    p.update(function)
+    window = MainWindow()
+    window._set_project(p)
+    window.tree.select(function.uuid)
+    editor = window.editor
+    allocated = editor.findChild(QListWidget, "srsAllocated")
+    assert allocated is not None
+    assert allocated.contextMenuPolicy() == Qt.CustomContextMenu
+
+    menu = editor._allocated_menu(e["section"])  # a section: not derivable
+    assert not menu.actions()[0].isEnabled() and "non sono derivabili" in menu.actions()[0].text()
+    menu = editor._allocated_menu(e["clause"])
+    assert menu.actions()[0].isEnabled() and menu.actions()[0].text() == "Deriva requisiti…"
+
+    def run(dialog):
+        assert "mappati sulla funzione" in " ".join(label.text() for label in dialog.findChildren(QLabel))
+        dialog.set_obligation(0, "Rileva il movimento.")
+        dialog._create()
+        return True
+    monkeypatch.setattr(row_actions.DeriveDialog, "exec", run)
+    menu.actions()[0].trigger()
+    derived = p.model.of_kind("derived_requirement")
+    field = "system_function" if kind == "system_function" else "function"
+    assert len(derived) == 1 and derived[0].get(field) == function.uuid and derived[0].get("parent") == e["clause"].uuid
+    assert records_of(p, e["clause"])[0].get("outcome") == "Scomposta in requisiti derivati"
+    name = "derivedMapped" if kind == "system_function" else "derivedAllocated"
+    box = editor.findChild(QListWidget, name)  # the sheet rebuilt: the box of the derived requirements shows it
+    assert box.item(0).data(Qt.UserRole) == derived[0].uuid
+    assert "CLAUSOLE SRS MAPPATE" in [label.text() for label in editor.findChildren(QLabel)]  # the title of the card
+    window._set_project(None)
+    window.close()
+
+
+def test_deleting_a_derived_requirement_removes_its_trace(tmp_path):
+    p, e = build(tmp_path)
+    (first, second), _ = p.derive_requirements(e["clause"], [("", "Uno."), ("", "Due.")])
+    record = records_of(p, e["clause"])[0]
+    p.save()
+    p.delete_element(first.uuid)  # another one left: the record stays, without it
+    assert records_of(p, e["clause"]) == [record] and record.get("exchange_items") == [second.uuid]
+    assert record.get("outcome") == "Scomposta in requisiti derivati"
+    p.delete_element(second.uuid)  # the last one: the record goes, also from the disk
+    assert not records_of(p, e["clause"])
+    p.save()
+    p.close()
+    p = Project.open(p.path)
+    assert not p.model.of_kind("trace_record") and not p.model.of_kind("derived_requirement")
+
+
+def test_a_record_with_other_contents_stays_when_the_last_derived_is_deleted(tmp_path):
+    p, e = build(tmp_path)
+    (derived,), _ = p.derive_requirements(e["clause"], [("", "Uno.")])
+    record = records_of(p, e["clause"])[0]
+    record.set("notes", "Scritta dall'analista")
+    p.update(record)
+    p.delete_element(derived.uuid)
+    assert records_of(p, e["clause"]) == [record] and record.get("notes") == "Scritta dall'analista"
+    assert not record.get("exchange_items") and not record.get("outcome") and not record.get("b5_question")
+
+
+def test_a_new_derived_requirement_cancelled_leaves_no_record(app, tmp_path):
+    p, e = build(tmp_path)
+    (derived,), _ = p.derive_requirements(e["clause"], [("", "Uno.")])  # «Nuovo», then «Annulla»: never saved
+    assert p.discard_new(derived.uuid)
+    assert not records_of(p, e["clause"]) and not p.model.of_kind("derived_requirement")

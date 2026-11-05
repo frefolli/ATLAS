@@ -64,6 +64,8 @@ def no_modal_message_boxes(monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", record("warning", QMessageBox.Ok))
     monkeypatch.setattr(QMessageBox, "question", record("question", QMessageBox.No))
     monkeypatch.setattr(QMessageBox, "critical", record("critical", QMessageBox.Ok))
+    from arcadia_tool.ui.versions import DiscardDialog  # «Scarta le modifiche», unless a test says otherwise
+    monkeypatch.setattr(DiscardDialog, "exec", lambda self: True)
     yield shown
     critical = [text for kind, text in shown if kind == "critical"]
     assert not critical, f"messaggio di errore mostrato durante il test: {critical}"

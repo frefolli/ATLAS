@@ -4,7 +4,6 @@ Items are shown with their full text in document order, can be filtered by chapt
 searched; several items can be selected (Shift+arrows, Ctrl/Shift+click) and deleted together. From the row of a
 section its domains are chosen (A4), from the row of a clause its system functions and its derived requirements.
 """
-import re
 from html import escape
 
 from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSize, Qt, Signal
@@ -13,6 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFram
                                QListView, QMenu, QMessageBox, QProgressDialog, QPushButton, QStyle, QStyledItemDelegate, QTabBar, QVBoxLayout, QWidget)
 
 from arcadia_tool.importers.srs_pdf import chapter_of_item
+from arcadia_tool.model.coverage import derivable
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.ui.element_editor import image_size, load_pixmap
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
@@ -89,21 +89,21 @@ WRAP = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
 # Actions in the row of a section (domains, A4) and of a clause (system functions, derived requirements).
 ROW_ACTIONS = {"section": (("domains", "Domini…", "Alloca la sezione ai domini funzionali (principale e "
                                                    "contributori)"),),
-               "clause": (("functions", "Funzioni…", "Alloca la clausola alle funzioni di sistema"),
-                          ("derive", "Deriva…", "Deriva uno o più requisiti dalla clausola"))}
+               "clause": (("functions", "Mappa a Funzione", "Mappa la clausola alle funzioni di sistema"),
+                          ("derive", "Deriva…", "Deriva uno o più requisiti dalla clausola")),
+               "item": (("derive", "Deriva…", "Deriva uno o più requisiti dalla voce (punto di elenco, riga di "
+                                              "tabella…); la tracciabilità alle funzioni è quella della clausola"),)}
 ACTION_GAP = 6
 
 
 def row_kind(element):
-    """«section» for a section (three numbers), «clause» for a clause (four numbers or more), else None."""
-    item_type = element.get("item_type")
-    if item_type == "Sezione":
+    """«section» for a section (three numbers), «clause» for a clause (four numbers or more, and its sub-clauses),
+    «item» for a list item or a table row (derivable, traced with its clause), None for a chapter."""
+    if element.get("item_type") == "Sezione":
         return "section"
-    if item_type in ("Requisito", "Titolo"):
-        number = re.split(r"[\s\-(]", element.get("id") or "", maxsplit=1)[0]
-        if len([p for p in number.split(".") if p]) >= 4:
-            return "clause"
-    return None
+    if not derivable(element):
+        return None
+    return "item" if element.get("item_type") == "Voce" else "clause"
 
 
 class ItemDelegate(QStyledItemDelegate):
@@ -495,8 +495,8 @@ class SrsReader(QWidget):
         self.view.customContextMenuRequested.connect(self._context_menu)
         QShortcut(QKeySequence.Delete, self.view, activated=self.delete_selected)
 
-        hint = QLabel("Sezioni: «Domini…» le alloca ai domini funzionali. Clausole: «Funzioni…» le alloca alle "
-                      "funzioni di sistema, «Deriva…» crea uno o più requisiti derivati. Doppio clic apre la voce. "
+        hint = QLabel("Sezioni: «Domini…» le alloca ai domini funzionali. Clausole: «Mappa a Funzione» le mappa "
+                      "alle funzioni di sistema, «Deriva…» crea uno o più requisiti derivati. Doppio clic apre la voce. "
                       "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
                       "modalità modifica, Canc elimina le voci selezionate.",
                       objectName="muted")
@@ -702,7 +702,7 @@ class SrsReader(QWidget):
                 parts.append(f"{self._short(element.get('primary_domain'))} (principale)")
             parts += [f"{self._short(d)} (contributo)" for d in element.get("contributing_domains") or []]
             return "Domini: " + " · ".join(parts) if parts else "Nessun dominio allocato"
-        if kind == "clause":
+        if kind in ("clause", "item"):
             functions = self._links.get("functions", {})
             direct = [f.get("id") or f.label for f in functions.get(element.uuid, [])]
             inherited = []
@@ -720,7 +720,7 @@ class SrsReader(QWidget):
         return ""
 
     def run_action(self, uuid, name):
-        """«Domini…» of a section, «Funzioni…» or «Deriva…» of a clause."""
+        """«Domini…» of a section, «Mappa a Funzione» or «Deriva…» of a clause."""
         from arcadia_tool.ui.srs_row_actions import DeriveDialog, ItemDomainsDialog, choose_functions
 
         item = self.project.model.get(uuid)
@@ -790,17 +790,19 @@ class SrsReader(QWidget):
         label = element.get("id") or ""
         menu.addAction(icon("mdi6.arrow-right-bold-box-outline"), f"Vai alla voce {label}",
                        lambda _=False: self.open_element.emit(element.uuid))
-        menu.addAction(icon("mdi6.call-split"), f"Deriva requisito da {label}…",
-                       lambda _=False: self.derive_requested.emit(element.uuid))
         kind = row_kind(element)
+        if kind in ("clause", "item"):  # not from chapters and sections
+            menu.addAction(icon("mdi6.call-split"), f"Deriva requisito da {label}…",
+                           lambda _=False: self.derive_requested.emit(element.uuid))
         if kind:
             menu.addSeparator()
         if kind == "section":
             menu.addAction(icon("mdi6.sitemap-outline"), "Alloca ai domini funzionali…",
                            lambda _=False: self.run_action(element.uuid, "domains"))
-        elif kind == "clause":
-            menu.addAction(icon("mdi6.function-variant"), "Alloca alle funzioni di sistema…",
-                           lambda _=False: self.run_action(element.uuid, "functions"))
+        elif kind in ("clause", "item"):
+            if kind == "clause":
+                menu.addAction(icon("mdi6.function-variant"), "Alloca alle funzioni di sistema…",
+                               lambda _=False: self.run_action(element.uuid, "functions"))
             menu.addAction(icon("mdi6.call-split"), "Deriva più requisiti…",
                            lambda _=False: self.run_action(element.uuid, "derive"))
         menu.addSeparator()

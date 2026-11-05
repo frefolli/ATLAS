@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QHBoxLayout, QInp
 from arcadia_tool.documents.values import plain
 from arcadia_tool.model import discussions as d
 from arcadia_tool.model.teams import memberships
+from arcadia_tool.ui.busy import save_project
 from arcadia_tool.ui.element_editor import card
 from arcadia_tool.ui.theme import ACCENT, MUTED, icon
 
@@ -300,6 +301,6 @@ class DiscussionCard(QWidget):
         self._saved(message)
 
     def _saved(self, message):
-        self.project.save(only={message.uuid})  # alone: the changes in progress of the sheet are not saved
+        save_project(self, self.project, {message.uuid})  # alone: the changes in progress of the sheet are not saved
         d.mark_read(self.project, self.subject)
         self.changed.emit()

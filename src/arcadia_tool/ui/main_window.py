@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu,
                                QMessageBox,
-                               QProgressDialog, QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+                               QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from arcadia_tool import APP_NAME, __version__
 from arcadia_tool.accounts import git_credentials
@@ -14,6 +14,7 @@ from arcadia_tool.storage.repository import PROJECT_FILE
 from arcadia_tool.storage.trash import move_to_trash
 
 TAB_TITLE_LENGTH = 48
+from arcadia_tool.ui.busy import run_busy, save_project
 from arcadia_tool.ui.dialogs import NewProjectDialog, settings
 from arcadia_tool.ui.accounts import AccountDialog, account_store, require_login
 from arcadia_tool.ui.branding import FittedImage, logo_size, vertical_logo
@@ -39,7 +40,7 @@ from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
 from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, TEXT, icon, kind_icon
 from arcadia_tool.ui.branches import BranchesDialog
-from arcadia_tool.ui.versions import CompareDialog, HistoryDialog, PublishDialog, UnpublishedDialog
+from arcadia_tool.ui.versions import CompareDialog, DiscardDialog, HistoryDialog, PublishDialog, UnpublishedDialog
 from arcadia_tool.ui import updates as updates_ui
 
 MAX_RECENT = 8
@@ -70,7 +71,25 @@ def show_access_denied(parent, reason, user):
         QApplication.clipboard().setText(ident)
 
 
-SAVE_PROGRESS_THRESHOLD = 300
+
+
+class LocalChangesCheck(QThread):
+    """Whether the saved project differs from the last published version: it reads the whole project, seconds the first
+    time, so not in the thread of the interface."""
+    done = Signal(object, bool)  # the state it was asked for (see MainWindow._local_key), the answer
+    running = set()  # kept alive until they end, also if the window goes first
+
+    def __init__(self, project, key):
+        super().__init__()
+        self.project, self.key = project, key
+        LocalChangesCheck.running.add(self)
+        self.finished.connect(lambda: LocalChangesCheck.running.discard(self))
+
+    def run(self):
+        try:
+            self.done.emit(self.key, self.project.has_unpublished_changes())
+        except Exception:  # e.g. the project closed meanwhile: nothing to say
+            pass
 
 
 class MainWindow(QMainWindow):
@@ -188,6 +207,12 @@ class MainWindow(QMainWindow):
                                        "Nuovo progetto")
         self.open_action = self._action("Apri", "mdi6.folder-open-outline", self.open_project_dialog,
                                         QKeySequence.Open, "Apri progetto")
+        self.discard_action = self._action("Scarta", "mdi6.undo-variant", self.discard_local_changes, None,
+                                           "Scarta le modifiche locali: il modello torna all'ultima versione "
+                                           "pubblicata del ramo (prima mostra cosa si perde)")
+        self.discard_action.setVisible(False)  # only when there are some (see _update_discard)
+        self._local_state, self._local_check = None, None
+        self._local_timer = QTimer(self, singleShot=True, interval=300, timeout=self._check_local_changes)
         self.save_action = self._action("Salva", "mdi6.content-save-outline", self.save,
                                         QKeySequence("Ctrl+Shift+S"), "Salva tutte le modifiche del modello, "
                                         "anche quelle delle schede e delle viste aperte")
@@ -247,7 +272,7 @@ class MainWindow(QMainWindow):
         bar = QToolBar("Principale", movable=False)
         bar.setIconSize(QSize(18, 18))
         bar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        for a in (self.new_action, self.open_action, self.save_action, self.close_action):
+        for a in (self.new_action, self.open_action, self.discard_action, self.save_action, self.close_action):
             bar.addAction(a)
         bar.addSeparator()  # «Importa SRS…» is in the menu of «Voci SRS» in the tree (and in File)
         bar.addAction(self.check_action)
@@ -274,6 +299,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.clone_action)
         self.recent_menu = file_menu.addMenu("Progetti recenti")
         file_menu.addSeparator()
+        file_menu.addAction(self.discard_action)
         file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         file_menu.addAction(self.import_action)
@@ -477,8 +503,12 @@ class MainWindow(QMainWindow):
 
     def _after_save(self):
         """Saved: the findings follow the model, once the checks have been run."""
-        if self.checks.has_run:
+        if self.checks.has_run:  # a couple of seconds on thousands of SRS items: said in the status bar
+            bar, saved = self.statusBar(), self.statusBar().currentMessage()
+            bar.showMessage("Aggiornamento delle verifiche…")
+            bar.repaint()
             self.checks.run(show_progress=False)
+            bar.showMessage(saved, 5000)
 
     def _remote_changed(self):
         """The address of the repository changed: keep the project as it is, or reload it from there."""
@@ -595,6 +625,7 @@ class MainWindow(QMainWindow):
         modified = has_project and self.project.is_modified
         if modified:
             self._recovery_pending = True  # written by the timer
+        self._local_state = None  # e.g. published, or the settings of the project changed
         for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
                   self.close_action, self.import_action, self.settings_action, self.send_action,
                   self.reload_action, self.migrate_action, self.check_action, self.check_settings_action,
@@ -753,8 +784,10 @@ class MainWindow(QMainWindow):
             self, "Modifiche non salvate", f"Salvare le modifiche a «{self.project.name}»?",
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
         if answer == QMessageBox.Save:
-            self.project.save()
+            save_project(self, self.project)
         elif answer == QMessageBox.Discard:
+            if not DiscardDialog(self.project, self, unsaved=True).exec():  # what is lost, before losing it
+                return False
             self.project.discard_recovery()
         return answer != QMessageBox.Cancel
 
@@ -945,6 +978,34 @@ class MainWindow(QMainWindow):
     def _update_save(self):
         """«Salva» of the toolbar: enabled when the model, a sheet or a view has changes not saved."""
         self.save_action.setEnabled(bool(self.project) and (self.project.is_modified or bool(self._dirty_pages())))
+        self._update_discard()
+
+    def _local_key(self):
+        """What the answer of LocalChangesCheck depends on."""
+        return id(self.project), self.project.change_mark(), self.project.repository.head()
+
+    def _update_discard(self):
+        """«Scarta»: shown when there are local changes and a version to go back to. Changes not saved: at once;
+        saved and not published: known a moment later, from LocalChangesCheck."""
+        if not self.project or not self.project.repository.head():
+            self.discard_action.setVisible(False)
+        elif self.project.is_modified or self._dirty_pages():
+            self.discard_action.setVisible(True)
+        elif self._local_state is not None and self._local_state[0] == self._local_key():
+            self.discard_action.setVisible(self._local_state[1])
+        else:
+            self._local_timer.start()
+
+    def _check_local_changes(self):
+        if self.project is None or (self._local_check is not None and self._local_check in LocalChangesCheck.running):
+            return
+        self._local_check = LocalChangesCheck(self.project, self._local_key())
+        self._local_check.done.connect(self._local_changes_checked)
+        self._local_check.start()
+
+    def _local_changes_checked(self, key, unpublished):
+        self._local_state = (key, unpublished)
+        self._update_discard()  # the project may have changed meanwhile: asked again
 
     def _page_changed(self, _index):
         # Emitted also when the first tab is added (index 0) and when the last one is closed (index -1).
@@ -977,7 +1038,7 @@ class MainWindow(QMainWindow):
         project stay to be saved (the «Salva» of the toolbar saves everything)."""
         own = getattr(page, "element", None) or getattr(page, "view", None)  # the sheet's element, the view
         only = local_changes(page, self.project) | ({own.uuid} if own is not None else set())
-        self.project.save(only=only)
+        save_project(self, self.project, only)
         forget_local_changes(page)
 
     def _sheet_saved(self, editor):
@@ -1141,7 +1202,7 @@ class MainWindow(QMainWindow):
     def _diagram_saved(self, message, page=None):
         """A view created (the project saved), or saved with «Salva vista» (only the view written)."""
         if page is None:
-            self._save_with_progress()
+            save_project(self, self.project)
         else:
             self._save_local(page)
         self._refresh_state()
@@ -1159,7 +1220,7 @@ class MainWindow(QMainWindow):
     def _diagram_edited(self, message, page=None):
         """Elements created or deleted from a view: written at once (only them), the other views drawn again."""
         if page is None:
-            self._save_with_progress()
+            save_project(self, self.project)
         else:
             self._save_local(page)
         self._model_changed()
@@ -1203,7 +1264,7 @@ class MainWindow(QMainWindow):
         previous = element.copy()
         element.set("status", status)
         others = self.project.update(element, previous) or []
-        self.project.save(only={uuid, *(o.uuid for o in others)})
+        save_project(self, self.project, {uuid, *(o.uuid for o in others)})
         for changed in [element, *others]:
             self._element_changed(changed)
         self._refresh_state()
@@ -1498,7 +1559,7 @@ class MainWindow(QMainWindow):
         for page in self._dirty_pages():
             page.save_view() if isinstance(page, DiagramPage) else page.save_changes()
         left = self._dirty_pages()  # e.g. a sheet that could not be saved: it says why
-        self._save_with_progress()
+        save_project(self, self.project)
         self._refresh_state()
         self.statusBar().showMessage(f"Modifiche salvate; non salvate: {len(left)} schede o viste" if left else
                                      "Tutte le modifiche salvate", 5000)
@@ -1518,22 +1579,6 @@ class MainWindow(QMainWindow):
         elif self.project.is_modified or self._dirty_pages():
             self.statusBar().showMessage("Nessuna modifica in questa tab: «Salva» nella barra in alto "
                                          "(Ctrl+Maiusc+S) salva tutte le modifiche del modello", 6000)
-
-    def _save_with_progress(self):
-        if self.project.pending_count < SAVE_PROGRESS_THRESHOLD:
-            self.project.save()
-            return
-        dialog = QProgressDialog("Salvataggio delle modifiche…", None, 0, self.project.pending_count, self)
-        dialog.setWindowTitle("Salva")
-        dialog.setWindowModality(Qt.WindowModal)
-        dialog.setMinimumDuration(0)
-
-        def progress(done, total):
-            dialog.setValue(done)
-            QApplication.processEvents()
-
-        self.project.save(progress)
-        dialog.close()
 
     def import_srs(self):
         if not self.project:
@@ -1741,10 +1786,13 @@ class MainWindow(QMainWindow):
         branch (the sheets and the views in edit mode too); the project is opened again."""
         if not self.project or not self.project.versions():
             return False
+        self._flush_editors()
+        if not DiscardDialog(self.project, self, pending=len(self._dirty_pages())).exec():
+            return False
         for editor in self._unsaved_editors():  # their drafts go with the rest
             editor.cancel_changes(ask=False)
         path = self.project.path
-        self.project.discard_unpublished()
+        run_busy(self, "Annullamento delle modifiche locali…", lambda _report: self.project.discard_unpublished())
         self._set_project(None)  # its files changed
         self.open_project(str(path), confirmed=True, alert=False)
         if self.project is not None:
@@ -1886,7 +1934,7 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is publish:
             self.publish()
             return not self.project.has_unpublished_changes()
-        return box.clickedButton() is discard
+        return box.clickedButton() is discard and bool(DiscardDialog(self.project, self).exec())
 
     # --- updates of ATLAS ---------------------------------------------------------------------------
 

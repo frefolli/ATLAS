@@ -69,6 +69,15 @@ class SectionCoverage(Coverage):
         self.section = section
 
 
+NOT_DERIVABLE = ("Capitolo", "Sezione")  # chapters and sections (three numbers, e.g. 3.8.1) group the clauses
+
+
+def derivable(item):
+    """Requirements (SA-4) can be derived from the SRS item: from every clause (3.8.1.1), its sub-clauses, list
+    items and table rows; not from chapters and sections."""
+    return item is not None and item.kind == "requirement" and item.get("item_type") not in NOT_DERIVABLE
+
+
 def _chain(model, item):
     """The item, then the parts containing it (its parent, the parent of its parent…)."""
     chain, seen = [item], {item.uuid}
@@ -93,6 +102,16 @@ def coverage(model, ordered, category):
             sf = model.get(d.get("system_function")) if d.get("system_function") else None
             if sf is not None and sf not in functions_of.get(d.get("parent"), []):
                 functions_of.setdefault(d.get("parent"), []).append(sf)
+    # Derived from (or traced to) a list item or a table row: they cover the clause containing it.
+    for item in ordered:
+        if item.get("item_type") in COUNTED_TYPES or not (derived_of.get(item.uuid) or functions_of.get(item.uuid)):
+            continue
+        clause = next((e for e in _chain(model, item)[1:] if e.get("item_type") in COUNTED_TYPES), None)
+        if clause is not None:
+            derived_of.setdefault(clause.uuid, []).extend(d for d in derived_of.get(item.uuid, [])
+                                                          if d not in derived_of.get(clause.uuid, []))
+            functions_of.setdefault(clause.uuid, []).extend(f for f in functions_of.get(item.uuid, [])
+                                                            if f not in functions_of.get(clause.uuid, []))
     rows, by_item = [], {}
     for item in ordered:
         if item.get("item_type") not in COUNTED_TYPES or category not in (item.get("category") or []):

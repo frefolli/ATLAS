@@ -6,6 +6,41 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.9.2] - 2026-11-05
+
+### Aggiunto
+- **Indicazione di salvataggio in corso.** Ogni salvataggio (la barra in alto, la scheda o la vista, lo stato di una
+  scheda, un messaggio di discussione) e la pubblicazione non bloccano più la finestra: se durano più di un istante
+  compare una finestra con la barra animata, «Salvataggio in corso…» o «Pubblicazione in corso…». Quando le verifiche
+  si rieseguono dopo il salvataggio, la barra di stato scrive «Aggiornamento delle verifiche…».
+- **Pulsante «Scarta» prima di «Salva».** Compare nella barra in alto quando ci sono modifiche locali (non salvate, o
+  salvate e non pubblicate) e riporta il modello all'ultima versione pubblicata del ramo.
+- **Finestra delle modifiche che verranno scartate.** Quando si scartano le modifiche locali, dal nuovo pulsante, da
+  *Versioni Modello*, al cambio di ramo o alla chiusura del progetto senza salvare, una finestra simile a «Pubblica»
+  mostra cosa si perde e permette di annullare.
+- **Deriva requisiti dalla scheda di una funzione.** Nella sezione «Clausole SRS mappate» (ex «Allocazione alle voci
+  SRS e ai requisiti derivati») di una funzione di sistema o logica, il clic destro su una clausola mappata offre
+  «Deriva requisiti…». I requisiti creati sono mappati sulla funzione e compaiono nel suo elenco dei requisiti derivati.
+
+### Corretto
+- **Registro di tracciabilità sempre aggiornato quando si deriva.** Il registro SA-3 della voce si creava o aggiornava
+  solo con «Deriva…» del catalogo Voci SRS. Ora vale anche per un requisito creato da *SA-4 Requisiti derivati* nel
+  menu laterale, per «Deriva requisito da…» del catalogo e per la derivazione dalle finestre di tracciabilità.
+- **Cancellare un requisito derivato aggiorna il registro di tracciabilità.** Il requisito esce dall'elenco del
+  registro SA-3. Con l'ultimo requisito derivato si cancella anche il registro della voce; se contiene altro (funzioni,
+  voci di dizionario, note, ADR) resta, con esito e domanda B5 da scegliere di nuovo.
+
+### Modificato
+- **Derivabili tutte le voci SRS tranne capitoli e sezioni.** Si derivano requisiti (SA-4) da ogni clausola
+  (es. 3.8.1.1), dalle sue sottoclausole e anche dai punti di elenco e dalle righe di tabella (es. 3.4.4.2.3 b),
+  4.5.2-R18), che prima non avevano il pulsante «Deriva…» né «Deriva più requisiti…». Non sono derivabili i capitoli
+  e le sezioni (tre numeri, es. 3.8.1): sulle loro righe «Deriva» non compare più, e nella scelta della voce madre
+  non si possono spuntare.
+  - Un punto di elenco si traccia alle funzioni di sistema con la sua clausola: ha solo «Deriva…».
+  - Il pulsante «Funzioni…» delle righe delle clausole si chiama ora «Mappa a Funzione».
+  - Report di copertura: un requisito derivato da un punto di elenco, o da una riga di tabella, copre la clausola
+    che lo contiene.
+
 ## [0.9.1] - 2026-11-05
 
 ### Aggiunto
@@ -742,7 +777,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.1...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.2...main
+[0.9.2]: https://github.com/salvodesi/ATLAS/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/salvodesi/ATLAS/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/salvodesi/ATLAS/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/salvodesi/ATLAS/compare/v0.7.0...v0.8.0
