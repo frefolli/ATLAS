@@ -1187,7 +1187,7 @@ def test_a_right_click_on_a_tab_closes_it_the_others_or_all(app, tmp_path, monke
     assert pages.count() == 0
 
 
-def test_the_save_of_a_page_writes_only_its_changes_and_the_toolbar_saves_everything(app, tmp_path):
+def test_the_save_of_a_page_writes_only_its_changes_and_the_toolbar_saves_everything(optional_fields, app, tmp_path):
     from arcadia_tool.ui import main_window as mw
 
     p, d, f, *_ = build(tmp_path)

@@ -173,6 +173,18 @@ def exclusion_adr(model, item, domain):
     return found[-1] if found else None
 
 
+def proposer_defaults(model, user):
+    """Who proposes a new ADR: the team of the user logged in, and the user as a member of it (of the first one, if
+    more: it can be changed in the sheet); nothing if the user is in no team."""
+    from arcadia_tool.model.teams import memberships
+
+    found = memberships(model, user) if user is not None else []
+    if not found:
+        return {}
+    team, row = found[0]
+    return {"proposer": team.uuid, "proposer_member": row.get("name")}
+
+
 def exclusion_defaults(model, item, domain):
     """The values of the ADR of exclusion of an SRS item from a domain (its reason: written by the team; other
     items it leaves out: added in its sheet)."""
@@ -342,6 +354,8 @@ def approval_problems(model, adr):
         problems.append(f"Esiste già un dominio «{name}».")
     if not (adr.get("mission_proposed") or "").strip():
         problems.append("Manca la missione proposta.")
+    if not any(model.get(u) is not None for u in adr.get("sections_allocated") or []):
+        problems.append("Mancano le sezioni allocate al nuovo dominio.")  # a domain must have some: model.required
     return problems
 
 

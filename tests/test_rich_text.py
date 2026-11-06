@@ -76,7 +76,7 @@ def test_the_box_grows_with_its_text(app):
     box.close()
 
 
-def test_sheet_texts_have_styles_and_srs_items_stay_plain(app, tmp_path):
+def test_sheet_texts_have_styles_and_srs_items_stay_plain(optional_fields, app, tmp_path):
     p = Project.create(tmp_path / "p", "Prova")
     domain = p.new_element("domain", name="Protezione", mission="Impedire i **movimenti**.")
     item = p.new_element("requirement", id="3.14.4.2", item_type="Requisito", text="Spec text")

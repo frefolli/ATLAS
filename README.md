@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.3</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.4</sub>
 </p>
 
 > [!WARNING]

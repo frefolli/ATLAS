@@ -1126,12 +1126,14 @@ class TraceExclusionDialog(_TraceDialog):
         """The ADR of exclusion of the item, opened at once in its window, in edit mode, to write the reason.
         Saved: written to disk with the item, now excluded (True). «Annulla» or closed without saving: the ADR goes
         away and the item is not excluded (False)."""
-        from arcadia_tool.model.adr import exclusion_defaults
+        from arcadia_tool.model.adr import exclusion_defaults, proposer_defaults
         from arcadia_tool.ui.element_editor import ElementWindow
 
         project = self.project
-        adr = project.new_element("adr", **{k: v for k, v in exclusion_defaults(project.model, item, self.domain)
-                                             .items() if v})
+        user_of = getattr(self.parent(), "user_of", None)  # who proposes it: the user, else the team of the domain
+        values = {**exclusion_defaults(project.model, item, self.domain),
+                  **proposer_defaults(project.model, user_of() if user_of else None)}
+        adr = project.new_element("adr", **{k: v for k, v in values.items() if v})
         window = ElementWindow(parent=self)
         editor = window.editor
         editor.edit_denied = self.edit_denied

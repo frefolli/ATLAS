@@ -6,6 +6,28 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.9.4] - 2026-11-06
+
+### Aggiunto
+- **Campi obbligatori nelle schede.** Un dominio funzionale si salva solo con nome, missione e almeno una sezione SRS
+  mappata; una funzione di sistema solo con nome, descrizione e clausole mappate. Salvando senza, un avviso elenca i
+  campi che mancano e la scheda resta aperta. Una scheda appena creata e incompleta non viene scritta: se la si chiude,
+  o se si chiude il progetto, l'elemento sparisce dal menu laterale e le mappature fatte dalla scheda tornano com'erano.
+  - Vale anche per le schede già esistenti, alla prima modifica.
+  - Un'ADR di nuovo dominio si approva solo se indica le sezioni allocate.
+- **Schede vuote non salvabili.** Una scheda di System Analysis (anche SA-3 e SA-4) o un'ADR si salva solo se almeno un
+  campo è riempito. Non contano i valori dati dal tool: ID, stato, tipo di decisione, proponente e ciò che arriva dal
+  punto da cui la scheda è stata creata.
+- **Proponente compilato in automatico.** Una nuova ADR, anche di esclusione, ha come «Proponente (team)» il team
+  dell'utente collegato e come «Proponente (membro)» l'utente stesso; si può cambiare nella scheda. Le ADR importate
+  da Excel mantengono quanto scritto nel file.
+
+### Modificato
+- **Niente più menu a tendina nelle schede di domini, funzioni di sistema e ADR.** Tutti i campi a scelta si scelgono in
+  una finestra con ricerca: i riferimenti ad altri elementi (es. «Team assegnatario», «Dominio», «Proponente (team)»), i
+  valori fissi (es. «Esito della decisione DA», «Tipo di decisione») e «Proponente (membro)» con «Scegli…»; lo stato
+  con un clic sul suo indicatore colorato.
+
 ## [0.9.3] - 2026-11-06
 
 ### Aggiunto
@@ -803,7 +825,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.3...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.4...main
+[0.9.4]: https://github.com/salvodesi/ATLAS/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/salvodesi/ATLAS/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/salvodesi/ATLAS/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/salvodesi/ATLAS/compare/v0.9.0...v0.9.1

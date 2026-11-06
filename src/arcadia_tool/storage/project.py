@@ -940,7 +940,29 @@ class Project:
         self._deleted.pop(uuid, None)
         if element.kind == "derived_requirement":  # the SA-3 record written when it was created
             self._forget_derived(element)
+        self._forget_new_owner(element)
         return True
+
+    def _forget_new_owner(self, element):
+        """A domain or a system function never saved goes away: what its sheet mapped on it (not saved either, it took
+        effect at once) goes back as it was: the SRS items mapped on the domain, the derived requirements on the
+        function."""
+        for item in self.model.of_kind("requirement"):
+            if element.uuid in (item.get("primary_domain"), *(item.get("contributing_domains") or []),
+                                *(item.get("excluded_domains") or [])):
+                saved = self._saved.get(self._relative(self.element_file(item)))
+                if saved is not None:
+                    item.values = loads(saved.decode("utf-8")).values
+                    self._modified.discard(item.uuid)
+                else:
+                    item.set("primary_domain", None if item.get("primary_domain") == element.uuid
+                             else item.get("primary_domain"))
+                    for name in ("contributing_domains", "excluded_domains"):
+                        item.set(name, [u for u in item.get(name) or [] if u != element.uuid])
+        for derived in self.model.of_kind("derived_requirement"):
+            if derived.get("system_function") == element.uuid:
+                derived.set("system_function", None)
+                self._touch(derived.uuid)
 
     def delete_elements(self, uuids):
         for uuid in list(uuids):

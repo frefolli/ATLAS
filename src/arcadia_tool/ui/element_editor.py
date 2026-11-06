@@ -23,9 +23,10 @@ from arcadia_tool.model.adr import (approval_problems, approve_new_domain, appro
                                     decided_reallocations, open_reallocations, reallocation_pending,
                                     reallocation_preview, reallocation_problems, sections_taken)
 from arcadia_tool.model.element import is_empty
+from arcadia_tool.model.required import save_refusal
 from arcadia_tool.model.schema import (ADR_DETAILS, ADR_SECTION, BOOL, DA_DECISION, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
                                        REFS, STR, STRLIST, TABLE, TEXT, enum_option)
-from arcadia_tool.storage.project import local_change
+from arcadia_tool.storage.project import local_change, local_changes
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
 from arcadia_tool.ui.dialogs import replace_page
 from arcadia_tool.ui.rich_text import RichTextEdit
@@ -39,6 +40,8 @@ READ_ONLY_KINDS = ("requirement",)
 TRACE_CARDS = ("domain", "system_function", "logical_function", "derived_requirement")
 FINDINGS_SHOWN = 8  # findings of the checks listed in the header of a sheet; the others are in the panel
 # Kinds whose sheet has the sections in another order: an ADR shows first what it is about (SRS items, ADR).
+# Their references are chosen in a window with search and ticks (see _picker_widget), not from a drop-down list.
+PICKER_KINDS = ("domain", "system_function", "adr")
 SECTION_ORDER = {"adr": ("Identificazione", ADR_DETAILS, "Relazioni", "Descrizione", DA_DECISION)}
 # The texts of the SRS items are those of the specification, imported: plain text, no styles.
 PLAIN_TEXT_KINDS = ("requirement",)
@@ -328,6 +331,124 @@ class TableWidget(QWidget):
         return rows
 
 
+class ChoiceDialog(QDialog):
+    """One value among a list (a state, the type of an ADR…), in a window with search: chosen, the value."""
+
+    def __init__(self, title, options, current=None, parent=None, coloured=False):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(560, 460)
+        self.search = QLineEdit(placeholderText="Cerca", objectName="search")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._filter)
+        self.list = QListWidget()
+        self.list.setWordWrap(True)
+        for data, label in [(None, "Nessuno"), *options]:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, data)
+            item.setToolTip(label)
+            if coloured and data:
+                item.setForeground(QBrush(QColor(status_colors(data)[0])))
+            self.list.addItem(item)
+            if data == current:
+                self.list.setCurrentItem(item)
+        self.list.itemDoubleClicked.connect(lambda _item: self.accept())
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Scegli")
+        buttons.button(QDialogButtonBox.Cancel).setText("Annulla")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.search)
+        layout.addWidget(self.list, 1)
+        layout.addWidget(buttons)
+
+    def _filter(self, text):
+        words = text.lower().split()
+        for row in range(self.list.count()):
+            item = self.list.item(row)
+            item.setHidden(not all(w in item.text().lower() for w in words))
+
+    @property
+    def chosen(self):
+        item = self.list.currentItem()
+        return item.data(Qt.UserRole) if item is not None else None
+
+
+class ValuePicker(QWidget):
+    """A value chosen in a ChoiceDialog, instead of a drop-down list: the choice and «Scegli…». options(current) →
+    [(value, label)]."""
+    changed = Signal()
+
+    def __init__(self, title, options, current=None):
+        super().__init__()
+        self.title, self.options, self.current = title, options, current
+        self.shown = QLineEdit(readOnly=True, objectName="readonly")
+        self.shown.setPlaceholderText("Non indicato")
+        self.button = QPushButton(icon("mdi6.format-list-checks"), "Scegli…")
+        self.button.setToolTip(f"Scegli «{title}» in una finestra con ricerca")
+        self.button.clicked.connect(lambda _=False: self.choose())
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.shown, 1)
+        row.addWidget(self.button)
+        self._show()
+
+    def _show(self):
+        self.shown.setText(next((label for data, label in self.options(self.current) if data == self.current),
+                                self.current or ""))
+        self.shown.setToolTip(self.shown.text())
+
+    def value(self):
+        return self.current
+
+    def set_value(self, value):
+        if value != self.current:
+            self.current = value
+            self._show()
+            self.changed.emit()
+
+    def choose(self):
+        dialog = ChoiceDialog(self.title, self.options(self.current), self.current, self)
+        if dialog.exec():
+            self.set_value(dialog.chosen)
+
+
+class StatusPicker(QPushButton):
+    """The state of a sheet, coloured like a status chip, chosen in a ChoiceDialog."""
+    changed = Signal()
+
+    def __init__(self, options, current):
+        super().__init__()
+        self.states, self.current = list(options), current
+        if current and current not in self.states:  # e.g. written by an earlier version
+            self.states.append(current)
+        self.setMinimumWidth(150)
+        self.setToolTip("Scegli lo stato della scheda")
+        self.clicked.connect(lambda _=False: self.choose())
+        self._restyle()
+
+    def _restyle(self):
+        fg, bg = status_colors(self.current)
+        self.setText(self.current or "Nessuno stato")
+        self.setStyleSheet(f"QPushButton {{ background:{bg}; color:{fg}; border:1px solid {bg}; border-radius:12px;"
+                           " padding:3px 12px; font-weight:600; }")
+
+    def value(self):
+        return self.current
+
+    def set_value(self, value):
+        if value != self.current:
+            self.current = value
+            self._restyle()
+            self.changed.emit()
+
+    def choose(self):
+        dialog = ChoiceDialog("Stato", [(s, s) for s in self.states], self.current, self, coloured=True)
+        if dialog.exec():
+            self.set_value(dialog.chosen)
+
+
 class StatusCombo(QComboBox):
     """State selector coloured like a status chip."""
 
@@ -566,18 +687,23 @@ class ElementEditor(QScrollArea):
 
     @local_change
     def save_changes(self):
-        """«Salva»: the draft becomes the element in the model; the project is then saved (signal saved)."""
+        """«Salva»: the draft becomes the element in the model; the project is then saved (signal saved). False if it
+        is not saved: the sheet stays in edit mode."""
         if self.element is None:
-            return
+            return None
         self.flush()
+        refusal = self.refusal()
+        if refusal:
+            QMessageBox.warning(self, "Campi obbligatori", refusal)
+            return False
         if self.dirty and self.locks_out is not None and self.locks_out(self.draft):
             from arcadia_tool.ui.team_members import own_id_error
             own_id_error(self)
-            return  # not saved: the sheet stays in edit mode
+            return False
         if self.dirty:
             moved = self._single_design_authority()
             if moved is None:
-                return  # not saved: the sheet stays in edit mode
+                return False
             previous = self.element.copy()
             for name in list(self.draft.values) + list(self.element.values):  # fields the user may not change
                 if self.field_denied(name) and self.draft.values.get(name) != self.element.values.get(name):
@@ -595,6 +721,13 @@ class ElementEditor(QScrollArea):
         self.unsaved_new = False
         self._end_editing()
         self.saved.emit()
+
+    def refusal(self):
+        """Why the changes of the sheet, or the sheet just created, may not be saved, or None (see model.required)."""
+        if not (self.dirty or self.unsaved_new):
+            return None
+        untouched = self.unsaved_new and not self.dirty and not local_changes(self, self.project)
+        return save_refusal(self.project.model, self.draft, untouched)
 
     def _single_design_authority(self):
         """A team saved as Design Authority while another one is: the DA moves to this team if the user agrees.
@@ -862,12 +995,17 @@ class ElementEditor(QScrollArea):
         top.addStretch()
         status_field = schema.field("status")
         if status_field:
-            combo = StatusCombo(status_field.options, element.get("status"))
-            combo.currentIndexChanged.connect(self._changed)
-            self.getters["status"] = combo.currentData
-            self.widgets["status"] = combo
+            if element.kind in PICKER_KINDS:
+                chooser = StatusPicker(status_field.options, element.get("status"))
+                chooser.changed.connect(self._changed)
+                self.getters["status"] = chooser.value
+            else:
+                chooser = StatusCombo(status_field.options, element.get("status"))
+                chooser.currentIndexChanged.connect(self._changed)
+                self.getters["status"] = chooser.currentData
+            self.widgets["status"] = chooser
             top.addWidget(QLabel("Stato", objectName="muted"))
-            top.addWidget(combo)
+            top.addWidget(chooser)
         if element.kind in READ_ONLY_KINDS:
             self.edit_mode_button = edit_mode_button(self.srs_edit_mode)
             self.edit_mode_button.setProperty("keepEnabled", True)
@@ -1519,32 +1657,21 @@ class ElementEditor(QScrollArea):
         """A member of the team chosen in another field of the sheet (the member of the team proposing an ADR)."""
         from arcadia_tool.model.teams import member_names
 
-        w = compact_combo()
         team_label = self.element.schema.field(f.members_of).label
+        uuid = self.draft.get(f.members_of)  # chosen in its window: the sheet is then shown again
+        team = self.project.model.get(uuid) if uuid else None
 
-        def refresh(*_):
-            getter = self.getters.get(f.members_of)
-            uuid = getter() if getter else self.draft.get(f.members_of)
-            team = self.project.model.get(uuid) if uuid else None
-            selected = w.currentData() if w.count() else value
-            w.blockSignals(True)
-            w.clear()
-            w.addItem("", None)
-            for name in (member_names(team) if team is not None else []):
-                w.addItem(name, name)
-            if selected and w.findData(selected) < 0:
-                w.addItem(f"{selected} (non è tra i membri del team)", selected)
-            w.setCurrentIndex(max(w.findData(selected), 0) if selected else 0)
-            w.blockSignals(False)
-            w.setToolTip(f"Si sceglie tra i membri del team indicato in «{team_label}»" if team is not None else
-                         f"Scegli prima il team in «{team_label}»")
+        def options(current):
+            names = [(name, name) for name in (member_names(team) if team is not None else [])]
+            if current and all(data != current for data, _label in names):
+                names.append((current, f"{current} (non è tra i membri del team)"))
+            return names
 
-        refresh()
-        source = self.widgets.get(f.members_of)
-        if isinstance(source, QComboBox):
-            source.currentIndexChanged.connect(refresh)
-        w.currentIndexChanged.connect(self._changed)
-        return w, w.currentData
+        w = ValuePicker(f.label, options, value)
+        w.setToolTip(f"Si sceglie tra i membri del team indicato in «{team_label}»" if team is not None else
+                     f"Scegli prima il team in «{team_label}»")
+        w.changed.connect(self._changed)
+        return w, w.value
 
     def _choice_widget(self, f, value):
         """A text chosen among the values of a list field of the same element (the referent among the members)."""
@@ -1613,7 +1740,7 @@ class ElementEditor(QScrollArea):
             return self._choice_widget(f, value)
         if f.members_of:
             return self._member_widget(f, value)
-        if f.picker:
+        if f.picker or (f.type == REF and self.element.kind in PICKER_KINDS):
             return self._picker_widget(f, value)
         if f.type == STR:
             w = QLineEdit(value or "")
@@ -1641,6 +1768,13 @@ class ElementEditor(QScrollArea):
             w.setChecked(bool(value))
             w.toggled.connect(self._changed)
             return w, w.isChecked
+        if f.type == ENUM and self.element.kind in PICKER_KINDS:
+            w = ValuePicker(f.label, lambda _current, field=f: [(o, o) for o in field.options], enum_option(f, value))
+            w.changed.connect(self._changed)
+            if any(o.when and o.when[0] == f.name for o in self.element.schema.fields):
+                # It decides which fields the sheet has (the type of an ADR): the page follows it.
+                w.changed.connect(lambda name=f.name: self._controller_changed(name))
+            return w, w.value
         if f.type in (ENUM, REF):
             w = compact_combo()
             w.addItem("", None)
@@ -1872,8 +2006,7 @@ def resolve_unsaved(editor, parent, what=None):
     box.setDefaultButton(save)
     box.exec()
     if box.clickedButton() is save:
-        editor.save_changes()
-        return True
+        return editor.save_changes() is not False  # not saved (e.g. a mandatory field is missing): it stays open
     if box.clickedButton() is discard:
         editor.cancel_changes(ask=False)
         return True

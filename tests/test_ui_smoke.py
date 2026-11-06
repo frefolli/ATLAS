@@ -37,7 +37,7 @@ def diff_calls(monkeypatch):
     return calls
 
 
-def test_editing_every_kind_and_saving_never_computes_a_diff(app, tmp_path, diff_calls):
+def test_editing_every_kind_and_saving_never_computes_a_diff(optional_fields, app, tmp_path, diff_calls):
     window = MainWindow()
     window._set_project(Project.create(tmp_path / "p", "Prova"))
     project = window.project
@@ -62,7 +62,7 @@ def test_editing_every_kind_and_saving_never_computes_a_diff(app, tmp_path, diff
     window.close()
 
 
-def test_sheets_open_read_only_and_apply_changes_only_with_save(app, tmp_path, monkeypatch):
+def test_sheets_open_read_only_and_apply_changes_only_with_save(optional_fields, app, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     from arcadia_tool.ui import element_editor
 
@@ -115,7 +115,7 @@ def test_sheets_open_read_only_and_apply_changes_only_with_save(app, tmp_path, m
     window.close()
 
 
-def test_element_tab_named_after_the_element_and_closable(app, tmp_path):
+def test_element_tab_named_after_the_element_and_closable(optional_fields, app, tmp_path):
     window = MainWindow()
     window._set_project(Project.create(tmp_path / "p", "Prova"))
     assert window.pages.count() == 0  # nothing opened yet: no tab, the logo instead

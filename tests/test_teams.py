@@ -113,7 +113,7 @@ def test_a_record_with_one_primary_function_of_earlier_versions_gets_a_list(tmp_
     again.close()
 
 
-def test_referent_chosen_among_members_and_copied_to_the_domain(app, tmp_path):
+def test_referent_chosen_among_members_and_copied_to_the_domain(optional_fields, app, tmp_path):
     p = Project.create(tmp_path / "p", "Prova")
     team = p.new_element("team", name="Odometria", members=["Anna Bianchi", "Mario Rossi"])
     domain = p.new_element("domain", name="Localizzazione")
@@ -133,10 +133,11 @@ def test_referent_chosen_among_members_and_copied_to_the_domain(app, tmp_path):
     editor.edit(p, domain, editing=True)
     identification = [f.name for f in domain.schema.fields if f.section == "Identificazione"]
     assert identification == ["team"]
-    team_combo, shown = editor.widgets["team"], editor.widgets["referent"]
+    shown = editor.widgets["referent"]
     assert shown.isReadOnly() and shown.text() == ""
-    team_combo.setCurrentIndex(team_combo.findData(team.uuid))
-    assert shown.text() == "Mario Rossi"  # chosen automatically
+    editor.draft.set("team", team.uuid)  # chosen in its window
+    editor._draft_changed()
+    assert editor.widgets["referent"].text() == "Mario Rossi"  # chosen automatically
     editor.save_changes()
     assert domain.get("team") == team.uuid and domain.get("referent") == "Mario Rossi"
 
@@ -169,7 +170,7 @@ def test_team_assigned_in_the_domain_sheet_lists_the_domain(tmp_path):
     assert reopened.model.get(t1.uuid).get("domains") == [other_domain.uuid]
 
 
-def test_the_open_team_sheet_follows_the_domain_sheet(app, tmp_path):
+def test_the_open_team_sheet_follows_the_domain_sheet(optional_fields, app, tmp_path):
     from arcadia_tool.ui.main_window import MainWindow
     p = Project.create(tmp_path / "p", "Prova")
     team = p.new_element("team", name="Supervisione")
@@ -181,8 +182,8 @@ def test_the_open_team_sheet_follows_the_domain_sheet(app, tmp_path):
     window._open_finding(domain.uuid)
     team_tab, domain_tab = window.editors[team.uuid], window.editors[domain.uuid]
     domain_tab.start_editing()
-    combo = domain_tab.widgets["team"]
-    combo.setCurrentIndex(combo.findData(team.uuid))
+    domain_tab.draft.set("team", team.uuid)  # chosen in its window
+    domain_tab._draft_changed()
     domain_tab.save_changes()
     assert team.get("domains") == [domain.uuid]
     assert team_tab.draft.get("domains") == [domain.uuid]  # the open team tab shows the domain
@@ -369,7 +370,7 @@ def test_only_the_design_authority_changes_the_teams(app, tmp_path, monkeypatch)
     p.close()
 
 
-def test_only_the_design_authority_assigns_the_domains_to_the_teams(app, tmp_path):
+def test_only_the_design_authority_assigns_the_domains_to_the_teams(optional_fields, app, tmp_path):
     from arcadia_tool.model.teams import edit_denied
 
     p = Project.create(tmp_path / "p", "Prova")
@@ -395,9 +396,9 @@ def test_only_the_design_authority_assigns_the_domains_to_the_teams(app, tmp_pat
 
     editor.edit_denied = lambda kind, field=None: edit_denied(p.model, anna, kind, field)
     editor.edit(p, domain, editing=True)
-    combo = editor.widgets["team"]
-    assert combo.isEnabled()
-    combo.setCurrentIndex(combo.findData(team.uuid))
+    assert editor.widgets["team"].isEnabled()
+    editor.draft.set("team", team.uuid)  # chosen in its window
+    editor._draft_changed()
     editor.save_changes()
     assert domain.get("team") == team.uuid and domain.uuid in team.get("domains")
     p.close()

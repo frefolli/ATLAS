@@ -363,7 +363,7 @@ def test_empty_list(app, tmp_path, kind, text):
     assert page.count.text() == text
 
 
-def test_a_new_element_never_saved_goes_away(app, tmp_path, monkeypatch):
+def test_a_new_element_never_saved_goes_away(optional_fields, app, tmp_path, monkeypatch):
     import arcadia_tool.ui.adr_types as adr_types
     from arcadia_tool.ui.model_tree import UUID_ROLE
 
@@ -457,7 +457,7 @@ def test_the_open_adr_are_exported_to_excel(app, tmp_path, monkeypatch):
     p.close()
 
 
-def test_ctrl_s_saves_the_changes_of_the_sheet_shown(app, tmp_path):
+def test_ctrl_s_saves_the_changes_of_the_sheet_shown(optional_fields, app, tmp_path):
     p = Project.create(tmp_path / "p", "Prova")
     window = MainWindow()
     window._set_project(p)

@@ -115,8 +115,7 @@ def test_the_sheet_has_the_fields_of_its_type(app, tmp_path, monkeypatch):
     # Another type: the fields of the old one are emptied, after a confirmation.
     asked = []
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.Yes)
-    combo = editor.widgets["adr_type"]
-    combo.setCurrentIndex(combo.findData(ADR_WAIVER))
+    editor.widgets["adr_type"].set_value(ADR_WAIVER)
     assert asked and "Dominio interessato" in asked[0]
     assert "rule" in shown_fields(editor) and "mission_current" not in shown_fields(editor)
     editor.save_changes()
@@ -202,7 +201,10 @@ def test_the_design_authority_approves_a_new_domain(app, tmp_path, monkeypatch):
     s2 = p.new_element("requirement", id="3.5.4", item_type="Sezione", contributing_domains=[df01.uuid])
     adr = p.new_element("adr", title="Nuovo dominio della radio", **adr_defaults(p.model, ADR_NEW_DOMAIN))
     assert can_approve(adr)
-    assert approval_problems(p.model, adr) == ["Manca il nome del dominio proposto.", "Manca la missione proposta."]
+    assert approval_problems(p.model, adr) == ["Manca il nome del dominio proposto.", "Manca la missione proposta.",
+                                               "Mancano le sezioni allocate al nuovo dominio."]
+    adr.set("sections_allocated", [s2.uuid])
+    assert len(approval_problems(p.model, adr)) == 2
     adr.set("new_domain_name", "dati di  TERRA")
     assert "Esiste già un dominio" in approval_problems(p.model, adr)[0]
     adr.set("new_domain_name", "Gestione della sessione radio")
@@ -222,7 +224,8 @@ def test_the_design_authority_approves_a_new_domain(app, tmp_path, monkeypatch):
 
     # In the sheet: the button only for the Design Authority, with a confirmation.
     other = p.new_element("adr", title="Un altro dominio", new_domain_name="Gestione dei guasti",
-                          mission_proposed="Rilevare i guasti.", **adr_defaults(p.model, ADR_NEW_DOMAIN))
+                          mission_proposed="Rilevare i guasti.", sections_allocated=[s2.uuid],
+                          **adr_defaults(p.model, ADR_NEW_DOMAIN))
     editor = ElementEditor()
     editor.approver = lambda: None  # not a member of the DA
     editor.edit(p, other)
@@ -262,7 +265,7 @@ def test_the_deletion_of_a_domain_has_only_the_domain_the_motivation_and_the_obs
     descr = [n for n in names if n in ("deleted_domain", "rationale", "da_notes", "context", "options",
                                        "srs_items", "decision")]
     assert descr == ["deleted_domain", "rationale", "da_notes"]
-    assert editor.widgets["deleted_domain"].currentData() == d1.uuid
+    assert editor.getters["deleted_domain"]() == d1.uuid
     p.close()
 
 
@@ -426,8 +429,8 @@ def test_the_reallocation_of_a_section_shows_its_domains_now_and_those_proposed(
                                                      "DECISIONE DELLA DA"]
     assert editor.widgets["primary_current"].text() == p.model.label(d1)  # read from the section
     assert editor.widgets["contributors_current"].value() == [d2.uuid]
-    combo = editor.widgets["primary_proposed"]
-    combo.setCurrentIndex(combo.findData(d3.uuid))
+    editor.draft.set("primary_proposed", d3.uuid)  # chosen in its window
+    editor._draft_changed()
     editor.save_changes()
     assert adr.get("primary_proposed") == d3.uuid
     assert "primary_current" not in adr.values and "contributors_current" not in adr.values  # not saved
@@ -518,20 +521,25 @@ def test_the_proposer_member_is_chosen_among_the_members_of_the_proposing_team(a
     adr = p.new_element("adr", title="Una decisione", adr_type=ADR_WAIVER, status="Proposta")
     editor = ElementEditor()
     editor.edit(p, adr, editing=True)
-    team, member = editor.widgets["proposer"], editor.widgets["proposer_member"]
+    member = editor.widgets["proposer_member"]
     names = list(editor.widgets)
     assert names.index("proposer_member") == names.index("proposer") + 1
-    assert [member.itemText(i) for i in range(member.count())] == [""]  # no team yet
-    team.setCurrentIndex(team.findData(t1.uuid))
-    assert [member.itemText(i) for i in range(member.count())] == ["", "Anna Bianchi", "Luca Neri"]
-    member.setCurrentIndex(member.findData("Luca Neri"))
+    assert member.options(None) == []  # no team yet
+    editor.draft.set("proposer", t1.uuid)  # chosen in its window: the sheet is shown again
+    editor._draft_changed()
+    member = editor.widgets["proposer_member"]
+    assert [label for _value, label in member.options(None)] == ["Anna Bianchi", "Luca Neri"]
+    member.set_value("Luca Neri")
     editor.save_changes()
     assert adr.get("proposer") == t1.uuid and adr.get("proposer_member") == "Luca Neri"
     editor.edit(p, adr, editing=True)
-    team, member = editor.widgets["proposer"], editor.widgets["proposer_member"]
-    team.setCurrentIndex(team.findData(t2.uuid))  # another team: its members, the one chosen kept and flagged
-    assert [member.itemText(i) for i in range(member.count())] == ["", "Marta Verdi",
-                                                                   "Luca Neri (non è tra i membri del team)"]
+    editor.flush()
+    editor.draft.set("proposer", t2.uuid)  # another team: its members, the one chosen kept and flagged
+    editor._draft_changed()
+    member = editor.widgets["proposer_member"]
+    assert [label for _value, label in member.options(member.value())] == [
+        "Marta Verdi", "Luca Neri (non è tra i membri del team)"]
+    assert member.shown.text() == "Luca Neri (non è tra i membri del team)"
     p.close()
 
 
@@ -662,8 +670,8 @@ def test_the_move_of_a_function_shows_its_domain_now_and_the_one_proposed(app, t
     assert [c.upper() for c in captions(editor)] == ["IDENTIFICAZIONE",
                                                      "DETTAGLI: SPOSTAMENTO DI UNA FUNZIONE TRA DOMINI", "DECISIONE DELLA DA"]
     assert editor.widgets["function_domain"].text() == p.model.label(d1)  # read from the function
-    combo = editor.widgets["to_domain"]
-    combo.setCurrentIndex(combo.findData(d2.uuid))
+    editor.draft.set("to_domain", d2.uuid)  # chosen in its window
+    editor._draft_changed()
     editor.save_changes()
     assert adr.get("to_domain") == d2.uuid and "function_domain" not in adr.values
     p.close()

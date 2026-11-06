@@ -114,6 +114,7 @@ class ModelTree(QFrame):
         super().__init__(objectName="panel")
         self.project = None
         self.edit_denied = None  # function(kind) → why the user may not create or delete it, or None
+        self.user_of = None  # function() → the account logged in (who proposes a new ADR)
         self.locks_out = None  # function(team without members) → True if deleting it leaves the user outside
         self.unread = None  # function(ADR or CQ) → what is new about it on this PC («da vedere · 2 nuovi»)
         self.srs_edit_mode = srs_edit_mode or SrsEditMode()
@@ -605,6 +606,10 @@ class ModelTree(QFrame):
             context = self._ask_context(kind)
             if context is None:
                 return
+        if kind == "adr":
+            from arcadia_tool.model.adr import proposer_defaults
+            user = self.user_of() if self.user_of else None
+            context = {**proposer_defaults(self.project.model, user), **(context or {})}
         element = self.project.new_element(kind, **(context or {}))
         if kind == "derived_requirement" and element.get("parent"):  # SA-4, or «Deriva requisito da…» of an SRS item
             self.project.record_decomposition(self.project.model.get(element.get("parent")))

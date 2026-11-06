@@ -71,6 +71,13 @@ def no_modal_message_boxes(monkeypatch):
     assert not critical, f"messaggio di errore mostrato durante il test: {critical}"
 
 
+@pytest.fixture
+def optional_fields(monkeypatch):
+    """For the tests about something else: the sheets are saved without what they must have (see test_required_fields)."""
+    from arcadia_tool.ui.element_editor import ElementEditor
+    monkeypatch.setattr(ElementEditor, "refusal", lambda self: None)
+
+
 @pytest.fixture(autouse=True)
 def deferred_deletes():
     """The widgets destroyed later (deleteLater, e.g. a page rebuilt from one of its signals) are destroyed after

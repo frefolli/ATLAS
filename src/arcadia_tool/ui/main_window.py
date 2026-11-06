@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self.start.forget_requested.connect(self.forget_project)
         self.srs_edit_mode = SrsEditMode()
         self.tree = ModelTree(self.srs_edit_mode)
+        self.tree.user_of = lambda: self.user
         # One tab per opened element, closed only by the user (or when its element is deleted).
         self.editors = {}  # element uuid → ElementEditor in a tab
         self._idle_editor = ElementEditor(self.srs_edit_mode)  # «editor» when no element tab is shown
@@ -759,6 +760,20 @@ class MainWindow(QMainWindow):
                 self._show_editor(editor)
             if not resolve_unsaved(editor, self):
                 return False
+        return self._no_incomplete_new()
+
+    def _incomplete_new(self):
+        """The sheets of elements just created without what they must have (see model.required): not written until
+        they are complete, they go away if closed."""
+        return [e for e in self.editors.values() if e.unsaved_new and e.element is not None and e.refusal()]
+
+    def _no_incomplete_new(self):
+        """False, saying what is missing, if a sheet just created is incomplete (before publishing, changing branch…:
+        they write the whole project)."""
+        for editor in self._incomplete_new():
+            self._show_editor(editor)
+            editor.save_changes()
+            return False
         return True
 
     def _confirm_discard(self):
@@ -1556,10 +1571,13 @@ class MainWindow(QMainWindow):
         if not self.project:
             return
         self._flush_editors()
-        for page in self._dirty_pages():
+        for page in [*self._dirty_pages(), *(e for e in self._incomplete_new() if not e.dirty)]:
             page.save_view() if isinstance(page, DiagramPage) else page.save_changes()
-        left = self._dirty_pages()  # e.g. a sheet that could not be saved: it says why
-        save_project(self, self.project)
+        # E.g. a sheet that could not be saved: it says why. One just created and incomplete is not written at all.
+        incomplete = self._incomplete_new()
+        left = [*self._dirty_pages(), *(e for e in incomplete if not e.dirty)]
+        held = {u for e in incomplete for u in {e.element.uuid, *local_changes(e, self.project)}}
+        save_project(self, self.project, self.project.pending() - held if held else None)
         self._refresh_state()
         self.statusBar().showMessage(f"Modifiche salvate; non salvate: {len(left)} schede o viste" if left else
                                      "Tutte le modifiche salvate", 5000)
@@ -1572,7 +1590,7 @@ class MainWindow(QMainWindow):
         current = self.pages.currentWidget()
         if isinstance(current, DiagramPage) and current.dirty:
             current.save_view()
-        elif isinstance(current, ElementEditor) and current.dirty:
+        elif isinstance(current, ElementEditor) and (current.dirty or current.unsaved_new):
             current.save_changes()
         elif isinstance(current, ElementEditor) and local_changes(current, self.project):
             self._sheet_saved(current)  # e.g. the SRS items traced from the sheet, outside its edit mode
@@ -1918,6 +1936,8 @@ class MainWindow(QMainWindow):
         for editor in self._unsaved_editors():
             if not resolve_unsaved(editor, self):
                 return False
+        if not self._no_incomplete_new():
+            return False
         if self.project.is_modified:
             self.save()
         if not self.project.has_unpublished_changes():
