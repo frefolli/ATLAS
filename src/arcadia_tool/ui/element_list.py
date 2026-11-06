@@ -6,14 +6,22 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit,
-                               QMessageBox, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+                               QMessageBox, QPushButton, QStackedWidget, QTabBar, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout, QWidget)
 
+from arcadia_tool.model.adr import ACTIVE, APPROVED, REJECTED, SUPERSEDED, outcome
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.model.schema import KINDS_BY_NAME, derived_value
 from arcadia_tool.ui.theme import BORDER, icon, kind_icon, status_colors
 
 UUID_ROLE = Qt.UserRole
+OUTCOME_ROLE = Qt.UserRole + 1  # of the row of an ADR: which of its lists it is in
+# The lists of the ADR: (name, outcome, what is in it); None: all of them.
+ADR_LISTS = (("Tutte", None, "Tutte le ADR"),
+             ("In revisione", ACTIVE, "Non ancora decise: proposte, in revisione o revisionate dalla DA con commenti"),
+             ("Approvate", APPROVED, "Decise, o accolte dalla DA"),
+             ("Respinte", REJECTED, "Respinte dalla DA"),
+             ("Superate", SUPERSEDED, "Sostituite da una decisione successiva"))
 # The kinds shown as a table: their columns (fields of the schema); the first wide one takes the free space.
 LIST_COLUMNS = {
     "domain": ("id", "name", "team", "referent", "status"),
@@ -152,6 +160,13 @@ class ElementListPage(QWidget):
         empty_layout.addWidget(first, 0, Qt.AlignHCenter)
         empty_layout.addStretch()
 
+        self.outcome_tabs = None
+        if kind == "adr":
+            self.outcome_tabs = QTabBar(drawBase=False)
+            for i, (name, _outcome, tip) in enumerate(ADR_LISTS):
+                self.outcome_tabs.addTab(name)
+                self.outcome_tabs.setTabToolTip(i, tip)
+            self.outcome_tabs.currentChanged.connect(lambda _i: self._filter(self.search.text()))
         self.body = QStackedWidget()
         self.body.addWidget(self.table)
         self.body.addWidget(self.empty)
@@ -160,6 +175,8 @@ class ElementListPage(QWidget):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(10)
         layout.addWidget(header)
+        if self.outcome_tabs is not None:
+            layout.addWidget(self.outcome_tabs)
         layout.addWidget(self.body, 1)
         self.reload()
 
@@ -282,6 +299,8 @@ class ElementListPage(QWidget):
                 cell.setData(UUID_ROLE, e.uuid)
                 if name == "id":
                     cell.setIcon(kind_icon(self.kind))
+                    if self.kind == "adr":
+                        cell.setData(OUTCOME_ROLE, outcome(e))
                 if name == "status" and self.kind in STATUS_ON_ROW:
                     self.table.setCellWidget(r, c, self._status_choice(e))  # the text under it: for the search
                 elif name in COLOURED and value:
@@ -301,6 +320,11 @@ class ElementListPage(QWidget):
         self.table.horizontalHeader().resizeSection(len(self.columns), max(actions_width + 8, 120))
         self.body.setCurrentWidget(self.table if elements else self.empty)
         self.search.setVisible(bool(elements))  # nothing to search in an empty list
+        if self.outcome_tabs is not None:
+            self.outcome_tabs.setVisible(bool(elements))
+            found = [outcome(e) for e in elements]
+            for i, (name, which, _tip) in enumerate(ADR_LISTS):
+                self.outcome_tabs.setTabText(i, f"{name} ({found.count(which) if which else len(found)})")
         self._filter(self.search.text())
         row = next((r for r in range(self.table.rowCount()) if self.table.item(r, 0).data(UUID_ROLE) == keep), None)
         if row is not None:
@@ -318,14 +342,17 @@ class ElementListPage(QWidget):
 
     def _filter(self, text):
         words = text.lower().split()
+        which = ADR_LISTS[self.outcome_tabs.currentIndex()][1] if self.outcome_tabs is not None else None
         shown = 0
         for r in range(self.table.rowCount()):
             haystack = " ".join(self.table.item(r, c).text() for c in range(len(self.columns))).lower()
-            hidden = bool(words) and not all(w in haystack for w in words)
+            hidden = (bool(words) and not all(w in haystack for w in words)) or \
+                (which is not None and self.table.item(r, 0).data(OUTCOME_ROLE) != which)
             self.table.setRowHidden(r, hidden)
             shown += not hidden
         total = self.table.rowCount()
-        self.count.setText(f"{shown} di {total}" if words else f"1 {self.one}" if total == 1 else f"{total} {self.many}")
+        self.count.setText(f"{shown} di {total}" if words or which else
+                           f"1 {self.one}" if total == 1 else f"{total} {self.many}")
 
     def export_open(self, path=None):
         """The open ADR in an Excel file, chosen by the user (path: given, without asking)."""

@@ -88,11 +88,10 @@ def test_read_unread_again_changed_moved_and_deleted(tmp_path):
     changed = n.collect(p, mario)[0]
     assert changed.event == n.CHANGED and changed.unread
     assert changed.detail == "Campi modificati: Motivazione della riallocazione, Stato"
-    rows, missing = n.reading_rows(p.model, adr)
-    assert rows[0][1] == "Mario Rossi" and rows[0][3] is False  # read an earlier version
-    assert [t.get("id") for t in missing] == ["T1"]  # the Design Authority has not read it yet
+    reading = n.readings_of(p.model, adr)[0]
+    assert reading.get("member") == "Mario Rossi" and reading.get("version") != n.fingerprint(adr)  # an earlier version
     n.mark_read(p, mario, changed)
-    assert n.reading_rows(p.model, adr)[0][0][3] is True
+    assert n.readings_of(p.model, adr)[0].get("version") == n.fingerprint(adr)
     # Moved to a domain of another team: the notification follows it.
     adr.set("primary_proposed", domains["DF07"].uuid)
     moved = n.collect(p, mario)[0]
@@ -189,20 +188,14 @@ def test_the_bell_the_panel_the_alert_the_sheet_and_the_tree(app, tmp_path, monk
     dialog.open_requested.connect(opened.append)
     dialog.open(dialog.tree.topLevelItem(0))
     assert opened == [adr.uuid] and n.unread_count(p, window.user) == 0
-    # The sheet of the ADR: opening it reads its notification; who read it is shown.
+    # The sheet of the ADR: opening it reads its notification; who read it is not shown.
     n.mark_unread(p, window.user, n.collect(p, window.user)[0])
     window._open_finding(adr.uuid)
     app.processEvents()
     assert n.unread_count(p, window.user) == 0 and window.notifications_action.text() == "Notifiche"
     editor = window.editors[adr.uuid]
     texts = [w.text() for w in editor.widget().findChildren(type(dialog.summary))]
-    assert not any("Mario Rossi" in t for t in texts)  # not in the page: behind the indicator in the header
-    assert editor.seen_button.text() == "Vista da 1"  # Mario; the DA has not read it yet
-    popup = editor.show_readings()
-    lines = [w.text() for w in popup.findChildren(type(dialog.summary))]
-    assert any(t.startswith("T2 · Mario Rossi · ") and "precedente" not in t for t in lines)
-    assert "T1 · non ancora letta" in lines
-    popup.close()
+    assert not any("Mario Rossi" in t or t.startswith("Vista da") for t in texts)
     assert window.tree._items[adr.uuid].text(1) == "" and not window.tree._items[adr.uuid].data(0, UNREAD_ROLE)
     window.close()
 
@@ -259,35 +252,6 @@ def test_the_notifications_are_worked_out_once_for_a_state(tmp_path):
         assert not n.collect(p, mario)[0].unread
     finally:
         n._collect = original
-
-
-def test_the_indicator_of_the_readings_in_the_header_of_an_adr(app, tmp_path):
-    from arcadia_tool.ui.element_editor import ElementEditor
-
-    p, teams, domains, adr = project(tmp_path)
-    editor = ElementEditor()
-    editor.edit(p, adr)  # no user: nothing read
-    assert editor.seen_button.text() == "Non ancora vista"
-    popup = editor.show_readings()
-    texts = [w.text() for w in popup.findChildren(type(editor.title))]
-    assert "T2 · non ancora letta" in texts and "T1 · non ancora letta" in texts
-    popup.close()
-    mario, anna = user(MARIO, "Mario Rossi"), user(ANNA, "Anna Bianchi")
-    n.mark_read(p, mario, n.collect(p, mario)[0])
-    adr.set("realloc_reason", "Cambiata dopo la lettura di Mario")
-    p.update(adr)
-    n.mark_read(p, anna, n.collect(p, anna)[0])
-    editor.edit(p, adr)
-    assert editor.seen_button.text() == "Vista da 2"  # Mario read an earlier version: not complete
-    assert "#92400E" in editor.seen_button.styleSheet()
-    lines = [w.text() for w in editor.show_readings().findChildren(type(editor.title))]
-    assert any(t.startswith("T2 · Mario Rossi") and t.endswith("una versione precedente") for t in lines)
-    n.mark_read(p, mario, n.collect(p, mario)[0])  # read again, the version now
-    editor.edit(p, adr)
-    assert "#166534" in editor.seen_button.styleSheet()  # all the teams expected, the version now
-    other = p.new_element("clarification", problem="Una CQ", status="Aperta")
-    editor.edit(p, other)
-    assert editor.seen_button is None  # a CQ: no indicator
 
 
 def test_the_state_is_new_until_the_user_of_this_pc_opens_it(app, tmp_path):

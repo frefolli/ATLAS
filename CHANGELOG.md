@@ -6,6 +6,32 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.9.3] - 2026-11-06
+
+### Aggiunto
+- **L'approvazione di una riallocazione sposta le voci.** La DA approva con «Approva e sposta le voci» nella scheda
+  dell'ADR: una sezione (es. 3.8.1) o una clausola (es. 3.8.1.4) passa al dominio proposto, con i contributori proposti.
+  Una clausola può passare a un dominio che non ha la sua sezione: è un'eccezione, e la sezione non cambia. Prima di
+  confermare, ATLAS mostra cosa passa, le clausole interne che restano al loro dominio per una decisione precedente e
+  le funzioni di altri domini che tracciano quelle voci, che non si spostano da sole. L'ADR approvata resta com'era,
+  per la tracciabilità: «Dominio principale attuale» e «Contributori attuali» continuano a mostrare i domini di allora,
+  e l'ADR resta nelle tabelle delle schede del dominio di origine.
+  - Non si approva senza un dominio principale proposto. Si spostano solo clausole intere: un punto di elenco o una
+    riga di tabella segue la sua clausola; da solo si gestisce derivandone un requisito.
+  - Le ADR già decise e mai applicate si trovano con il controllo A4-10 e si applicano con «Applica la riallocazione».
+- **Liste delle ADR per esito.** La pagina delle ADR ha le schede «Tutte», «In revisione», «Approvate», «Respinte» e
+  «Superate», ciascuna con il suo conteggio. La ricerca vale dentro la scheda scelta.
+- **Clausole ricevute e cedute nelle schede dei domini.** Due elenchi, con il riferimento all'ADR, separati da «Sezioni
+  SRS principali».
+
+### Rimosso
+- **Indicatore «Vista da N» delle ADR.** Nella testata della scheda non compare più chi ha letto l'ADR. Le notifiche
+  restano uguali, con «Nuova» e «Letta» per il singolo utente.
+
+### Modificato
+- **Controllo A4-04.** Non segnala una clausola fuori dalla sua sezione se c'è un'ADR decisa che la giustifica; altrimenti
+  dice se l'ADR è ancora da decidere o se manca.
+
 ## [0.9.2] - 2026-11-05
 
 ### Aggiunto
@@ -777,7 +803,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.2...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.3...main
+[0.9.3]: https://github.com/salvodesi/ATLAS/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/salvodesi/ATLAS/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/salvodesi/ATLAS/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/salvodesi/ATLAS/compare/v0.8.0...v0.9.0

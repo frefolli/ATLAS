@@ -1,0 +1,173 @@
+"""The approval of a reallocation (X-1): the section or the clause passes to the proposed domain, also a clause whose
+section the domain does not have (an exception, known to the check A4-04 and shown in the sheets of the domains)."""
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QListWidget, QMessageBox
+
+from arcadia_tool.checks import run
+from arcadia_tool.checks.config import ChecksConfig, Profile
+from arcadia_tool.model.adr import (approve_reallocation, can_approve, principal_of, reallocation_pending,
+                                    reallocation_preview, reallocation_problems)
+from arcadia_tool.model.schema import ADR_SECTION
+from arcadia_tool.storage.project import Project
+from arcadia_tool.ui.element_editor import ElementEditor
+from arcadia_tool.ui.main_window import MainWindow
+
+
+@pytest.fixture(scope="module")
+def app():
+    return QApplication.instance() or QApplication([])
+
+
+def build(tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    df1, df4, df7 = (p.new_element("domain", name=n) for n in ("Uno", "Quattro", "Sette"))
+    section = p.new_element("requirement", id="3.8.1", item_type="Sezione", primary_domain=df1.uuid,
+                            contributing_domains=[df7.uuid])
+    clause = p.new_element("requirement", id="3.8.1.4", item_type="Requisito", parent=section.uuid, text="Una clausola")
+    item = p.new_element("requirement", id="3.8.1.4 a)", item_type="Voce", parent=clause.uuid, text="Un punto")
+    other = p.new_element("requirement", id="3.8.1.5", item_type="Requisito", parent=section.uuid, text="Un'altra")
+    return p, dict(df1=df1, df4=df4, df7=df7, section=section, clause=clause, item=item, other=other)
+
+
+def adr(p, items, primary=None, **values):
+    return p.new_element("adr", title="Spostamento", adr_type=ADR_SECTION, status="Proposta",
+                         realloc_item=[i.uuid for i in items], primary_proposed=primary.uuid if primary else None,
+                         **values)
+
+
+def findings(p, code):
+    config = ChecksConfig({"Predefinito": Profile([code], {})})
+    return [f for f in run(p.model, config) if f.code == code]
+
+
+def test_a_clause_passes_to_a_domain_without_its_section(tmp_path):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"], e["item"]], e["df4"])  # with its list item, which follows it
+    assert can_approve(decision)
+    changed = approve_reallocation(p, decision)
+    assert [c.uuid for c in changed] == [e["clause"].uuid]
+    assert e["clause"].get("primary_domain") == e["df4"].uuid and not e["item"].get("primary_domain")
+    assert principal_of(p.model, e["item"]) == e["df4"].uuid
+    assert e["section"].get("primary_domain") == e["df1"].uuid  # the section does not change
+    assert principal_of(p.model, e["other"]) == e["df1"].uuid
+    assert decision.get("status") == "Decisa" and decision.get("da_decision") == "Accolta"
+    assert decision.get("decision_date") and not can_approve(decision)
+
+
+def test_a_section_passes_with_its_clauses_but_not_with_the_exceptions(tmp_path):
+    p, e = build(tmp_path)
+    approve_reallocation(p, adr(p, [e["clause"]], e["df4"]))
+    function = p.new_element("system_function", name="Vecchia", domain=e["df1"].uuid, sections=[e["other"].uuid])
+    decision = adr(p, [e["section"]], e["df7"])
+    moved, kept, functions = reallocation_preview(p.model, decision)
+    assert moved == [(e["section"], e["df1"].uuid)] and kept == [e["clause"]] and functions == [function]
+    approve_reallocation(p, decision)
+    assert e["section"].get("primary_domain") == e["df7"].uuid
+    assert not e["section"].get("contributing_domains")  # the new principal, and none proposed
+    assert principal_of(p.model, e["other"]) == e["df7"].uuid
+    assert e["clause"].get("primary_domain") == e["df4"].uuid  # the earlier decision stands
+
+
+def test_the_proposed_contributors_are_written(tmp_path):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"]], e["df4"], contributors_proposed=[e["df7"].uuid, e["df4"].uuid])
+    approve_reallocation(p, decision)
+    assert e["clause"].get("contributing_domains") == [e["df7"].uuid]
+
+
+def test_what_cannot_be_approved(tmp_path):
+    p, e = build(tmp_path)
+    assert any("dominio principale proposto" in t for t in reallocation_problems(p.model, adr(p, [e["clause"]])))
+    alone = adr(p, [e["item"]], e["df4"])  # a list item alone: only whole clauses move
+    assert any("punto di elenco" in t for t in reallocation_problems(p.model, alone))
+    with pytest.raises(ValueError):
+        approve_reallocation(p, alone)
+    assert not e["item"].get("primary_domain")
+    assert not can_approve(adr(p, [e["clause"]], e["df4"], da_decision="Respinta"))
+    excluded = e["other"]
+    excluded.set("excluded_domains", [e["df4"].uuid])
+    assert any("esclusa" in t for t in reallocation_problems(p.model, adr(p, [excluded], e["df4"])))
+
+
+def test_the_check_knows_the_decided_exceptions(tmp_path):
+    p, e = build(tmp_path)
+    e["clause"].set("primary_domain", e["df4"].uuid)
+    p.update(e["clause"])
+    assert "Manca un'ADR" in findings(p, "A4-04")[0].message
+    decision = adr(p, [e["clause"]], e["df4"], id="ADR-001")
+    assert "ADR-001" in findings(p, "A4-04")[0].message  # still to decide
+    approve_reallocation(p, decision)
+    assert not findings(p, "A4-04")
+
+
+def test_a_decision_not_applied_is_found_and_applied(tmp_path):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"]], e["df4"])
+    decision.set("status", "Decisa")  # by hand, or by an earlier version
+    p.update(decision)
+    assert reallocation_pending(p.model, decision) == [e["clause"]] and findings(p, "A4-10")
+    approve_reallocation(p, decision)
+    assert not reallocation_pending(p.model, decision) and not findings(p, "A4-10")
+    # Moved again by a later decision: the first one is not «not applied».
+    approve_reallocation(p, adr(p, [e["clause"]], e["df7"]))
+    assert not reallocation_pending(p.model, decision)
+
+
+def test_the_sheets_show_the_approval_and_the_clauses_received_and_ceded(app, tmp_path, monkeypatch):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["clause"]], e["df4"], id="ADR-001")
+    editor = ElementEditor()
+    editor.approver = lambda: "Anna"
+    editor.edit(p, decision)
+    assert editor.approve_button.text() == "Approva e sposta le voci"
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.No)
+    editor.approve()
+    assert "3.8.1.4 (da DF01)" in asked[0] and not e["clause"].get("primary_domain")  # shown, then cancelled
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    editor.approve()
+    assert e["clause"].get("primary_domain") == e["df4"].uuid
+    window = MainWindow()
+    window._set_project(p)
+    window.tree.select(e["df4"].uuid)
+    received = window.editor.findChild(QListWidget, "srsReceived")
+    assert received.item(0).data(Qt.UserRole) == e["clause"].uuid and "ADR-001" in received.item(0).text()
+    assert window.editor.findChild(QListWidget, "srsPrincipal").count() == 1  # «Nessuna voce»: not the clause
+    assert not window.editor.findChild(QListWidget, "srsPrincipal").isEnabled()
+    window.tree.select(e["df1"].uuid)
+    ceded = window.editor.findChild(QListWidget, "srsCeded")
+    assert ceded.item(0).data(Qt.UserRole) == e["clause"].uuid and "ADR-001" in ceded.item(0).text()
+    window.save()
+    window._set_project(None)
+    window.close()
+
+
+def test_an_approved_adr_stays_as_it_was(tmp_path):
+    from arcadia_tool.model.adr import COMPUTED, impacted_domains, item_contributors, item_primary, related_adrs
+
+    p, e = build(tmp_path)
+    decision = adr(p, [e["section"]], e["df4"])
+    title, items = decision.get("title"), list(decision.get("realloc_item"))
+    assert item_primary(p.model, decision) == e["df1"].uuid
+    approve_reallocation(p, decision)
+    assert e["section"].get("primary_domain") == e["df4"].uuid  # the section moved, the ADR shows where from
+    assert item_primary(p.model, decision) == e["df1"].uuid
+    assert item_contributors(p.model, decision) == [e["df7"].uuid]
+    assert decision.get("title") == title and decision.get("realloc_item") == items
+    assert decision.get("primary_proposed") == e["df4"].uuid
+    assert {d.uuid for d in impacted_domains(p.model, decision)} == {e["df1"].uuid, e["df4"].uuid, e["df7"].uuid}
+    assert decision in related_adrs(p.model, e["df1"])  # still in the table of the domain of origin
+    approve_reallocation(p, adr(p, [e["section"]], e["df7"]))  # moved again later: the first ADR does not follow
+    assert COMPUTED["item_primary"](p.model, decision) == e["df1"].uuid
+    assert not reallocation_pending(p.model, decision)
+    p.save()
+    p.close()
+    p = Project.open(p.path)  # also when opened again
+    assert item_primary(p.model, p.model.get(decision.uuid)) == e["df1"].uuid
+    assert item_contributors(p.model, p.model.get(decision.uuid)) == [e["df7"].uuid]
+

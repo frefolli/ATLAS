@@ -74,13 +74,17 @@ def principal_of(model, item):
 
 def item_primary(model, adr):
     """The principal domain the SRS items of the ADR have now (of the first that has one: they are of one section,
-    see same_section)."""
+    see same_section); once the reallocation is applied, the one they had then: the ADR does not change."""
+    if adr.get("realloc_applied"):
+        return adr.get("primary_at_approval")
     return next((d for d in (principal_of(model, e) for e in realloc_items(model, adr)) if d), None)
 
 
 def item_contributors(model, adr):
     """The contributing domains the SRS items to reallocate have now (their own, or of the sections containing
-    them), without repetitions."""
+    them), without repetitions; once the reallocation is applied, those they had then."""
+    if adr.get("realloc_applied"):
+        return list(adr.get("contributors_at_approval") or [])
     result = []
     for item in realloc_items(model, adr):
         part = allocated_part(model, item)
@@ -322,9 +326,10 @@ COMPUTED["related_adrs"] = related_adrs_ids  # the table of the ADR of a domain 
 # --- the approval of the Design Authority ---------------------------------------------------------------------
 
 def can_approve(adr):
-    """An ADR the Design Authority can approve with an action of the tool: a new domain still proposed (or under
-    its review)."""
-    return adr.kind == "adr" and adr.get("adr_type") == ADR_NEW_DOMAIN and adr.get("status") in OPEN
+    """An ADR the Design Authority can approve with an action of the tool: a new domain or a reallocation still
+    proposed (or under its review), not rejected."""
+    return adr.kind == "adr" and adr.get("adr_type") in (ADR_NEW_DOMAIN, ADR_SECTION) and \
+        adr.get("status") in OPEN and adr.get("da_decision") != "Respinta"
 
 
 def approval_problems(model, adr):
@@ -392,3 +397,110 @@ def approve_new_domain(project, adr, today=None):
     adr.set("decision_date", decision_date_of(adr, today=today))
     project.update(adr, previous)
     return domain, list({e.uuid: e for e in changed if e.uuid != domain.uuid}.values())
+
+
+# --- the approval of a reallocation ---------------------------------------------------------------------------
+
+def realloc_targets(model, adr):
+    """The SRS items an approved reallocation writes on: those of the ADR, but those contained in another one of them
+    with no domains of their own (they follow it, e.g. the list items of a clause moved)."""
+    items = realloc_items(model, adr)
+    chosen = {e.uuid for e in items}
+
+    def contained(item):
+        seen, parent = {item.uuid}, item.get("parent")
+        while parent and parent not in seen:
+            if parent in chosen:
+                return True
+            seen.add(parent)
+            parent = model.get(parent).get("parent") if model.get(parent) is not None else None
+        return False
+    return [e for e in items if not contained(e) or e.get("primary_domain") or e.get("contributing_domains")]
+
+
+def reallocation_problems(model, adr):
+    """What is missing to apply the reallocation (empty list: it can be applied)."""
+    problems = []
+    primary = adr.get("primary_proposed")
+    if not realloc_items(model, adr):
+        problems.append("Mancano le sezioni o clausole da riallocare.")
+    if not primary or model.get(primary) is None:
+        problems.append("Manca il dominio principale proposto.")
+    for item in realloc_targets(model, adr):
+        if item.get("item_type") == "Voce":
+            problems.append(f"{item.get('id')} è un punto di elenco o una riga di tabella: si spostano solo clausole "
+                            "intere. Aggiungi all'ADR la sua clausola, oppure deriva un requisito dal punto e "
+                            "assegnalo al nuovo dominio.")
+        if primary in (item.get("excluded_domains") or []):
+            problems.append(f"{item.get('id')} è esclusa dal dominio proposto: togli prima l'ADR di esclusione.")
+    return problems
+
+
+def reallocation_preview(model, adr):
+    """What approving the reallocation changes: (the items moved with the principal domain they have now; the clauses
+    inside them that keep a principal domain of their own, by an earlier decision; the functions of other domains
+    that trace them, which stay where they are)."""
+    from arcadia_tool.model.links import TRACED_FIELD, _domain_of_function
+
+    primary = adr.get("primary_proposed")
+    targets = realloc_targets(model, adr)
+    moved = [(item, principal_of(model, item)) for item in targets]
+    inside = set(model.descendants([e.uuid for e in targets]))
+    chosen = {e.uuid for e in targets}
+    kept = [e for e in model.of_kind("requirement") if e.uuid in inside and e.uuid not in chosen
+            and e.get("primary_domain") and e.get("primary_domain") != primary]
+    functions = [f for kind, field in TRACED_FIELD.items() for f in model.of_kind(kind)
+                 if inside & set(f.get(field) or []) and _domain_of_function(model, f) != primary]
+    return moved, kept, functions
+
+
+def approve_reallocation(project, adr, today=None):
+    """The Design Authority approves the reallocation (or applies one decided earlier): the items pass to the proposed
+    principal domain, with the proposed contributors; the clauses inside them with a principal domain of their own
+    keep it. The ADR is decided. Returns the other elements changed."""
+    problems = reallocation_problems(project.model, adr)
+    if problems:
+        raise ValueError(" ".join(problems))
+    primary, changed = adr.get("primary_proposed"), []
+    before = item_primary(project.model, adr), item_contributors(project.model, adr)  # as the ADR goes on showing them
+    for item in realloc_targets(project.model, adr):
+        previous = item.copy()
+        item.set("primary_domain", primary)
+        item.set("contributing_domains", [d for d in adr.get("contributors_proposed") or [] if d != primary])
+        changed += [item, *(project.update(item, previous) or [])]
+    previous = adr.copy()
+    adr.set("realloc_applied", True)
+    adr.set("primary_at_approval", before[0])
+    adr.set("contributors_at_approval", before[1])
+    adr.set("status", DECIDED)
+    if adr.get("da_decision") not in ("Accolta", "Accolta con modifiche"):
+        adr.set("da_decision", "Accolta")
+    adr.set("decision_date", decision_date_of(adr, today=today))
+    project.update(adr, previous)
+    return list({e.uuid: e for e in changed}.values())
+
+
+def decided_reallocations(model, item):
+    """The reallocations decided by the Design Authority (not rejected) that name the SRS item."""
+    return [a for a in model.of_kind("adr") if a.get("adr_type") == ADR_SECTION and a.get("status") == DECIDED
+            and a.get("da_decision") != "Respinta" and item in realloc_items(model, a)]
+
+
+def open_reallocations(model, item):
+    """The reallocations of the SRS item still to decide."""
+    return [a for a in model.of_kind("adr") if a.get("adr_type") == ADR_SECTION and a.get("status") in OPEN
+            and a.get("da_decision") != "Respinta" and item in realloc_items(model, a)]
+
+
+def reallocation_pending(model, adr):
+    """The SRS items of a reallocation decided and not applied to the model (e.g. decided before ATLAS applied them,
+    or setting the status by hand), unless a decided reallocation gave them the domain they have now."""
+    if adr.kind != "adr" or adr.get("adr_type") != ADR_SECTION or adr.get("status") != DECIDED \
+            or adr.get("realloc_applied") or adr.get("da_decision") == "Respinta" \
+            or reallocation_problems(model, adr):
+        return []
+    primary = adr.get("primary_proposed")
+    return [item for item in realloc_targets(model, adr) if principal_of(model, item) != primary
+            and not any(a.get("primary_proposed") == principal_of(model, item)
+                        for a in decided_reallocations(model, item))]
+

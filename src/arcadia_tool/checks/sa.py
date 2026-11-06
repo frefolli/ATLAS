@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from arcadia_tool.checks import ERROR, INFO, WARNING, check, issue
 from arcadia_tool.checks.context import (AGREED, CLAUSE_TYPES, NON_BOARD, name_acronyms, question_number,
                                          sentences, starts_with_verb, without_variants)
-from arcadia_tool.model.adr import related_adrs
+from arcadia_tool.model.adr import decided_reallocations, open_reallocations, reallocation_pending, related_adrs
 from arcadia_tool.model.identifiers import NO_ID_KINDS, _domain_code
 from arcadia_tool.checks.params import VERB_ENDINGS
 from arcadia_tool.model.schema import ETCS_MODES, REF, REFS, TABLE
@@ -207,9 +207,24 @@ def a4_clause_outside_section(ctx):
         section = ctx.section_of(r)
         if section is not None and section.get("primary_domain") and \
                 r.get("primary_domain") not in ctx.own_domains(section):
+            decided = decided_reallocations(ctx.model, r)
+            if any(a.get("primary_proposed") == r.get("primary_domain") for a in decided):
+                continue  # an exception decided by the Design Authority
+            pending = open_reallocations(ctx.model, r)
             d = ctx.get(r.get("primary_domain"))
+            why = (f"L'ADR {pending[0].get('id')} che la sposta è ancora da decidere." if pending else
+                   "Manca un'ADR di riallocazione decisa dalla DA.")
             yield issue(r, f"Dominio principale {ctx.label(d)}, che non è né principale né contributore della "
-                           f"sezione {section.get('id')}.", [d, section])
+                           f"sezione {section.get('id')}. {why}", [d, section, *pending])
+
+
+@check("A4-10", "ADR di riallocazione decisa e non applicata al modello", "A", "A4, X-1")
+def a4_reallocation_not_applied(ctx):
+    for adr in ctx.of("adr"):
+        pending = reallocation_pending(ctx.model, adr)
+        if pending:
+            yield issue(adr, f"Decisa, ma {ctx.labels(pending)} non è ancora allocato al dominio proposto: la DA può "
+                             "applicarla con «Applica la riallocazione» nella scheda dell'ADR.", pending)
 
 
 @check("A4-05", "Voce Definizione, Informativa o Altro allocata come principale", "A", "B5 domanda 1")

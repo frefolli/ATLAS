@@ -543,6 +543,12 @@ KINDS = (
         _adr(Field("primary_proposed", "Dominio principale proposto", REF, ref_kinds=("domain",)), ADR_SECTION),
         _adr(Field("contributors_proposed", "Contributori proposti", REFS, ref_kinds=("domain",)), ADR_SECTION),
         _adr(Field("realloc_reason", "Motivazione della riallocazione", TEXT), ADR_SECTION),
+        # Written when the reallocation is applied: the domains the items had, as the ADR goes on showing them.
+        Field("realloc_applied", "Riallocazione applicata", BOOL, hidden=True, when=("adr_type", (ADR_SECTION,))),
+        Field("primary_at_approval", "Dominio principale prima dell'approvazione", REF, ref_kinds=("domain",),
+              hidden=True, when=("adr_type", (ADR_SECTION,))),
+        Field("contributors_at_approval", "Contributori prima dell'approvazione", REFS, ref_kinds=("domain",),
+              hidden=True, when=("adr_type", (ADR_SECTION,))),
         # The exclusion of SRS items from a domain principal of the sections containing them: the items (one or more,
         # chosen with ticks), the domain, the sections they are excluded from (read from the model), why the domain
         # does not trace them, who traces them.

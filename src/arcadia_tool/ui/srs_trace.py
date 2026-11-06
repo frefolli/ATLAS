@@ -39,6 +39,29 @@ def principal_items(model, domain):
     return [e for e in document_order(model) if e.get("primary_domain") == domain.uuid]
 
 
+GROUPS = ("Capitolo", "Sezione")  # what a domain is principal of; a clause of its own is an exception (by an ADR)
+
+
+def principal_groups(model, domain):
+    return [e for e in principal_items(model, domain) if e.get("item_type") in GROUPS]
+
+
+def received_items(model, domain):
+    """The clauses the domain is principal of, out of its sections: passed to it by a reallocation (X-1)."""
+    return [e for e in principal_items(model, domain) if e.get("item_type") not in GROUPS]
+
+
+def ceded_items(model, domain):
+    """The clauses of the sections of the domain whose principal domain is another one: it has passed them on."""
+    from arcadia_tool.model.adr import section_of
+
+    def of_domain(e):
+        section = section_of(model, e)
+        return section is not None and section.get("primary_domain") == domain.uuid
+    return [e for e in document_order(model) if e.get("primary_domain") and e.get("primary_domain") != domain.uuid
+            and e.get("item_type") not in GROUPS and of_domain(e)]
+
+
 def contributed_items(model, domain):
     return [e for e in document_order(model) if domain.uuid in (e.get("contributing_domains") or [])]
 

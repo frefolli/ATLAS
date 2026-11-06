@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.2</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.3</sub>
 </p>
 
 > [!WARNING]
@@ -87,9 +87,7 @@ repository serve solo per scaricare e pubblicare le versioni.
   «Ricevi», e nell'albero (un pallino blu a sinistra dell'elemento da vedere). Si segnano come lette o di nuovo
   come non lette («Nuova»). I membri della Design
   Authority ricevono tutte le ADR non aperte dalla DA, in una scheda a parte del pannello («Il mio team», «Design
-  Authority», «Messaggi»). La lettura di un'ADR viene registrata nel progetto. Nella testata della scheda
-  dell'ADR l'indicatore «Vista da N» apre, con un clic, l'elenco di chi dei team di destinazione e della DA l'ha
-  letta.
+  Authority», «Messaggi»). La lettura di un'ADR viene registrata nel progetto.
 - **Discussione** in fondo alla scheda di ogni ADR e CQ: i membri dei team scrivono messaggi in fila, con risposta
   a un messaggio precedente e file allegati. Il messaggio si salva subito e arriva ai colleghi con Pubblica e
   Invia; l'albero indica i messaggi nuovi. L'autore modifica o elimina i propri messaggi, la DA può nasconderli e

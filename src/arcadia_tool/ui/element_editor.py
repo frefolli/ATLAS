@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem,
                                QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
-                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QToolButton,
+                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit,
                                QVBoxLayout, QWidget)
 
 from arcadia_tool.checks import CHECKS_BY_CODE, count
@@ -19,9 +19,11 @@ from arcadia_tool.checks.fields import SRS_CARD
 from arcadia_tool.model.coverage import derivable
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context, missing_context, rule
 from arcadia_tool.model.teams import DA_FIELD, MEMBERS, da_teams, member_rows
-from arcadia_tool.model.adr import approval_problems, approve_new_domain, can_approve, sections_taken
+from arcadia_tool.model.adr import (approval_problems, approve_new_domain, approve_reallocation, can_approve,
+                                    decided_reallocations, open_reallocations, reallocation_pending,
+                                    reallocation_preview, reallocation_problems, sections_taken)
 from arcadia_tool.model.element import is_empty
-from arcadia_tool.model.schema import (ADR_DETAILS, BOOL, DA_DECISION, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
+from arcadia_tool.model.schema import (ADR_DETAILS, ADR_SECTION, BOOL, DA_DECISION, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
                                        REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.storage.project import local_change
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
@@ -490,8 +492,11 @@ class ElementEditor(QScrollArea):
     @local_change
     def approve(self):
         """The Design Authority approves the ADR of a new domain: the domain is created (see
-        model.adr.approve_new_domain), after a confirmation that says what changes."""
+        model.adr.approve_new_domain), after a confirmation that says what changes. A reallocation: see
+        _approve_reallocation."""
         element, model = self.element, self.project.model
+        if element.get("adr_type") == ADR_SECTION:
+            return self._approve_reallocation()
         problems = approval_problems(model, element)
         if problems:
             QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
@@ -517,6 +522,47 @@ class ElementEditor(QScrollArea):
         self._build()
         QMessageBox.information(self, "Approva ADR", f"ADR approvata: creato il dominio "
                                 f"{model.label(domain)}.")
+
+    def _approve_reallocation(self):
+        """The items of the ADR pass to the proposed domain (see model.adr.approve_reallocation), after a confirmation
+        that says what changes and what does not."""
+        element, model = self.element, self.project.model
+        problems = reallocation_problems(model, element)
+        if problems:
+            QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
+            return
+
+        def short(uuid):
+            target = model.get(uuid) if uuid else None
+            return (target.get("id") or model.label(target)) if target is not None else "nessuno"
+
+        def listed(elements, limit=12):
+            names = [e.get("id") or model.label(e) for e in elements]
+            return ", ".join(names[:limit]) + (f" e altre {len(names) - limit}" if len(names) > limit else "")
+
+        moved, kept, functions = reallocation_preview(model, element)
+        primary = element.get("primary_proposed")
+        lines = [f"Passano al dominio {short(primary)}:"]
+        lines += [f"• {item.get('id')} (da {short(current)})" for item, current in moved[:12]]
+        if len(moved) > 12:
+            lines.append(f"• e altre {len(moved) - 12}")
+        contributors = [short(d) for d in element.get("contributors_proposed") or [] if d != primary]
+        lines.append(f"Contributori: {', '.join(contributors) or 'nessuno'}")
+        if kept:
+            lines.append(f"\nRestano al loro dominio, per una decisione precedente: {listed(kept)}")
+        if functions:
+            lines.append(f"\nFunzioni di altri domini che tracciano queste voci (non si spostano, restano da "
+                         f"sistemare): {listed(functions)}")
+        if QMessageBox.question(self, "Approva ADR", "Approvare l'ADR e spostare le voci?\n\n" + "\n".join(lines)
+                                ) != QMessageBox.Yes:
+            return
+        changed = approve_reallocation(self.project, element)
+        self.draft = element.copy()
+        for e in [*changed, element]:
+            self.element_changed.emit(e)
+        self.saved.emit()  # the project is saved
+        self._build()
+        QMessageBox.information(self, "Approva ADR", f"ADR approvata: voci spostate al dominio {short(primary)}.")
 
     @local_change
     def save_changes(self):
@@ -814,10 +860,6 @@ class ElementEditor(QScrollArea):
         if schema.template:
             top.addWidget(QLabel(f"Template {schema.template}", objectName="badge"))
         top.addStretch()
-        self.seen_button = None  # only an ADR (saved) has it
-        if element.kind == "adr" and self.project.model.get(element.uuid) is not None:
-            self.seen_button = self._seen_button()
-            top.addWidget(self.seen_button)
         status_field = schema.field("status")
         if status_field:
             combo = StatusCombo(status_field.options, element.get("status"))
@@ -849,13 +891,19 @@ class ElementEditor(QScrollArea):
                 self.modify_button.setEnabled(False)
                 self.modify_button.setToolTip(reason)
             buttons = (self.modify_button,)
-            if can_approve(element) and self.approver is not None and self.approver():
+            pending = reallocation_pending(self.project.model, element)
+            if (can_approve(element) or pending) and self.approver is not None and self.approver():
+                reallocation = element.get("adr_type") == ADR_SECTION
                 self.approve_button = QPushButton(icon("mdi6.check-decagram-outline", "white"),
+                                                  "Applica la riallocazione" if pending else
+                                                  "Approva e sposta le voci" if reallocation else
                                                   "Approva e crea il dominio")
                 self.approve_button.setProperty("primary", True)
-                self.approve_button.setToolTip("Design Authority: approva l'ADR e crea il nuovo dominio funzionale "
-                                               "(con l'ID assegnato dal tool), la missione, il team e le sezioni "
-                                               "proposti")
+                self.approve_button.setToolTip(
+                    "Design Authority: approva l'ADR e porta le sezioni e le clausole al dominio proposto, con i "
+                    "contributori proposti" if reallocation else
+                    "Design Authority: approva l'ADR e crea il nuovo dominio funzionale (con l'ID assegnato dal tool), "
+                    "la missione, il team e le sezioni proposti")
                 self.approve_button.clicked.connect(lambda _=False: self.approve())
                 buttons = (self.approve_button, self.modify_button)
         for button in buttons:
@@ -912,68 +960,6 @@ class ElementEditor(QScrollArea):
         overlay.raise_()
         self.highlight = overlay
         QTimer(overlay, singleShot=True, interval=HIGHLIGHT_MS, timeout=overlay.deleteLater).start()
-
-    def _seen_button(self):
-        """«Vista da N»: who of the teams the ADR concerns (its destinations, the Design Authority) has read it; a
-        click shows them (see show_readings)."""
-        from arcadia_tool.model.notifications import reading_rows
-        rows, missing = reading_rows(self.project.model, self.element)
-        current = sum(1 for *_r, now in rows if now)
-        button = QToolButton(autoRaise=True, objectName="seenIndicator")
-        button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        if not rows:
-            colour, text = MUTED, "Non ancora vista"
-        else:
-            complete = not missing and current == len(rows)
-            colour, text = ("#166534" if complete else "#92400E"), f"Vista da {len(rows)}"
-        button.setIcon(icon("mdi6.eye-check-outline" if rows else "mdi6.eye-outline", colour))
-        button.setText(text)
-        button.setStyleSheet(f"QToolButton#seenIndicator {{ color: {colour}; border: 1px solid {colour}; "
-                             "border-radius: 10px; padding: 1px 8px; }")
-        button.setToolTip("Chi dei team di destinazione e della Design Authority ha letto l'ADR: clic per i "
-                          "dettagli")
-        button.setProperty("keepEnabled", True)
-        button.clicked.connect(lambda _c=False: self.show_readings())
-        return button
-
-    def show_readings(self):
-        """The popup of the indicator: who read the ADR, when, which version; the teams that have not yet."""
-        from arcadia_tool.model.discussions import when
-        from arcadia_tool.model.notifications import reading_rows
-        model = self.project.model
-        rows, missing = reading_rows(model, self.element)
-        popup = QFrame(self, Qt.Popup)
-        popup.setObjectName("readingsPopup")
-        popup.setStyleSheet("QFrame#readingsPopup { background: white; border: 1px solid #C9D1DC; }")
-        layout = QVBoxLayout(popup)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.addWidget(QLabel("Letture dell'ADR", objectName="formLabel"))
-        for team, member, at, now in rows:
-            team_text = (team.get("id") or model.label(team)) if team is not None else "?"
-            line = QLabel(f"{team_text} · {member or 'membro'} · {when(at)}" +
-                          ("" if now else " · una versione precedente"))
-            line.setToolTip("Ha letto la versione attuale" if now else
-                            "Ha letto una versione precedente: poi l'ADR è cambiata")
-            if not now:
-                line.setStyleSheet("color: #92400E;")
-            layout.addWidget(line)
-        for team in missing:
-            line = QLabel(f"{team.get('id') or model.label(team)} · non ancora letta", objectName="muted")
-            layout.addWidget(line)
-        if not rows and not missing:
-            layout.addWidget(QLabel("Nessun team da cui attendere la lettura.", objectName="muted"))
-        note = QLabel("Registrate quando un membro di un team di destinazione o della Design Authority apre l'ADR: "
-                      "arrivano con le versioni pubblicate.", objectName="muted")
-        note.setWordWrap(True)
-        note.setMaximumWidth(420)
-        layout.addWidget(note)
-        anchor = getattr(self, "seen_button", None)
-        popup.adjustSize()
-        if anchor is not None:
-            popup.move(anchor.mapToGlobal(anchor.rect().bottomLeft()))
-        popup.show()
-        self.readings_popup = popup
-        return popup
 
     def _discussion_changed(self):
         """A message saved: the sheet shows the discussion again (the draft of the sheet, if any, is kept)."""
@@ -1056,7 +1042,10 @@ class ElementEditor(QScrollArea):
         if element.kind == "domain":
             title, label, tip = ("Tracciabilità verso le voci SRS (A4)", "Traccia sezioni e clausole SRS…",
                                  "Collega il dominio alle sezioni (es. 3.4.1) o alle clausole (es. 3.4.1.3)")
-            columns = (("srsPrincipal", "Sezioni SRS principali", srs_trace.principal_items(model, element)),
+            received, ceded = srs_trace.received_items(model, element), srs_trace.ceded_items(model, element)
+            columns = (("srsPrincipal", "Sezioni SRS principali", srs_trace.principal_groups(model, element)),
+                       *((("srsReceived", "Clausole ricevute per ADR", received),) if received else ()),
+                       *((("srsCeded", "Clausole cedute per ADR", ceded),) if ceded else ()),
                        ("srsContributing", "Sezioni e clausole SRS a cui contribuisce",
                         srs_trace.contributed_items(model, element)),
                        ("srsExcluded", "Sezioni e clausole escluse", srs_trace.excluded_items(model, element)))
@@ -1126,6 +1115,9 @@ class ElementEditor(QScrollArea):
             view.setMaximumHeight(240)
             for e in items:
                 entry = QListWidgetItem(model.label(e))  # a derived requirement: its ID only
+                if name in ("srsReceived", "srsCeded"):  # the decision behind the exception
+                    adrs = decided_reallocations(model, e) or open_reallocations(model, e)
+                    entry.setText(f"{model.label(e)} · {adrs[0].get('id') if adrs else 'senza ADR decisa'}")
                 entry.setData(Qt.UserRole, e.uuid)
                 entry.setToolTip((e.get("text") or e.get("obligation") or e.get("title") or "")[:600])
                 view.addItem(entry)

@@ -516,3 +516,40 @@ def test_double_click_on_sa1_opens_the_table_of_the_domains_with_their_status_on
     assert window.editors[second.uuid].element.get("status") == "Approvato"
     window._set_project(None)
     window.close()
+
+
+def test_the_adr_are_listed_by_outcome(app, tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    for ident, status, decision in (("ADR-001", "Proposta", None), ("ADR-002", "In revisione DA", "Commenti DA"),
+                                    ("ADR-003", "Decisa", None), ("ADR-004", "Revisionato DA", "Accolta"),
+                                    ("ADR-005", "Superata", "Respinta"), ("ADR-006", "Superata", None)):
+        p.new_element("adr", id=ident, title=f"Titolo {ident}", status=status, da_decision=decision)
+    page = ElementListPage(p, "adr")
+
+    def shown():
+        table = page.table
+        return [table.item(r, 0).text() for r in range(table.rowCount()) if not table.isRowHidden(r)]
+
+    tabs = page.outcome_tabs
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ["Tutte (6)", "In revisione (2)", "Approvate (2)",
+                                                              "Respinte (1)", "Superate (1)"]
+    assert len(shown()) == 6 and page.count.text() == "6 ADR"
+    tabs.setCurrentIndex(1)
+    assert shown() == ["ADR-001", "ADR-002"] and page.count.text() == "2 di 6"
+    tabs.setCurrentIndex(2)
+    assert shown() == ["ADR-003", "ADR-004"]
+    page.search.setText("ADR-004")  # the search within the list chosen
+    assert shown() == ["ADR-004"]
+    page.search.setText("")
+    tabs.setCurrentIndex(3)
+    assert shown() == ["ADR-005"]
+    tabs.setCurrentIndex(4)
+    assert shown() == ["ADR-006"]
+    # A decision: the ADR changes list, and the list chosen stays.
+    tabs.setCurrentIndex(1)
+    adr = next(a for a in p.model.of_kind("adr") if a.get("id") == "ADR-001")
+    adr.set("status", "Decisa")
+    p.update(adr)
+    page.reload()
+    assert tabs.currentIndex() == 1 and shown() == ["ADR-002"] and tabs.tabText(2) == "Approvate (3)"
+

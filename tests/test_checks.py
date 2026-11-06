@@ -234,6 +234,8 @@ MUTATIONS = {
     "A4-03": lambda g: g.sec314.set("contributing_domains", [g.df02.uuid] + [domain(g, f"DF9{n}").uuid
                                                                               for n in range(2)]),
     "A4-04": lambda g: g.cl3142.set("primary_domain", domain(g, "DF09").uuid),
+    "A4-10": lambda g: g.add("adr", id="ADR-091", title="Spostamento", adr_type="Riallocazione di sezione o clausola",
+                             status="Decisa", realloc_item=[g.cl3142.uuid], primary_proposed=domain(g, "DF09").uuid),
     "A4-05": lambda g: g.add("requirement", id="3.14.4.8", item_type="Requisito", parent=g.sec314.uuid,
                              category=["Informativa"], primary_domain=g.df06.uuid),
     "A4-06": lambda g: g.cl3142.set("category", ["Bordo", "Definizione"]),

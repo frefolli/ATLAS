@@ -10,7 +10,7 @@ message; the panel shows them apart.
 
 A notification is read when the ADR is opened, or marked read; it can be marked unread again, to look at it again.
 Reading an ADR is also recorded in the project (kind «reading»: a file per member and ADR, so that two readings on
-two branches do not conflict): the Design Authority and the proposer see who has read it, and which version.
+two branches do not conflict); it is not shown to the others.
 
 The notifications are worked out once for a state of the project and of what the user has seen (see collect): the
 bell, the tree and the panel ask them often."""
@@ -421,18 +421,3 @@ def record_reading(project, user, adr):
     project.update(record, previous)
     project.save(only={record.uuid})
     return record
-
-
-def reading_rows(model, adr):
-    """For the sheet of the ADR: (team, member, when, the version now or an earlier one) of the readings, and the
-    teams that should read it (the destinations, the Design Authority) and have not yet."""
-    version = fingerprint(adr)
-    rows = [(model.get(r.get("team")), r.get("member"), r.get("read_at"), r.get("version") == version)
-            for r in readings_of(model, adr)]
-    read_teams = {t.uuid for t, *_ in rows if t is not None}
-    expected = [t for t in destination_teams(model, adr) if t != adr.get("proposer")]
-    da = design_authority(model)
-    if da is not None and da.uuid not in expected and adr.get("proposer") != da.uuid:
-        expected.append(da.uuid)
-    missing = [model.get(t) for t in expected if t not in read_teams]
-    return rows, [t for t in missing if t is not None]
