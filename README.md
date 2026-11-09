@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.5</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.10.0</sub>
 </p>
 
 > [!WARNING]
@@ -217,6 +217,8 @@ repository serve solo per scaricare e pubblicare le versioni.
   Gli identificativi automatici in conflitto vengono rinumerati.
 - Rami: elenco dei rami di questo PC e del repository, nuovo ramo da una versione scelta, cambio di ramo. Si può
   pubblicare sul ramo attuale o su un nuovo ramo creato al momento della pubblicazione.
+- **Vista d'insieme** (barra superiore): il ramo principale con il lavoro dei rami scelti sovrapposto, in sola lettura,
+  senza integrare nulla. Ogni elemento dice se è approvato, modificato, nuovo, rimosso o divergente tra i rami.
 - **Elimina ramo locale…** (finestra Rami): toglie un ramo da questo PC, non dal repository, e avvisa se contiene
   versioni che non sono altrove.
 - **Ricevi senza perdere le modifiche locali:** «Ricevi e mantieni le modifiche» prende le versioni del repository e

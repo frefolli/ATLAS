@@ -347,14 +347,19 @@ class Receive:
         # Versions merged outside ATLAS (with Git: no renumbering of the identifiers, no sheets kept in step).
         self.foreign = [v for v in self.incoming if v.is_merge and not made_by_atlas(v)]
 
+    @property
+    def into_main(self):
+        """An integration into the main branch: what is there is approved, and keeps its identifiers."""
+        return self.into in MAIN_BRANCHES
+
     def merge(self, choices=None):
         from arcadia_tool.storage.merge import merge_files, relink, renumber_ids
         from arcadia_tool.storage.selective import _uuid_of, selected_files
 
         theirs = self.theirs_files if self.only is None else selected_files(self.base, self.theirs_files, self.only)
-        result = merge_files(self.base, self.ours, theirs, choices)
+        result = merge_files(self.base, self.ours, theirs, choices, keep_our_ids=self.into_main)
         if result.resolved:
-            renumber_ids(result, self.base, theirs)
+            renumber_ids(result, self.base, theirs, main=self.ours if self.into_main else None)
             relink(result, self.ours, [p for p in result.files if self.only and _uuid_of(p) in self.only])
         return result if self.local is None else self._with_local(result, choices or {})
 
@@ -381,7 +386,8 @@ class Receive:
     def selection(self):
         """What can be taken alone from the other branch (see storage.selective): it reads the whole model."""
         from arcadia_tool.storage.selective import integration_selection
-        return integration_selection(self.base, self.ours if self.local is None else self.local, self.theirs_files)
+        return integration_selection(self.base, self.ours if self.local is None else self.local, self.theirs_files,
+                                     keep_our_ids=self.into_main)
 
 
 def _label_of(data):
@@ -1208,6 +1214,19 @@ class Project:
         names = set(self.repository.local_heads()) | set(self.repository.remote_heads())
         return next((n for n in MAIN_BRANCHES if n in names), None)
 
+    def overview_sources(self):
+        """What the overview of the branches can overlay: (the main branch, the other branches), as Sources: each with
+        its last version sent to the repository, or of this PC if it was never sent. (None, []) without a main branch.
+        A «main» or «master» with no model (the first empty version a Git server creates) is neither the base nor a
+        branch to overlay: with «master» next to an empty «main», the base is «master»."""
+        from arcadia_tool.storage.overview import Source
+
+        found = [Source(b.name, b.remote or b.local, only_here=b.remote is None and bool(self.remote()),
+                        differs=bool(b.remote and b.local and b.remote != b.local)) for b in self.branches()]
+        found = [s for s in found if s.name not in MAIN_BRANCHES or self.repository.model_blobs(s.sha)]
+        main = next((s for n in MAIN_BRANCHES for s in found if s.name == n), None)
+        return main, [s for s in found if s is not main] if main else []
+
     def branches(self):
         """The branches of this PC and of the remote (as last downloaded): Branch, the main one first."""
         local, remote = self.repository.local_heads(), self.repository.remote_heads()
@@ -1391,10 +1410,34 @@ class Project:
             self.repository.move_to(head, files)
         self.discard_recovery()
 
-    def apply_receive(self, receive, choices=None, author=None):
+    @staticmethod
+    def _selected_names(receive):
+        return sorted(_label_of(receive.theirs_files.get(p) or receive.base[p])
+                      for p in {*receive.base, *receive.theirs_files}
+                      if p.startswith(MODEL_DIR + "/") and p.rsplit("/", 1)[-1][:-5] in receive.only)
+
+    def creates_version(self, receive):
+        """Applying it records a version of its own (its message can be written): a merge, or a selective
+        integration. Not a fast-forward: the versions received are taken as they are."""
+        return receive.only is not None or receive.state == Receive.MERGE
+
+    def default_message(self, receive):
+        """The first line of the version an integration records, as ATLAS writes it when the user does not."""
+        if receive.only is not None:
+            return (f"Integrazione selettiva dal ramo «{receive.branch}» in «{receive.into}» "
+                    f"({len(self._selected_names(receive))} elementi)")
+        count = len(receive.incoming)
+        what = f"{count} {'versione' if count == 1 else 'versioni'}"
+        return (f"Integrazione del ramo «{receive.branch}» in «{receive.into}» ({what})" if receive.into
+                else f"Integrazione di {what} {'ricevuta' if count == 1 else 'ricevute'} dal ramo «{receive.branch}»")
+
+    def apply_receive(self, receive, choices=None, author=None, message=None):
         """Receive the versions as prepared, with the choices for the conflicts ({conflict key: ours/theirs}).
         Writes the project on disk: the project must then be opened again. Returns the MergeResult (with the
-        conflicts still unresolved if the choices miss some: then nothing is written)."""
+        conflicts still unresolved if the choices miss some: then nothing is written). message: the message of the
+        version recorded, written by the user (default_message if empty); what ATLAS records about the integration
+        (the elements taken, the line telling a merge made by ATLAS) follows it."""
+        message = (message or "").strip() or self.default_message(receive)
         result = receive.merge(choices)
         if not result.resolved:
             return result
@@ -1405,23 +1448,15 @@ class Project:
         relinked = getattr(result, "relinked", [])
         if receive.only is not None:
             # A version like any other, not a merge: for Git the rest of the other branch is still to integrate.
-            names = sorted(_label_of(receive.theirs_files.get(p) or receive.base[p])
-                           for p in {*receive.base, *receive.theirs_files}
-                           if p.startswith(MODEL_DIR + "/") and p.rsplit("/", 1)[-1][:-5] in receive.only)
-            message = (f"Integrazione selettiva dal ramo «{receive.branch}» in «{receive.into}» "
-                       f"({len(names)} elementi)\n\nDalla versione {receive.theirs[:8]} di «{receive.branch}».\n"
-                       "Elementi: " + ", ".join(names[:40]) + (" …" if len(names) > 40 else ""))
+            names = self._selected_names(receive)
+            message += (f"\n\nDalla versione {receive.theirs[:8]} di «{receive.branch}».\n"
+                        "Elementi: " + ", ".join(names[:40]) + (" …" if len(names) > 40 else ""))
             self.repository.save_version(message, author or "ATLAS <atlas@localhost>",
                                          result.files if result.published is None else result.published,
                                          working=None if result.published is None else result.files)
         elif receive.state == Receive.FAST_FORWARD:
             self.repository.move_to(receive.theirs, result.files)
         else:
-            count = len(receive.incoming)
-            what = f"{count} {'versione' if count == 1 else 'versioni'}"
-            message = (f"Integrazione del ramo «{receive.branch}» in «{receive.into}» ({what})" if receive.into
-                       else f"Integrazione di {what} {'ricevuta' if count == 1 else 'ricevute'} dal ramo "
-                            f"«{receive.branch}»")
             message += f"\n\n{ATLAS_MERGE}" + (f" Schede riallineate: {len(relinked)}." if relinked else "")
             if result.published is None:
                 self.repository.save_version(message, author or "ATLAS <atlas@localhost>", result.files,

@@ -543,9 +543,11 @@ def test_identifiers_used_twice_and_a_later_complete_integration(tmp_path):
     receive = p.prepare_integration("att/T2", head)
     receive.only = {adr.uuid}
     result = p.apply_receive(receive, None, AUTHOR)
-    assert result.renumbered and result.renumbered[0][0] == here.uuid  # as in a complete one: the element received keeps it
+    assert result.renumbered and result.renumbered[0][0] == adr.uuid  # into master: what is approved keeps its number
     p = reopen(p)
-    assert p.model.get(adr.uuid).get("id") == adr.get("id") and p.model.get(here.uuid).get("id") != adr.get("id")
+    assert p.model.get(here.uuid).get("id") == here.get("id") and p.model.get(adr.uuid).get("id") != here.get("id")
+    final = p.model.get(adr.uuid).get("id")
+    assert not p.prepare_integration("att/T2", head).selection().diff.changes  # nothing left: not «changed» by its number
     receive = p.prepare_integration("att/T2", head)
     assert not receive.result.conflicts  # the same ID on the two branches: nothing to choose
     p.apply_receive(receive, None, AUTHOR)
@@ -946,4 +948,146 @@ def test_a_local_branch_is_deleted_from_the_window_of_the_branches(app, tmp_path
     dialog.delete_local()
     assert "att/solo-qui" not in p.repository.local_heads()
     assert all(b.name != "att/solo-qui" for b in p.branches())
+
+
+# --- the numbers: what is in the main branch keeps its own ------------------------------------------------------------
+
+KIND = "Altro / decisione trasversale"
+
+
+def numbered(tmp_path, count=3):
+    def branch(p, teams, domain):
+        return [p.new_element("adr", title=f"Dal ramo {i}", adr_type=KIND, status="Proposta") for i in range(count)]
+
+    def master(p):
+        return [p.new_element("adr", title=f"Da master {i}", adr_type=KIND, status="Proposta") for i in range(count)]
+
+    return two_branches(tmp_path, branch, master)
+
+
+@pytest.mark.parametrize("selective", [False, True])
+def test_into_master_the_new_elements_continue_the_numbering(tmp_path, selective):
+    p, head, arriving, approved = numbered(tmp_path)
+    assert [a.get("id") for a in arriving] == [a.get("id") for a in approved]
+    numbers = [a.get("id") for a in approved]
+    receive = p.prepare_integration("att/T2", head)
+    if selective:
+        receive.only = {a.uuid for a in arriving}
+    result = p.apply_receive(receive, None, AUTHOR)
+    assert {r[0] for r in result.renumbered} == {a.uuid for a in arriving}
+    p = reopen(p)
+    assert [p.model.get(a.uuid).get("id") for a in approved] == numbers
+    assert [p.model.get(a.uuid).get("id") for a in arriving] == ["ADR-004", "ADR-005", "ADR-006"]  # in their order
+
+
+def test_a_team_receiving_master_takes_its_numbers_with_no_conflict(tmp_path):
+    p, head, arriving, approved = numbered(tmp_path)
+    p.apply_receive(p.prepare_integration("att/T2", head), None, AUTHOR)
+    p = reopen(p)
+    master = p.repository.head()
+    p.switch_branch("att/T2")
+    p = reopen(p)
+    receive = p.prepare_integration("master", master)
+    assert not receive.into_main and not receive.result.conflicts
+    p.apply_receive(receive, None, AUTHOR)
+    p = reopen(p)
+    assert [p.model.get(a.uuid).get("id") for a in arriving] == ["ADR-004", "ADR-005", "ADR-006"]
+    assert [p.model.get(a.uuid).get("id") for a in approved] == ["ADR-001", "ADR-002", "ADR-003"]
+
+
+def test_into_a_branch_of_a_team_what_is_received_keeps_its_number(tmp_path):
+    p, head, arriving, approved = numbered(tmp_path, 1)
+    master = p.repository.head()
+    p.switch_branch("att/T2")
+    p = reopen(p)
+    result = p.apply_receive(p.prepare_integration("master", master), None, AUTHOR)
+    assert [r[0] for r in result.renumbered] == [arriving[0].uuid]  # the number of the team was provisional
+
+
+def test_the_window_shows_the_final_number(app, tmp_path):
+    from arcadia_tool.ui.receive import ReceiveDialog
+
+    p, head, arriving, approved = numbered(tmp_path, 1)
+    dialog = ReceiveDialog(p, {}, AUTHOR, integrate=("att/T2", head))
+    dialog.start()
+    dialog.worker.wait(20000)
+    app.processEvents()
+    dialog.selective_mode.setChecked(True)
+    dialog.preview_view.set_chosen({arriving[0].uuid})
+    dialog._selective_update()
+    row = dialog.destination.rows[arriving[0].uuid]
+    assert row.text(0).startswith("ADR-002") and "(era ADR-001 in att/T2)" in row.text(0)
+    assert dialog.destination.rows[approved[0].uuid].text(0).startswith("ADR-001")
+    assert "rinumerati" in dialog.conflicts_title.text()
+    dialog.preview_view.set_chosen(set())
+    dialog._selective_update()  # not chosen any more: its row reads as before
+    assert row.text(0).startswith("ADR-001") and "era" not in row.text(0)
+
+
+# --- the message of the version of an integration --------------------------------------------------------------------
+
+@pytest.mark.parametrize("selective", [False, True])
+def test_the_message_of_an_integration_is_written_by_the_user(tmp_path, selective):
+    p, head, arriving, approved = numbered(tmp_path, 1)
+    receive = p.prepare_integration("att/T2", head)
+    if selective:
+        receive.only = {arriving[0].uuid}
+    assert p.default_message(receive).startswith("Integrazione selettiva" if selective else "Integrazione del ramo")
+    p.apply_receive(receive, None, AUTHOR, "Integrate le ADR di T2\n\nDecise nella riunione del 9/11")
+    last = reopen(p).versions()[0]
+    assert last.title == "Integrate le ADR di T2" and "riunione del 9/11" in last.message
+    assert ("Elementi:" in last.message) if selective else made_by_atlas(last)  # what ATLAS records still follows
+
+
+def test_an_empty_message_is_the_one_of_atlas(tmp_path):
+    p, head, arriving, approved = numbered(tmp_path, 1)
+    receive = p.prepare_integration("att/T2", head)
+    p.apply_receive(receive, None, AUTHOR, "   ")
+    assert reopen(p).versions()[0].title.startswith("Integrazione del ramo «att/T2» in «master»")
+
+
+def test_the_window_asks_the_message(app, tmp_path):
+    from arcadia_tool.ui.receive import ReceiveDialog
+
+    p, head, arriving, approved = numbered(tmp_path, 1)
+    dialog = ReceiveDialog(p, {}, AUTHOR, integrate=("att/T2", head))
+    dialog.start()
+    dialog.worker.wait(20000)
+    app.processEvents()
+    assert not dialog.message_row.isHidden() and dialog.message.text().startswith("Integrazione del ramo")
+    dialog.selective_mode.setChecked(True)
+    dialog.preview_view.set_chosen({arriving[0].uuid})
+    dialog._selective_update()
+    assert dialog.message.text() == p.default_message(dialog.receive)  # it follows the choice until written
+    assert "(1 elementi)" in dialog.message.text()
+    from PySide6.QtTest import QTest
+
+    dialog.message.selectAll()
+    QTest.keyClicks(dialog.message, "ADR di T2 approvate")  # typed by the user
+    assert dialog.message.text() == "ADR di T2 approvate"
+    dialog.description.setPlainText("Come deciso dalla DA")
+    dialog._selective_update()
+    assert dialog.message.text() == "ADR di T2 approvate"  # written: it stays
+    dialog.apply()
+    assert dialog.applied
+    last = reopen(p).versions()[0]
+    assert last.title == "ADR di T2 approvate" and "Come deciso dalla DA" in last.message
+
+
+def test_no_message_when_no_version_is_recorded(app, tmp_path):
+    from arcadia_tool.ui.receive import ReceiveDialog
+
+    p, teams, domain = start(tmp_path)
+    p.switch_branch("att/T2", p.repository.head())
+    p = reopen(p)
+    p.new_element("domain", name="Radio")
+    p.save()
+    head = p.publish("radio", AUTHOR)
+    p.switch_branch("master")
+    p = reopen(p)
+    dialog = ReceiveDialog(p, {}, AUTHOR, integrate=("att/T2", head))
+    dialog.start()
+    dialog.worker.wait(20000)
+    app.processEvents()
+    assert dialog.receive.state == Receive.FAST_FORWARD and dialog.message_row.isHidden()
 

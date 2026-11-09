@@ -155,7 +155,7 @@ def _linked(base, here, there, changed):
     return needs
 
 
-def integration_selection(base, ours, theirs):
+def integration_selection(base, ours, theirs, keep_our_ids=False):
     """The Selection of an integration; base, ours, theirs: {path: bytes} (the last version in common, the branch in
     use, the other branch). Only what the other branch has changed, and the branch in use does not have yet."""
     from arcadia_tool.diff.semantic import diff_models
@@ -164,8 +164,9 @@ def integration_selection(base, ours, theirs):
     model_paths = [p for p in set(base) | set(theirs) if p.startswith(MODEL_DIR + "/") and p.endswith(".yaml")]
     changed = {_uuid_of(p) for p in model_paths if theirs.get(p) != base.get(p) and theirs.get(p) != ours.get(p)}
     limited = selected_files(base, theirs, changed)
-    conflicts = merge_files(base, ours, limited).conflicts
-    merged = merge_files(base, ours, limited, {c.key: THEIRS for c in conflicts})  # the conflicts: as they would be
+    conflicts = merge_files(base, ours, limited, keep_our_ids=keep_our_ids).conflicts
+    merged = merge_files(base, ours, limited, {c.key: THEIRS for c in conflicts},  # the conflicts: as they would be
+                         keep_our_ids=keep_our_ids)
     here, there = merged_model(ours), merged_model(theirs)
     diff = diff_models(here, merged_model(merged.files))
     diff.changes = [c for c in diff.changes if c.uuid in changed]

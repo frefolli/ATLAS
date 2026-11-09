@@ -6,9 +6,9 @@ from html import escape
 import yaml
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QProgressBar, QPushButton, QRadioButton, QSplitter, QTableWidget, QTableWidgetItem,
-                               QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+                               QLineEdit, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QSplitter,
+                               QTableWidget, QTableWidgetItem, QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from arcadia_tool.accounts import git_host
 from arcadia_tool.model.element import Model
@@ -113,6 +113,7 @@ class DestinationView(QWidget):
         self.changes = {c.uuid: c for c in selection.diff.changes}
         self.rows, self.groups = {}, {}
         self.chosen = set()
+        self.renumbered = {}  # uuid of a row showing another number → how it read before
         self.arriving = set()  # the rows of the elements not in the branch of destination (id of the row)
         for kind in KINDS_BY_NAME:
             arriving = [c for c in selection.diff.changes if c.kind == kind and c.change == ADDED]
@@ -150,6 +151,22 @@ class DestinationView(QWidget):
         self._filter()
         if added:
             self.tree.scrollToItem(self.rows[sorted(added)[0]])
+
+    def show_numbers(self, renumbered, branch):
+        """The final numbers. renumbered: (uuid, old, new) as computed by the integration; branch: where the elements
+        arriving come from."""
+        for uuid, text in self.renumbered.items():
+            self.rows[uuid].setText(0, text)
+        self.renumbered = {}
+        for uuid, old, new in renumbered:
+            row = self.rows.get(uuid)
+            if row is None:
+                continue
+            text = row.text(0)
+            self.renumbered[uuid] = text
+            where = f" in {branch}" if id(row) in self.arriving else ""
+            row.setText(0, f"{new}{text[len(old):] if text.startswith(old) else ' ' + text} (era {old}{where})")
+        self._filter()
 
     def _filter(self):
         text = self.search.text().strip().lower()
@@ -238,6 +255,25 @@ class ReceiveDialog(QDialog):
         self.apply_button.clicked.connect(self.apply)
         self.close_button = QPushButton("Chiudi")
         self.close_button.clicked.connect(self.reject)
+        # Integra: the message of the version recorded (the title, a description if wanted), proposed by ATLAS.
+        self.message = QLineEdit()
+        self.message.setToolTip("Il titolo della versione di integrazione, come appare in «Versioni Modello» e nel "
+                                "repository. ATLAS aggiunge in fondo l'elenco di ciò che è integrato.")
+        self.message.textEdited.connect(lambda _t: setattr(self, "_message_edited", True))  # typed: it stays
+        self.description = QPlainTextEdit(placeholderText="Descrizione (facoltativa)")
+        self.description.setMaximumHeight(56)
+        self._message_edited = False
+        self.message_row = QWidget()
+        message_layout = QGridLayout(self.message_row)
+        message_layout.setContentsMargins(0, 0, 0, 0)
+        message_layout.addWidget(QLabel("Messaggio della versione:", objectName="formLabel"), 0, 0)
+        message_layout.addWidget(self.message, 0, 1)
+        message_layout.addWidget(self.description, 1, 1)
+        reset = QPushButton(icon("mdi6.restore"), "")
+        reset.setToolTip("Torna al messaggio proposto da ATLAS")
+        reset.clicked.connect(lambda _=False: self._reset_message())
+        message_layout.addWidget(reset, 0, 2)
+        self.message_row.setVisible(False)
         buttons = QHBoxLayout()
         buttons.addWidget(self.all_ours)
         buttons.addWidget(self.all_theirs)
@@ -304,6 +340,7 @@ class ReceiveDialog(QDialog):
             layout.addWidget(splitter, 1)
         else:
             layout.addWidget(self.conflict_area, 1)
+        layout.addWidget(self.message_row)
         layout.addLayout(buttons)
         self._buttons()
 
@@ -610,14 +647,19 @@ class ReceiveDialog(QDialog):
             return
         kept = self.choices()
         self.receive.only = set(self.preview_view.chosen)
-        conflicts = self.receive.merge().conflicts
+        merged = self.receive.merge()
+        conflicts = merged.conflicts
+        self.destination.show_numbers(merged.renumbered, self.receive.branch)
         self._refill_conflicts(conflicts, kept)
         self._buttons(apply=True, conflicts=bool(conflicts))
         changes = [c for c in self.selection.diff.changes if c.uuid in self.receive.only]
         count = {k: sum(1 for c in changes if c.change == k) for k in (ADDED, MODIFIED, REMOVED)}
         self.conflicts_title.setText(
             f"Selezionati {len(changes)}: {count[ADDED]} da aggiungere, {count[MODIFIED]} da modificare, "
-            f"{count[REMOVED]} da rimuovere" + (f" · da risolvere: {len(conflicts)} conflitti" if conflicts else ""))
+            f"{count[REMOVED]} da rimuovere"
+            + (f" · {len(merged.renumbered)} identificativi rinumerati (a destra il numero finale)"
+               if merged.renumbered else "")
+            + (f" · da risolvere: {len(conflicts)} conflitti" if conflicts else ""))
         self.conflicts_title.setVisible(True)
         self._update_apply()
 
@@ -686,7 +728,28 @@ class ReceiveDialog(QDialog):
             combo = self.conflicts.cellWidget(row, 3)
             combo.setCurrentIndex(combo.findData(choice))
 
+    def _reset_message(self):
+        self._message_edited = False
+        self._update_apply()
+
+    def message_text(self):
+        """The message written for the version: the title, then the description."""
+        title, description = self.message.text().strip(), self.description.toPlainText().strip()
+        return f"{title}\n\n{description}" if title and description else title
+
+    def _update_message(self):
+        """Integra: the message is asked when a version is recorded; until the user writes it, it follows what is
+        chosen (e.g. the number of the elements of a selective integration)."""
+        shown = bool(self.integrate) and self.receive is not None and not self.apply_button.isHidden() \
+            and self.project.creates_version(self.receive)
+        self.message_row.setVisible(shown)
+        if shown and not self._message_edited:
+            self.message.blockSignals(True)
+            self.message.setText(self.project.default_message(self.receive))
+            self.message.blockSignals(False)
+
     def _update_apply(self, *_args):
+        self._update_message()
         missing = self.conflicts.rowCount() - len(self.choices())
         empty = self.selective and not self.receive.only
         self.apply_button.setEnabled(missing == 0 and not empty)
@@ -719,7 +782,8 @@ class ReceiveDialog(QDialog):
         if self.receive is None or self._merge_denied():
             return
         kept = self.choices()
-        self.result = self.project.apply_receive(self.receive, kept, self.author)
+        message = self.message_text() if not self.message_row.isHidden() else None
+        self.result = self.project.apply_receive(self.receive, kept, self.author, message)
         if not self.result.resolved:  # the choices made have shown others (with the changes not published)
             self._refill_conflicts(self.result.conflicts, kept)
             self._buttons(apply=True, conflicts=True)

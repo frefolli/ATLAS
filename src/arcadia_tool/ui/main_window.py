@@ -4,7 +4,8 @@ from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu,
                                QMessageBox,
-                               QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
+                               QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget,
+                               QDialog)
 
 from arcadia_tool import APP_NAME, __version__
 from arcadia_tool.accounts import git_credentials
@@ -40,6 +41,7 @@ from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
 from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, TEXT, icon, kind_icon
 from arcadia_tool.ui.branches import BranchesDialog
+from arcadia_tool.ui.overview import OverviewSetup, OverviewWindow
 from arcadia_tool.ui.versions import CompareDialog, DiscardDialog, HistoryDialog, PublishDialog, UnpublishedDialog
 from arcadia_tool.ui import updates as updates_ui
 
@@ -225,6 +227,9 @@ class MainWindow(QMainWindow):
                                            QKeySequence("Ctrl+Shift+P"), "Pubblica una nuova versione del modello")
         self.compare_action = self._action("Confronta…", "mdi6.compare-horizontal", self.compare, None,
                                            "Confronta due versioni del modello")
+        self.overview_action = self._action("Vista d'insieme", "mdi6.layers-triple-outline", self.open_overview, None,
+                                            "Il ramo principale con il lavoro dei rami scelti sovrapposto, in sola "
+                                            "lettura: ciò che è approvato e ciò che non lo è ancora")
         self.history_action = self._action("Versioni Modello", "mdi6.history", self.history, None,
                                            "Le versioni del modello, con quella locale non ancora pubblicata, da "
                                            "pubblicare o scartare")
@@ -293,7 +298,7 @@ class MainWindow(QMainWindow):
         bar.addAction(self.check_settings_action)
         bar.addSeparator()
         for a in (self.history_action, self.branches_action, self.publish_action, self.receive_action,
-                  self.compare_action):
+                  self.compare_action, self.overview_action):
             bar.addAction(a)
         bar.addSeparator()
         bar.addAction(self.notifications_action)
@@ -332,7 +337,8 @@ class MainWindow(QMainWindow):
         project_menu.addAction(self.settings_action)
         versions_menu = self.menuBar().addMenu("&Versioni")
         for a in (self.publish_action, self.send_action, self.receive_action, self.compare_action,
-                  self.history_action, self.branches_action):  # «Versioni Modello» before «Rami», as in the bar
+                  self.overview_action, self.history_action, self.branches_action):
+            # «Versioni Modello» before «Rami», as in the bar
             versions_menu.addAction(a)
         user_menu = self.menuBar().addMenu("&Utente")
         user_menu.addAction(self.account_action)
@@ -634,7 +640,7 @@ class MainWindow(QMainWindow):
             self._recovery_pending = True  # written by the timer
         self._local_state = None  # e.g. published, or the settings of the project changed
         self.srs_edit_mode.refresh()  # the user or the teams may have changed
-        for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
+        for a in (self.save_action, self.publish_action, self.compare_action, self.overview_action, self.history_action,
                   self.close_action, self.import_action, self.settings_action, self.send_action,
                   self.reload_action, self.migrate_action, self.check_action, self.check_settings_action,
                   self.receive_action, self.branches_action, self.sheets_action, self.sheets_settings_action,
@@ -994,6 +1000,7 @@ class MainWindow(QMainWindow):
             self._set_project(None)
 
     def _set_project(self, project):
+        self._close_overview()
         for editor in list(self.editors.values()):
             self._hide_editor(editor)
         self._close_item_window()
@@ -1839,6 +1846,25 @@ class MainWindow(QMainWindow):
             dialog.exec()
             if dialog.request is not None:  # «Integra…»: the same integration as from the branches
                 self.branch_request(dialog.request)
+
+    def open_overview(self):
+        """«Vista d'insieme»: chooses branches and elements, then the view in a window of its own (one at a time)."""
+        if not self.project:
+            return
+        credentials = git_credentials(self.user, self.project.remote()) if self.project.remote() else None
+        setup = OverviewSetup(self.project, credentials, self)
+        if setup.exec() != QDialog.Accepted:
+            return
+        self._close_overview()
+        self.overview_window = OverviewWindow(setup.overview, setup.shown(), self)
+        self.overview_window.reconfigure.connect(self.open_overview)
+        self.overview_window.show()
+
+    def _close_overview(self):
+        window, self.overview_window = getattr(self, "overview_window", None), None
+        if window is not None:
+            window.close()
+            window.deleteLater()
 
     def history(self):
         if self.project:

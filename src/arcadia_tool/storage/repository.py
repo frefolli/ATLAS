@@ -334,6 +334,17 @@ class Repository:
         return {e.path.decode("utf-8"): store[e.sha].data
                 for e in iter_tree_contents(store, self._repo[sha.encode()].tree)}
 
+    def model_blobs(self, sha):
+        """The files of the elements of a version, without reading them: {uuid: identifier of the content}."""
+        prefix = MODEL_DIR.encode() + b"/"
+        return {e.path.rsplit(b"/", 1)[-1][:-5].decode("utf-8"): e.sha
+                for e in iter_tree_contents(self._repo.object_store, self._repo[sha.encode()].tree)
+                if e.path.startswith(prefix) and e.path.endswith(b".yaml")}
+
+    def element_of_blob(self, blob):
+        """The element in a file of the model (see model_blobs)."""
+        return loads(self._repo.object_store[blob].data.decode("utf-8"))
+
     def merge_base(self, a, b):
         """The last version two versions both come from, or None (unrelated histories)."""
         from dulwich.graph import find_merge_base

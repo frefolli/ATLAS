@@ -6,6 +6,31 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.10.0] - 2026-11-09
+
+### Corretto
+- **Integrando in master, i numeri già approvati non cambiano più.** Se due rami avevano usato lo stesso numero, l'elemento
+  già in master veniva rinumerato e quello in arrivo prendeva il suo numero. Ora ciò che è in master tiene il numero e
+  gli elementi in arrivo proseguono la numerazione, nel loro ordine. Quando un team riceve master, i suoi elementi
+  prendono il numero definitivo senza conflitti. Nell'integrazione selettiva, a destra compare il numero finale
+  («ADR-075 … (era ADR-045 in DF09_analysis)»).
+
+### Aggiunto
+- **Messaggio dell'integrazione personalizzabile.** Integrando un ramo (dalla finestra Rami o da Confronta), sopra i
+  pulsanti compare «Messaggio della versione», già compilato con il testo proposto da ATLAS, con una descrizione
+  facoltativa. In fondo ATLAS aggiunge sempre ciò che registra dell'integrazione (gli elementi presi, o la riga che la
+  riconosce come fatta da ATLAS). Non compare quando il ramo in uso prende le versioni così come sono, senza una nuova
+  versione.
+- **Vista d'insieme.** Il nuovo pulsante nella barra superiore mostra il lavoro dei team senza integrare i rami: si
+  scelgono i rami da sovrapporre al ramo principale e gli elementi da includere (per tipo o singolarmente, con le scelte
+  rapide «Tutto», «Solo ADR» e «Solo non approvati»). La vista è in sola lettura e non crea versioni.
+  - Ogni elemento è marcato **Approvato** (è nel ramo principale e nessun ramo scelto lo cambia), **Modificato**, **Nuovo**,
+    **Rimosso** o **Divergente** (due rami cambiano lo stesso campo in modo diverso), con il ramo accanto al numero.
+  - Nella scheda, per ogni campo cambiato compaiono il valore approvato e quello di ciascun ramo. Le ADR mostrano anche
+    la discussione raccolta da tutti i rami.
+  - Di ogni ramo vale l'ultima versione inviata al repository. Un ramo rimasto indietro non «propone» i vecchi valori, e ciò
+    che viene integrato diventa Approvato da solo.
+
 ## [0.9.5] - 2026-11-09
 
 ### Aggiunto
@@ -868,7 +893,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.5...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.10.0...main
+[0.10.0]: https://github.com/salvodesi/ATLAS/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/salvodesi/ATLAS/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/salvodesi/ATLAS/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/salvodesi/ATLAS/compare/v0.9.2...v0.9.3

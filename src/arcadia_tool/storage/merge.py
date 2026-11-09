@@ -15,13 +15,16 @@ What both sides changed in different ways is a Conflict: it is resolved by a cho
 
 The automatic identifiers given on this PC to new elements that the other side has given to its own (e.g. two
 SF-DF06-03 created on two branches) are renumbered automatically, with those depending on them (see
-renumber_ids)."""
+renumber_ids). An integration into the main branch does the opposite: what is approved keeps its number.
+
+The same element can have two automatic identifiers, one on each side, once it has been renumbered by an integration:
+that is no conflict, the identifier of the side that decides stays (see _Merger.element)."""
 import json
 from dataclasses import dataclass, field
 
 import yaml
 
-from arcadia_tool.model.element import Element, Model, is_empty
+from arcadia_tool.model.element import Element, Model, is_empty, natural_key
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context
 from arcadia_tool.model.schema import KINDS, KINDS_BY_NAME, REFS
 from arcadia_tool.model.serialization import dumps, loads
@@ -93,9 +96,10 @@ def _merge_set(base, ours, theirs):
 
 
 class _Merger:
-    def __init__(self, choices):
+    def __init__(self, choices, keep_our_ids=False):
         self.choices = choices or {}
         self.conflicts = []
+        self.keep_our_ids = keep_our_ids
 
     def pick(self, conflict):
         choice = self.choices.get(conflict.key)
@@ -136,6 +140,10 @@ class _Merger:
         values = {}
         for name in names:
             f = schema.field(name)
+            if name == "id" and is_automatic(ours.kind) and ours.values.get(name) and theirs.values.get(name) \
+                    and b.get(name) not in (ours.values.get(name), theirs.values.get(name)):
+                values[name] = (ours if self.keep_our_ids else theirs).values[name]  # renumbered: nothing to choose
+                continue
             v = self.value(path, name, b.get(name), ours.values.get(name), theirs.values.get(name),
                            as_set=f is not None and f.type == REFS)
             if v is not None:
@@ -147,10 +155,10 @@ def _text(data):
     return data.decode("utf-8") if data is not None else None
 
 
-def merge_files(base, ours, theirs, choices=None):
+def merge_files(base, ours, theirs, choices=None, keep_our_ids=False):
     """base, ours, theirs: {relative path: bytes}. Returns a MergeResult; its `files` are the merged project
-    (with the conflicts not yet resolved as on this PC)."""
-    merger = _Merger(choices)
+    (with the conflicts not yet resolved as on this PC). keep_our_ids: ours is the main branch (see renumber_ids)."""
+    merger = _Merger(choices, keep_our_ids)
     result = MergeResult({})
     for path in sorted(set(base) | set(ours) | set(theirs)):
         b, o, t = base.get(path), ours.get(path), theirs.get(path)
@@ -220,17 +228,23 @@ def _is_model_file(path):
     return path.startswith(MODEL_DIR + "/") and path.endswith(".yaml")
 
 
-def renumber_ids(result, base, theirs):
+def renumber_ids(result, base, theirs, main=None):
     """Automatic identifiers used twice after the merge: the element received keeps its identifier, the one of
     this PC gets the next free one; then the elements of this PC whose identifier depends on a renumbered one
     (e.g. the logical functions of a renumbered system function) follow it. Changes result.files and
-    result.renumbered."""
-    ours_only = {p for p in result.files if _is_model_file(p) and p not in theirs and p not in base}
-    changed_here = {p for p in result.files if _is_model_file(p) and result.files[p] != theirs.get(p)}
-    if not changed_here:
+    result.renumbered.
+
+    main (an integration into the main branch: its content, {path: bytes}): the other way round. What is in the main
+    branch is approved, and may be cited outside the tool: it keeps its identifier, and the new elements arriving
+    continue the numbering, in the order of the identifiers they had."""
+    keeping = theirs if main is None else main
+    new_only = {p for p in result.files if _is_model_file(p) and p not in keeping and p not in base}
+    movable = ({p for p in result.files if _is_model_file(p) and result.files[p] != theirs.get(p)} if main is None else
+               {p for p in result.files if _is_model_file(p) and p not in main})
+    if not movable:
         return
     elements = {p: loads(_text(d)) for p, d in result.files.items() if _is_model_file(p)}
-    if not any(is_automatic(elements[p].kind) for p in changed_here):
+    if not any(is_automatic(elements[p].kind) for p in movable):
         return
     model = Model(list(elements.values()))
     by_id = {}
@@ -241,13 +255,14 @@ def renumber_ids(result, base, theirs):
     for (kind, ident), paths in by_id.items():
         if len(paths) < 2:
             continue
-        fixed = [p for p in paths if p in theirs and elements[p].get("id") == _id_of(theirs[p])]
-        keep = fixed[0] if fixed else sorted(paths, key=lambda p: p not in ours_only)[0]
-        renumber |= {p for p in paths if p != keep and p in changed_here}
+        fixed = [p for p in paths if p in keeping and elements[p].get("id") == _id_of(keeping[p])]
+        keep = fixed[0] if fixed else sorted(paths, key=lambda p: p not in new_only)[0]
+        renumber |= {p for p in paths if p != keep and p in movable}
     for _ in range(5):  # a renumbered parent changes the identifiers of its children: a few rounds
         if not renumber:
             break
-        for p in sorted(renumber, key=lambda p: KIND_ORDER.get(elements[p].kind, 99)):
+        for p in sorted(renumber, key=lambda p: (KIND_ORDER.get(elements[p].kind, 99),
+                                                 natural_key(elements[p].get("id") or ""))):
             e = elements[p]
             old = e.get("id")
             e.set("id", None)
@@ -256,7 +271,7 @@ def renumber_ids(result, base, theirs):
             if new and new != old:
                 result.renumbered.append((e.uuid, old, new))
                 result.files[p] = dumps(e).encode("utf-8")
-        renumber = {p for p in ours_only if is_automatic(elements[p].kind) and elements[p].get("id")
+        renumber = {p for p in new_only if is_automatic(elements[p].kind) and elements[p].get("id")
                     and not matches_context(elements[p], model)}
 
 
