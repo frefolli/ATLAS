@@ -709,3 +709,94 @@ def test_a_member_working_on_more_pcs_has_an_id_for_each(app, tmp_path, monkeypa
     column = next(c for c in field.columns if c.name == "account")
     assert _cell_text(None, column, rows["Anna Bianchi"]) == f"{office}, {laptop}"
     assert table_rows(reopened.model, reopened.model.get(da.uuid), field)[0][3] == f"{office}, {laptop}"
+
+
+def srs_project(tmp_path):
+    p = Project.create(tmp_path / "p", "Prova")
+    da = p.new_element("team", name="RFI", design_authority=True, members=[{"name": "Anna", "account": ANNA}])
+    domain = p.new_element("domain", name="Localizzazione")
+    section = p.new_element("requirement", id="3.8.1", item_type="Sezione", title="Una sezione")
+    clause = p.new_element("requirement", id="3.8.1.1", item_type="Requisito", parent=section.uuid, text="Una clausola",
+                           category=["Bordo"], primary_domain=domain.uuid)
+    other = p.new_element("requirement", id="5.1.1.1", item_type="Requisito", text="Un'altra", category=["Terra"])
+    p.save()
+    return p, da, domain, section, clause, other
+
+
+def test_only_the_design_authority_changes_the_srs_items(app, tmp_path, monkeypatch):
+    from arcadia_tool.model.teams import edit_denied
+    from arcadia_tool.ui import main_window as mw
+
+    p, da, domain, section, clause, other = srs_project(tmp_path)
+    mario, anna = user("Mario Rossi", MARIO), user("Anna", ANNA)
+    assert "voci SRS" in edit_denied(p.model, mario, "requirement")
+    assert "voci SRS" in edit_denied(p.model, mario, "requirement", "primary_domain")
+    assert edit_denied(p.model, anna, "requirement") is None
+    window = mw.MainWindow()
+    window._set_project(p)
+    window.user = mario
+    window._refresh_state()
+    mode = window.srs_edit_mode
+    # The catalogue: the edit mode cannot be switched on, nothing can be deleted, the domains not allocated.
+    window.open_srs_reader()
+    reader = window.reader
+    assert not reader.edit_mode_button.isEnabled() and "voci SRS" in reader.edit_mode_button.toolTip()
+    mode.set_enabled(True)
+    assert not mode.enabled and not reader.edit_mode_button.isChecked()
+    reader.reveal(clause.uuid)
+    reader.delete_selected()
+    assert p.model.get(clause.uuid) is clause
+    said = []
+    monkeypatch.setattr(mw.QMessageBox, "information", lambda *a, **k: said.append(a[2]))
+    reader.run_action(section.uuid, "domains")
+    assert "voci SRS" in said[-1]
+    menu = {a.text(): a for a in reader.context_menu(section).actions()}
+    assert not menu["Alloca ai domini funzionali…"].isEnabled()
+    # From the tree and the project: not deleted, not imported, not cleaned.
+    window.tree.delete_all_requirements()
+    assert p.model.get(clause.uuid) is clause and "voci SRS" in said[-1]
+    window.import_srs()
+    window.clean_project()
+    assert len(said) >= 4 and p.model.get(clause.uuid) is clause
+    # The sheet of an item: read-only, also the fields of the analysis.
+    window._open_finding(clause.uuid)
+    editor = window.editors[clause.uuid]
+    assert editor.read_only and not editor.edit_mode_button.isEnabled()
+    assert not editor.widgets["primary_domain"].property("keepEnabled")
+    # The Design Authority: as before; a user who is not any more: the edit mode goes off.
+    window.user = anna
+    window._refresh_state()
+    assert reader.edit_mode_button.isEnabled()
+    mode.set_enabled(True)
+    assert mode.enabled
+    window.user = mario
+    window._refresh_state()
+    assert not mode.enabled
+    window._set_project(None)
+    window.close()
+
+
+def test_a_click_on_an_srs_item_in_the_tree_goes_to_it_in_the_catalogue(app, tmp_path):
+    from arcadia_tool.ui import main_window as mw
+
+    p, da, domain, section, clause, other = srs_project(tmp_path)
+    window = mw.MainWindow()
+    window._set_project(p)
+    tree = window.tree
+    tree.tree.setCurrentItem(tree._items[clause.uuid])  # a click
+    reader = window.reader
+    assert reader is not None and window.pages.currentWidget() is reader
+    window.show()  # the rows are laid out once it is visible: the item is reached then
+    assert reader.selected_elements() == [clause]
+    assert clause.uuid not in window.editors  # not its sheet
+    # Another chapter, hidden by the search: the catalogue goes there and shows it.
+    reader.search.setText("clausola")
+    assert all(e.uuid != other.uuid for e in reader.model.elements)
+    tree._clicked(tree._items[other.uuid], 0)
+    assert reader.selected_elements() == [other] and reader.search.text() == ""
+    # A double click in the catalogue, and the links to an item, still open its sheet.
+    window._open_from_reader(clause.uuid)
+    assert window.pages.currentWidget() is window.editors[clause.uuid]
+    window._set_project(None)
+    window.close()
+

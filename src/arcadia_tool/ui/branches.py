@@ -358,6 +358,8 @@ class BranchesDialog(QDialog):
         self.switch_button.clicked.connect(self.switch)
         self.new_button = QPushButton(icon("mdi6.source-branch-plus"), "Nuovo ramo…")
         self.new_button.clicked.connect(lambda: self.new_branch())
+        self.delete_button = QPushButton(icon("mdi6.trash-can-outline"), "Elimina ramo locale…")
+        self.delete_button.clicked.connect(lambda _=False: self.delete_local())
         self.checkout_button = QPushButton(icon("mdi6.source-commit"), "Checkout di una versione…")
         self.checkout_button.setToolTip("Il modello completo a una versione del ramo selezionato, di questo PC o "
                                         "del repository")
@@ -371,7 +373,7 @@ class BranchesDialog(QDialog):
         close = QPushButton("Chiudi")
         close.clicked.connect(self.reject)
         buttons = QHBoxLayout()
-        for b in (self.switch_button, self.new_button, self.checkout_button, self.integrate_button):
+        for b in (self.switch_button, self.new_button, self.delete_button, self.checkout_button, self.integrate_button):
             buttons.addWidget(b)
         buttons.addStretch()
         buttons.addWidget(close)
@@ -451,6 +453,9 @@ class BranchesDialog(QDialog):
         b = self.selected()
         self.switch_button.setEnabled(b is not None and not b.current)
         self.checkout_button.setEnabled(b is not None)
+        why = self._not_deletable(b)
+        self.delete_button.setEnabled(not why)
+        self.delete_button.setToolTip(why or "Toglie il ramo da questo PC; quello del repository, se c'è, resta")
         denied = self.integrate_denied()
         self.integrate_button.setEnabled(b is not None and not b.current and not denied)
         self.integrate_button.setToolTip(denied or self.integrate_button.toolTip())
@@ -494,6 +499,37 @@ class BranchesDialog(QDialog):
             self.request = ("create", dialog.name_value, dialog.sha, dialog.send)
             self.accept()
 
+    def _not_deletable(self, b):
+        """Why the branch cannot be deleted from this PC, or None."""
+        if b is None:
+            return "Seleziona un ramo"
+        if b.current:
+            return "È il ramo in uso: passa prima a un altro ramo"
+        if not b.local or self.mode == "remote":
+            return "È un ramo del repository: si elimina solo la copia di questo PC"
+        return None
+
+    def delete_local(self):
+        b = self.selected()
+        if self._not_deletable(b):
+            return
+        only_here = self.project.versions_only_on_local_branch(b.name)
+        where = ("Il ramo resta nel repository: potrai riaverlo su questo PC passando a quel ramo." if b.remote else
+                 "Non è nel repository: su questo PC non resterà nessuna sua copia.")
+        lost = (f"\n\nAttenzione: {len(only_here)} {'versione' if len(only_here) == 1 else 'versioni'} di questo ramo "
+                "non sono né su altri rami né nel repository e andranno perse." if only_here else "")
+        if QMessageBox.question(self, "Elimina ramo locale",
+                                f"Eliminare il ramo «{b.name}» da questo PC?\n\n{where}{lost}",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        try:
+            self.project.delete_local_branch(b.name)
+        except Exception as exc:
+            QMessageBox.warning(self, "Elimina ramo locale", str(exc))
+            return
+        self.fill()
+        self._update()
+
     def integrate_denied(self):
         """Why the user may not integrate into the branch in use, or None: the main branch only by the Design
         Authority (its members), once it has members."""
@@ -535,15 +571,20 @@ class BranchesDialog(QDialog):
         b = self.selected()
         if b is None:
             return
+        options = {"parent": self, "integrating": True, "user": self.user}
         if what == "working":
-            CompareDialog(self.project, before=self._head(b), after=WORKING, parent=self,
-                          before_branch=self._key(b)).exec()
+            dialog = CompareDialog(self.project, before=self._head(b), after=WORKING, before_branch=self._key(b),
+                                   **options)
         else:
             main = self.project.main_branch()
             main_branch = next(x for x in self.project.branches() if x.name == main)
             main_head = main_branch.head
-            CompareDialog(self.project, before=main_head, after=self._head(b), parent=self, before_branch=main,
-                          after_branch=self._key(b), since_common=True).exec()
+            dialog = CompareDialog(self.project, before=main_head, after=self._head(b), before_branch=main,
+                                   after_branch=self._key(b), since_common=True, **options)
+        dialog.exec()
+        if dialog.request is not None:  # «Integra…»: from the main window
+            self.request = dialog.request
+            self.accept()
 
     def done(self, result):
         """Closed (X, Esc, «Chiudi»), also while downloading the branches: the download ends by itself."""

@@ -6,6 +6,49 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.9.5] - 2026-11-09
+
+### Aggiunto
+- **Ricevi senza scartare le modifiche locali.** Con modifiche non pubblicate, «Ricevi» offre anche «Ricevi e mantieni le
+  modifiche»: le versioni del repository arrivano e le modifiche locali restano sopra, ancora da pubblicare. Se gli
+  stessi campi sono cambiati da entrambe le parti, vanno scelti nella tabella dei conflitti, e nulla viene sovrascritto
+  senza chiedere. Selezionando un conflitto, sotto la tabella compaiono i due valori interi affiancati, con le differenze
+  evidenziate parola per parola (anche in «Ricevi» e «Integra»). La finestra mostra l'anteprima del risultato. Prima di scrivere, ATLAS salva una copia delle modifiche
+  locali in `.arcadia/before_receive.zip`.
+- **Integrare mantenendo le modifiche locali.** Con modifiche non pubblicate, «Integra» non obbliga più a pubblicarle:
+  «Integra mantenendo le modifiche locali» apre l'integrazione, completa o selettiva, e le modifiche restano sopra il
+  risultato, ancora da pubblicare. La nuova versione contiene solo ciò che viene integrato.
+- **Eliminare un ramo locale.** Nella finestra Rami, «Elimina ramo locale…» toglie il ramo selezionato da questo PC e
+  non tocca il repository. Il ramo in uso non si elimina, e la conferma avvisa se ci sono versioni che andrebbero perse.
+- **Integrare dalla finestra Confronta.** «Integra…» segue ciò che è selezionato: la versione scelta in «Da» va nel ramo
+  scelto in «A», con la scelta tra completa e selettiva e gli stessi permessi della finestra Rami. Se «A» non è il ramo
+  in uso, il progetto passa prima a quel ramo.
+- **Integrazione selettiva tra rami.** Nella finestra «Integra», accanto all'integrazione completa, si possono prendere
+  solo alcuni elementi dell'altro ramo. La finestra ha due aree affiancate: a sinistra solo gli elementi cambiati nel ramo mittente,
+  con una spunta per ciascuno e pulsanti per gruppo (ADR, CQ, SA-1, SA-2, SA-3, SA-4, altre schede SA, LA, team);
+  a destra il modello di destinazione, che si aggiorna a ogni spunta e mostra cosa arriva, cambia o viene rimosso.
+  - Gli elementi legati si selezionano da soli: ciò a cui la scheda fa riferimento, i messaggi e le letture di un'ADR, il
+    registro SA-3 di un requisito derivato. Una riallocazione approvata porta con sé lo spostamento delle voci.
+  - Le cancellazioni si prendono solo con la propria spunta, e non se l'elemento è ancora usato nel ramo di destinazione.
+    Chi non è della DA non spunta le voci SRS: arrivano solo se legate a ciò che ha scelto.
+  - Si registra come una versione normale: il resto del ramo si può integrare in seguito e il ramo non viene proposto per
+    la cancellazione.
+
+### Modificato
+- **Voci SRS modificabili solo dalla Design Authority.** Chi non è della DA non può attivare la modalità modifica, né
+  importare o eliminare le voci, né cambiarne i campi nella scheda o allocarle ai domini dalla riga del catalogo («Domini…»).
+  Anche «Pulisci progetto» è riservato alla DA. Restano permessi a tutti la consultazione, «Mappa a Funzione», «Deriva…» e
+  la mappatura delle sezioni dalla scheda del proprio dominio. Finché il team DA non ha membri, tutti possono modificarle.
+- **Un clic su una voce SRS nel menu laterale apre il catalogo su quella voce.** ATLAS apre la vista Voci SRS, passa al
+  suo capitolo, toglie i filtri che la nascondono e la evidenzia. Con un doppio clic sulla riga nel catalogo si apre la
+  sua scheda.
+
+### Rimosso
+- **Registrazione delle letture delle ADR.** Aprire un'ADR non modifica più il modello: prima veniva scritto nel progetto
+  chi l'aveva letta, e la scheda risultava tra le modifiche da pubblicare. «Nuova» e «Letta» delle notifiche restano, solo
+  su questo PC. I file di lettura già pubblicati restano nel repository, senza effetti: la Design Authority può toglierli
+  con *Progetto › Rimuovi le letture delle ADR…*, una modifica da pubblicare come le altre.
+
 ## [0.9.4] - 2026-11-06
 
 ### Aggiunto
@@ -825,7 +868,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.4...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.9.5...main
+[0.9.5]: https://github.com/salvodesi/ATLAS/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/salvodesi/ATLAS/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/salvodesi/ATLAS/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/salvodesi/ATLAS/compare/v0.9.1...v0.9.2

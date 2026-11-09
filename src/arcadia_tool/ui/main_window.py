@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         self.start.delete_requested.connect(self.delete_project)
         self.start.forget_requested.connect(self.forget_project)
         self.srs_edit_mode = SrsEditMode()
+        self.srs_edit_mode.denied = lambda: self.edit_denied("requirement")
         self.tree = ModelTree(self.srs_edit_mode)
         self.tree.user_of = lambda: self.user
         # One tab per opened element, closed only by the user (or when its element is deleted).
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
         self.tree.element_selected.connect(self._select)
         self.tree.model_changed.connect(self._model_changed)
         self.tree.srs_reader_requested.connect(self.open_srs_reader)
+        self.tree.srs_item_chosen.connect(self.go_to_srs_item)
         self.tree.srs_window_requested.connect(self.open_srs_window)
         self.tree.import_requested.connect(self.import_srs)
         self.tree.functions_import_requested.connect(self.import_functions)
@@ -237,6 +239,9 @@ class MainWindow(QMainWindow):
                                          "Rimuove gli elementi del progetto (anche mantenendo le voci SRS)")
         self.remove_srs_action = self._action("Rimuovi tutte le voci SRS…", "mdi6.delete-sweep-outline",
                                               self.remove_all_srs, None, "Rimuove tutte le voci SRS importate")
+        self.remove_readings_action = self._action(
+            "Rimuovi le letture delle ADR…", "mdi6.eye-off-outline", self.remove_readings, None,
+            "Design Authority: toglie dal progetto le letture delle ADR registrate dalle versioni fino alla 0.9.4")
         self.send_action = self._action("Invia al repository", "mdi6.cloud-upload", self.send_versions, None,
                                         "Invia al repository remoto le versioni pubblicate e non ancora inviate")
         self.clone_action = self._action("Scarica progetto da Git…", "mdi6.source-branch", self.clone_project_dialog,
@@ -311,6 +316,7 @@ class MainWindow(QMainWindow):
         project_menu.addSeparator()
         project_menu.addAction(self.clean_action)
         project_menu.addAction(self.remove_srs_action)
+        project_menu.addAction(self.remove_readings_action)
         project_menu.addSeparator()
         project_menu.addAction(self.reload_action)
         project_menu.addAction(self.migrate_action)
@@ -627,6 +633,7 @@ class MainWindow(QMainWindow):
         if modified:
             self._recovery_pending = True  # written by the timer
         self._local_state = None  # e.g. published, or the settings of the project changed
+        self.srs_edit_mode.refresh()  # the user or the teams may have changed
         for a in (self.save_action, self.publish_action, self.compare_action, self.history_action,
                   self.close_action, self.import_action, self.settings_action, self.send_action,
                   self.reload_action, self.migrate_action, self.check_action, self.check_settings_action,
@@ -664,6 +671,8 @@ class MainWindow(QMainWindow):
             "\n\nScegli i controlli in «Impostazioni verifiche».")
         self.clean_action.setEnabled(has_project and len(self.project.model) > 0)
         self.remove_srs_action.setEnabled(has_project and bool(self.project.model.of_kind("requirement")))
+        self.remove_readings_action.setEnabled(has_project and bool(self.project.model.of_kind("reading"))
+                                               and not self.edit_denied("team"))
         name = f" — {self.project.name}" if has_project else ""
         self.setWindowTitle(f"{'● ' if modified else ''}{APP_NAME} {__version__}{name}")
         self.stack.setCurrentIndex(1 if has_project else 0)
@@ -922,6 +931,10 @@ class MainWindow(QMainWindow):
         """Remove the elements of the project: all of them, or all but the imported SRS items."""
         if not self.project:
             return
+        denied = self.edit_denied("requirement")  # the SRS items, and their allocation to the domains
+        if denied:
+            QMessageBox.information(self, "Pulisci progetto", denied)
+            return
         self._flush_editors()
         model = self.project.model
         srs = len(model.of_kind("requirement"))
@@ -948,6 +961,29 @@ class MainWindow(QMainWindow):
         self._model_changed()
         self.statusBar().showMessage(f"Progetto pulito: {removed} elementi rimossi. Salva per renderlo definitivo.",
                                      10000)
+
+    def remove_readings(self):
+        """The readings of the ADR recorded by the versions up to 0.9.4 (no longer written or shown): removed, on
+        request of the Design Authority; a change like any other, to publish."""
+        if not self.project:
+            return
+        denied = self.edit_denied("team")  # only the members of the DA
+        readings = [r.uuid for r in self.project.model.of_kind("reading")]
+        if denied or not readings:
+            QMessageBox.information(self, "Rimuovi le letture delle ADR", (
+                "Solo i membri della Design Authority possono rimuovere le letture delle ADR.") if denied else
+                "Nel progetto non ci sono letture delle ADR.")
+            return
+        if QMessageBox.question(self, "Rimuovi le letture delle ADR",
+                                f"Togliere dal progetto {len(readings)} letture delle ADR?\n\nNon sono più usate da "
+                                "ATLAS. La rimozione è una modifica del modello da pubblicare: dopo la pubblicazione "
+                                "restano solo nella storia delle versioni.") != QMessageBox.Yes:
+            return
+        self.project.delete_elements(readings)
+        save_project(self, self.project, readings)  # these alone: the other changes stay to be saved
+        self._refresh_state()
+        self.statusBar().showMessage(f"Letture rimosse: {len(readings)}. Pubblica per portare la modifica sul "
+                                     "repository.", 8000)
 
     def remove_all_srs(self):
         self._flush_editors()
@@ -1144,6 +1180,12 @@ class MainWindow(QMainWindow):
             self.reader.elements_created.connect(self._model_changed)
             self._reader_to_tab()
         self._show_reader()
+
+    def go_to_srs_item(self, uuid):
+        """A click on an SRS item in the tree: the catalogue, at that item (a double click there opens its sheet)."""
+        self.open_srs_reader()
+        if self.reader is not None:
+            self.reader.go_to(uuid)
 
     def open_element_list(self, kind):
         """Double click on a kind in the model tree (e.g. X-2): its elements as a table in a tab."""
@@ -1601,6 +1643,10 @@ class MainWindow(QMainWindow):
     def import_srs(self):
         if not self.project:
             return
+        denied = self.edit_denied("requirement")
+        if denied:
+            QMessageBox.information(self, "Importa SRS", denied)
+            return
         self._flush_editors()
         dialog = ImportSrsDialog(self.project, self)
         if dialog.exec():
@@ -1716,11 +1762,12 @@ class MainWindow(QMainWindow):
             return
         if self.project.is_modified:
             self.save()
+        self._keeping_local = False
         if not self._ready_to_receive():
             return
         author = f"{self.user.full_name} <{self.user.email}>" if self.user else None
         dialog = ReceiveDialog(self.project, git_credentials(self.user, self.project.remote()), author, self,
-                               user=self.user)
+                               user=self.user, keep_local=self._keeping_local)
         dialog.exec()
         if dialog.publish_first:
             self.publish()
@@ -1764,6 +1811,9 @@ class MainWindow(QMainWindow):
             return True
         box = UnpublishedDialog(self.project, self)  # the changes shown, as in «Pubblica»
         box.exec()
+        if box.choice == UnpublishedDialog.KEEP:
+            self._keeping_local = True
+            return True
         if box.choice == UnpublishedDialog.PUBLISH:
             dialog = PublishDialog(self.project, self, user=self.user)  # sent with the merge, after receiving
             if dialog.exec() and dialog.sha:
@@ -1785,7 +1835,10 @@ class MainWindow(QMainWindow):
         if self.project:
             self._flush_editors()
             credentials = git_credentials(self.user, self.project.remote()) if self.project.remote() else None
-            CompareDialog(self.project, parent=self, credentials=credentials).exec()
+            dialog = CompareDialog(self.project, parent=self, credentials=credentials, integrating=True, user=self.user)
+            dialog.exec()
+            if dialog.request is not None:  # «Integra…»: the same integration as from the branches
+                self.branch_request(dialog.request)
 
     def history(self):
         if self.project:
@@ -1858,7 +1911,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Integra ramo", "Alcuni identificativi erano usati in entrambi i rami e "
                                     f"sono stati rinumerati:\n\n{lines}")
         self.statusBar().showMessage(f"Ramo «{name}» integrato in «{into}»", 8000)
-        dialog.branch_deleted = self._offer_to_delete_branch(name)
+        # A selective integration leaves the rest of the branch still to integrate: it is not to delete.
+        dialog.branch_deleted = not dialog.selective and self._offer_to_delete_branch(name)
         pending = self.project.unsent_versions() or self.project.branches_to_delete()
         if pending and self.project.remote() and QMessageBox.question(
                 self, "Integra ramo", "Inviare ora al repository " + (
@@ -1893,8 +1947,13 @@ class MainWindow(QMainWindow):
     def branch_request(self, request):
         """("switch", name), ("create", name, sha, send) or ("checkout", name, sha, move_branch): the project moves
         to that branch (the model to that version) and is opened again. The changes not yet published are
-        published first, or discarded, if the user wants. ("integrate", name, sha): see integrate_branch."""
+        published first, or discarded, if the user wants. ("integrate", name, sha[, into]): see integrate_branch;
+        into: the branch to integrate into, the project moves to it first."""
         if request[0] == "integrate":
+            if len(request) > 3 and request[3] != self.project.current_branch():
+                self.branch_request(("switch", request[3]))
+                if self.project is None or self.project.current_branch() != request[3]:
+                    return None  # cancelled, or not possible: said there
             return self.integrate_branch(request[1], request[2])
         if not self._ready_to_leave_branch():
             return

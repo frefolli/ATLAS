@@ -201,7 +201,8 @@ def test_project_menu_cleans_the_project(app, tmp_path, monkeypatch, choice):
     assert menus[:2] == ["&File", "&Progetto"]
     project_menu = window.menuBar().actions()[1].menu()
     assert [a.text() for a in project_menu.actions() if a.text()] == [
-        "Chiudi Progetto", "Pulisci progetto…", "Rimuovi tutte le voci SRS…", "Ricarica dal repository…",
+        "Chiudi Progetto", "Pulisci progetto…", "Rimuovi tutte le voci SRS…", "Rimuovi le letture delle ADR…",
+        "Ricarica dal repository…",
         "Migra repository…", "Verifica modello", "Impostazioni verifiche…", "Genera", "Impostazioni…"]
     generate_menu = next(a.menu() for a in project_menu.actions() if a.text() == "Genera")
     assert [a.text() for a in generate_menu.actions()] == ["Schede Arcadia", "Impostazioni…"]

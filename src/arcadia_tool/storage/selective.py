@@ -106,3 +106,99 @@ def files_to_publish(base, working, before, after, chosen, settings, tracked):
 
 def _uuid_of(path):
     return path.rsplit("/", 1)[-1].removesuffix(".yaml")
+
+
+# --- integrating some elements of another branch --------------------------------------------------------------------
+
+class Selection:
+    """What can be taken from a branch: diff: the branch in use → as it would be, only with what the other branch has
+    changed; needs: {uuid: the changes linked to it, which come with it}; blocked: {uuid of a removal: the elements of
+    the branch in use that still refer to it}; here: the model of the branch in use."""
+
+    def __init__(self, diff, needs, blocked, here):
+        self.diff, self.needs, self.blocked, self.here = diff, needs, blocked, here
+
+
+def _linked(base, here, there, changed):
+    """{uuid of a change: the changes that come with it}. What an element refers to, if changed too: but not an SRS item
+    only changed, unless a reallocation applied moved it (its decision and its effect go together). The messages and
+    readings of an ADR or a CQ, and the SA-3 record of a derived requirement, follow it."""
+    known = set(base.elements) | set(here.elements) | set(there.elements)
+    needs = {u: set() for u in changed}
+    referring = {}
+    for e in base.elements.values():
+        for r in references(e, known):
+            referring.setdefault(r, set()).add(e.uuid)
+    for uuid in changed:
+        now = there.get(uuid)
+        if now is None:  # removed: the changes of the elements that referred to it
+            needs[uuid] |= {e for e in referring.get(uuid, ()) if e in changed}
+            continue
+        applied = now.kind == "adr" and now.get("realloc_applied")
+        for r in references(now, known):
+            target = there.get(r)
+            if r not in changed or target is None:
+                continue
+            if target.kind != "requirement" or here.get(r) is None or applied:
+                needs[uuid].add(r)
+    for e in there.elements.values():
+        if e.uuid not in changed:
+            continue
+        if e.kind in ("message", "reading"):
+            for owner in (e.get("subject"), e.get("adr")):
+                if owner in needs:
+                    needs[owner].add(e.uuid)
+        elif e.kind == "trace_record":
+            for d in there.of_kind("derived_requirement"):
+                if d.uuid in needs and d.get("parent") == e.get("requirement"):
+                    needs[d.uuid].add(e.uuid)
+    return needs
+
+
+def integration_selection(base, ours, theirs):
+    """The Selection of an integration; base, ours, theirs: {path: bytes} (the last version in common, the branch in
+    use, the other branch). Only what the other branch has changed, and the branch in use does not have yet."""
+    from arcadia_tool.diff.semantic import diff_models
+    from arcadia_tool.storage.merge import THEIRS, merge_files, merged_model
+
+    model_paths = [p for p in set(base) | set(theirs) if p.startswith(MODEL_DIR + "/") and p.endswith(".yaml")]
+    changed = {_uuid_of(p) for p in model_paths if theirs.get(p) != base.get(p) and theirs.get(p) != ours.get(p)}
+    limited = selected_files(base, theirs, changed)
+    conflicts = merge_files(base, ours, limited).conflicts
+    merged = merge_files(base, ours, limited, {c.key: THEIRS for c in conflicts})  # the conflicts: as they would be
+    here, there = merged_model(ours), merged_model(theirs)
+    diff = diff_models(here, merged_model(merged.files))
+    diff.changes = [c for c in diff.changes if c.uuid in changed]
+    shown = {c.uuid for c in diff.changes}
+    needs = {u: linked & shown for u, linked in _linked(merged_model(base), here, there, shown).items()}
+    known = set(here.elements)
+    blocked = {}
+    for uuid in shown:
+        if there.get(uuid) is None:  # still used here by something not changing: it cannot go away
+            users = [e for e in here.elements.values() if e.uuid != uuid and e.uuid not in shown
+                     and uuid in references(e, known)]
+            if users:
+                blocked[uuid] = sorted(here.label(e) for e in users)
+    return Selection(diff, needs, blocked, here)
+
+
+def selected_files(base, theirs, chosen):
+    """The content of the other branch as if it had changed only the elements chosen (uuids), with their files: the
+    rest as in the last version in common, so that the merge leaves it as it is in the branch in use."""
+    from arcadia_tool.model.serialization import loads
+
+    result = dict(base)
+    for path in set(base) | set(theirs):
+        if path.startswith(MODEL_DIR + "/") and path.endswith(".yaml") and _uuid_of(path) in chosen:
+            if path in theirs:
+                result[path] = theirs[path]
+                element = loads(theirs[path].decode("utf-8"))
+                for name in ASSET_FIELDS:
+                    value = element.values.get(name)
+                    for asset in (value if isinstance(value, list) else [value] if value else []):
+                        if asset in theirs:
+                            result[asset] = theirs[asset]
+            else:
+                result.pop(path, None)
+    return result
+

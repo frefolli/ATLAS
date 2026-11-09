@@ -275,3 +275,183 @@ def test_the_main_window_opens_the_project_again_after_receiving(team, monkeypat
     window._set_project(None)
     window.close()
     app.processEvents()
+
+
+# --- receiving and keeping the changes not published ---------------------------------------------------------------
+
+def names_of(project):
+    return sorted(d.get("name") for d in project.model.of_kind("domain"))
+
+
+def rename(project, uuid, name):
+    element = project.model.get(uuid)
+    previous = element.copy()
+    element.set("name", name)
+    project.update(element, previous)
+    project.save()
+
+
+def keep_setup(tmp_path, _publish_mine):
+    """A project on a server, downloaded by me and by a colleague."""
+    url = str(tmp_path / "server.git")
+    porcelain.init(url, bare=True).close()
+    first = Project.create(tmp_path / "first", "Prova")
+    first.repository.set_remote_url(url)
+    first.set_local_settings(branch="master")
+    a = first.new_element("domain", name="Uno")
+    b = first.new_element("domain", name="Due")
+    first.publish("v1", AUTHOR)
+    first.push()
+    first.close()
+    mine, colleague = (Project.open(clone_project(url, tmp_path / n)) for n in ("mine", "colleague"))
+    return mine, colleague, a, b
+
+
+@pytest.mark.parametrize("publish_mine", [False, True])
+def test_received_with_the_changes_not_published_on_top(tmp_path, publish_mine):
+    mine, colleague, a, b = keep_setup(tmp_path, publish_mine)
+    colleague.new_element("domain", name="Del collega")
+    colleague.publish("collega", AUTHOR)
+    colleague.push()
+    if publish_mine:
+        mine.new_element("domain", name="Pubblicato qui")
+        mine.publish("mio", AUTHOR)
+    rename(mine, b.uuid, "Due locale")
+    mine.new_element("domain", name="Solo locale")
+    mine.save()
+    if publish_mine:
+        assert mine.prepare_receive().state == Receive.PUBLISH_FIRST  # as before, unless asked
+    receive = mine.prepare_receive(keep_local=True)
+    assert receive.state == (Receive.MERGE if publish_mine else Receive.FAST_FORWARD)
+    assert receive.result.resolved
+    head_before = mine.repository.head()
+    result = mine.apply_receive(receive, None, AUTHOR)
+    assert result.resolved
+    path = mine.path
+    mine.close()
+    mine = Project.open(path)
+    assert "Del collega" in names_of(mine) and "Due locale" in names_of(mine) and "Solo locale" in names_of(mine)
+    assert mine.has_unpublished_changes()  # still to publish
+    assert mine.repository.head() != head_before
+    published = mine.published_model()
+    assert "Solo locale" not in [d.get("name") for d in published.of_kind("domain")]
+    assert "Del collega" in [d.get("name") for d in published.of_kind("domain")]
+    assert (path / ".arcadia" / "before_receive.zip").is_file()  # the copy, on this PC
+    mine.close()
+    colleague.close()
+
+
+@pytest.mark.parametrize("publish_mine", [False, True])
+def test_the_same_field_changed_here_and_received_is_asked(tmp_path, publish_mine):
+    from arcadia_tool.storage.merge import OURS
+
+    mine, colleague, a, b = keep_setup(tmp_path, publish_mine)
+    rename(colleague, b.uuid, "Due del collega")
+    colleague.publish("collega", AUTHOR)
+    colleague.push()
+    if publish_mine:
+        mine.new_element("domain", name="Pubblicato qui")
+        mine.publish("mio", AUTHOR)
+    rename(mine, b.uuid, "Due locale")
+    receive = mine.prepare_receive(keep_local=True)
+    conflict = next(c for c in receive.result.conflicts if c.field == "name")
+    assert not mine.apply_receive(receive, None, AUTHOR).resolved  # not chosen: nothing is written
+    assert (mine.path / mine._relative(mine.element_file(b))).read_text(encoding="utf-8").count("Due locale") == 1
+    result = mine.apply_receive(receive, {conflict.key: OURS}, AUTHOR)
+    assert result.resolved
+    path = mine.path
+    mine.close()
+    mine = Project.open(path)
+    assert "Due locale" in names_of(mine)
+    published = [d.get("name") for d in mine.published_model().of_kind("domain")]
+    assert "Due del collega" in published  # what was received is in the history; the local change on top
+    mine.close()
+    colleague.close()
+
+
+def test_a_new_local_element_with_an_identifier_received_is_renumbered(tmp_path):
+    mine, colleague, a, b = keep_setup(tmp_path, False)
+    theirs = colleague.new_element("domain", name="Del collega")
+    colleague.publish("collega", AUTHOR)
+    colleague.push()
+    here = mine.new_element("domain", name="Locale")
+    mine.save()
+    assert here.get("id") == theirs.get("id")
+    result = mine.apply_receive(mine.prepare_receive(keep_local=True), None, AUTHOR)
+    assert [r[0] for r in result.renumbered] == [here.uuid]
+    path = mine.path
+    mine.close()
+    mine = Project.open(path)
+    assert mine.model.get(theirs.uuid).get("id") == theirs.get("id") and mine.model.get(here.uuid).get("id") != theirs.get("id")
+    mine.close()
+    colleague.close()
+
+
+def test_the_windows_of_receiving_and_keeping_the_changes(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    from arcadia_tool.ui import main_window as mw
+    from arcadia_tool.ui.receive import ReceiveDialog
+
+    app = QApplication.instance() or QApplication([])
+    mine, colleague, a, b = keep_setup(tmp_path, False)
+    colleague.new_element("domain", name="Del collega")
+    colleague.publish("collega", AUTHOR)
+    colleague.push()
+    rename(mine, b.uuid, "Due locale")
+    window = mw.MainWindow()
+    window.user = None
+    window._set_project(mine)
+    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    monkeypatch.setattr(mw.UnpublishedDialog, "exec", lambda box: box.keep_button.click())
+
+    def run(d):
+        assert d.keep_local and d.preview is not None
+        d.start()
+        d.worker.wait(20000)
+        app.processEvents()
+        assert d.receive.state == Receive.FAST_FORWARD and d.preview_view.diff  # what will change, before applying
+        d.apply()
+        return True
+    monkeypatch.setattr(ReceiveDialog, "exec", run)
+    window.receive_versions()
+    assert sorted(names_of(window.project)) == ["Del collega", "Due locale", "Uno"]
+    assert window.project.has_unpublished_changes()
+    window._set_project(None)
+    window.close()
+    colleague.close()
+
+
+def test_the_conflict_selected_shows_the_two_values_whole_with_the_differences(tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from arcadia_tool.ui.receive import ReceiveDialog
+
+    app = QApplication.instance() or QApplication([])
+    mine, colleague, a, b = keep_setup(tmp_path, False)
+    long_text = "Una descrizione " * 20  # longer than what the table shows
+    for project, ending, name in ((colleague, "del collega", "Uno del collega"), (mine, "mia", "Uno mio")):
+        element = project.model.get(a.uuid)
+        previous = element.copy()
+        element.set("mission", f"{long_text}fine {ending}")
+        element.set("name", name)
+        project.update(element, previous)
+        project.save()
+    colleague.publish("collega", AUTHOR)
+    colleague.push()
+    dialog = ReceiveDialog(mine, {}, AUTHOR, keep_local=True)
+    dialog.start()
+    dialog.worker.wait(20000)
+    app.processEvents()
+    assert dialog.conflicts.rowCount() == 2 and not dialog.conflict_detail.isHidden()
+    fields = [c.field for c in dialog.conflict_list]
+    dialog.conflicts.selectRow(fields.index("mission"))  # the first one is shown at once; another one when selected
+    detail = dialog.conflict_detail
+    ours, theirs = detail.ours.toPlainText(), detail.theirs.toPlainText()
+    assert ours.endswith("fine mia") and theirs.endswith("fine del collega") and len(ours) > 160  # whole
+    assert "background-color:#ffebe9" in detail.ours.toHtml().lower().replace(" ", "")  # what only this side has
+    assert "background-color:#dafbe1" in detail.theirs.toHtml().lower().replace(" ", "")
+    dialog.conflicts.selectRow(fields.index("name"))
+    assert detail.ours.toPlainText() == "Uno mio" and detail.theirs.toPlainText() == "Uno del collega"
+    dialog.close()
+    mine.close()
+    colleague.close()
+

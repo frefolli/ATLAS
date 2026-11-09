@@ -8,9 +8,8 @@ arrives with the ADR itself (Pubblica, Invia, Ricevi), and follows it: a destina
 notification too. Each notification says why it reaches the user (SCOPES): for their team, as Design Authority, a
 message; the panel shows them apart.
 
-A notification is read when the ADR is opened, or marked read; it can be marked unread again, to look at it again.
-Reading an ADR is also recorded in the project (kind «reading»: a file per member and ADR, so that two readings on
-two branches do not conflict); it is not shown to the others.
+A notification is read when the ADR is opened, or marked read; it can be marked unread again, to look at it again:
+all on this PC only, opening an ADR does not change the model.
 
 The notifications are worked out once for a state of the project and of what the user has seen (see collect): the
 bell, the tree and the panel ask them often."""
@@ -20,13 +19,11 @@ from dataclasses import dataclass, field
 
 from arcadia_tool.model import discussions
 from arcadia_tool.model.adr import OPEN
-from arcadia_tool.model.element import Element
 from arcadia_tool.model.schema import (ADR_DELETE_DOMAIN, ADR_DOMAIN_SCOPE, ADR_EXCLUSION, ADR_FUNCTION,
                                        ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN, ADR_OWNER,
                                        ADR_PRODUCT_OPTION, ADR_SECTION, ADR_SPLIT_DOMAIN, KINDS_BY_NAME)
 from arcadia_tool.model.teams import design_authority, member_rows, memberships, normalize_account_id, person_key
 
-READING = "reading"
 NEW, CHANGED, DELETED, MESSAGE = "Nuova", "Modificata", "Eliminata", "Messaggio"
 READ = "Letta"  # the state of a notification opened at least once (see Notification.state)
 TEAM, DA, MESSAGES = "team", "da", "messages"  # why a notification reaches the user
@@ -341,8 +338,7 @@ def unread_by_scope(project, user):
 
 
 def mark_read(project, user, notification):
-    """Read: the version of the ADR now is the one seen (and the reading recorded in the project); the message
-    seen."""
+    """Read: the version of the ADR now is the one seen; the message seen."""
     if notification.event == MESSAGE:
         read = dict(project.local_settings().get("read") or {})
         shown = set(read.get(notification.subject) or [])
@@ -362,11 +358,11 @@ def mark_read(project, user, notification):
     snap["scopes"] = sorted(notification.scopes)
     state["adr"][adr.uuid] = snap
     _save_state(project, user, state)
-    return record_reading(project, user, adr)
+    return None
 
 
 def mark_unread(project, user, notification):
-    """Unread again, «Nuova», to look at it again (on this PC only: the reading recorded in the project stays)."""
+    """Unread again, «Nuova», to look at it again."""
     if notification.event == MESSAGE:
         read = dict(project.local_settings().get("read") or {})
         shown = set(read.get(notification.subject) or [])
@@ -386,38 +382,3 @@ def adr_opened(project, user, adr):
             mark_read(project, user, n)
             return True
     return False
-
-
-# --- the readings recorded in the project --------------------------------------------------------------------------
-
-def readings_of(model, adr):
-    return sorted((r for r in model.elements.values() if r.kind == READING and r.get("adr") == adr.uuid),
-                  key=lambda r: r.get("read_at") or "")
-
-
-def record_reading(project, user, adr):
-    """A member of a destination team, or of the Design Authority, has read the ADR: recorded in the project (one
-    record per member and ADR, with the version read), saved at once. None if the user is neither."""
-    model = project.model
-    who = _Who(model, user)
-    teams = [t for t in destination_teams(model, adr) if t in who.teams] if who.roles(adr) else []
-    if not teams and who.as_da(adr):
-        teams = [who.da]
-    if not teams:
-        return None
-    account = normalize_account_id(getattr(user, "id", ""))
-    record = next((r for r in readings_of(model, adr) if r.get("account") == account), None)
-    version = fingerprint(adr)
-    if record is not None and record.get("version") == version:
-        return record
-    previous = record.copy() if record is not None else None
-    record = record or Element(READING)
-    record.set("adr", adr.uuid)
-    record.set("team", teams[0])
-    record.set("member", getattr(user, "full_name", "") or "")
-    record.set("account", account)
-    record.set("read_at", discussions.now())
-    record.set("version", version)
-    project.update(record, previous)
-    project.save(only={record.uuid})
-    return record

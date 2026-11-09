@@ -640,8 +640,8 @@ KINDS = (
         Field("deleted", "Eliminato dall'autore", BOOL),
         Field("hidden_by_da", "Nascosto dalla Design Authority", BOOL),
     )),
-    # A member of a team concerned by an ADR (a destination of it) has read it (see model.notifications): one record
-    # per member and ADR, a file of its own (readings on two branches do not conflict). Shown in the sheet of the ADR.
+    # Who read an ADR, recorded up to the version 0.9.4: no longer written or shown. Kept so that the projects with
+    # these files open as before.
     Kind("reading", "Lettura", "Letture delle ADR", "x/readings", "Trasversali", "", "", (
         Field("adr", "ADR", REF, ref_kinds=("adr",)),
         Field("team", "Team", REF, ref_kinds=("team",)),

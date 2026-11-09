@@ -99,6 +99,7 @@ def _set_expanded(item, expanded):
 
 class ModelTree(QFrame):
     element_selected = Signal(object)
+    srs_item_chosen = Signal(str)  # a click on an SRS item: the catalogue opens at that item
     model_changed = Signal()
     srs_reader_requested = Signal()
     srs_window_requested = Signal()  # the SRS catalogue in a separate window
@@ -135,7 +136,9 @@ class ModelTree(QFrame):
         self.filter.textChanged.connect(self._apply_filter)
         self.tree = _navigator()
         self.tree.customContextMenuRequested.connect(self._context_menu)
+        self._selecting = False  # select(): opens the element shown, also an SRS item, in its sheet
         self.tree.currentItemChanged.connect(self._current_changed)
+        self.tree.itemClicked.connect(self._clicked)  # also on the item that is already the current one
         self.tree.itemDoubleClicked.connect(self._double_clicked)
         self.tree.setExpandsOnDoubleClick(False)
         model_page = QWidget()
@@ -375,7 +378,11 @@ class ModelTree(QFrame):
         while parent is not None:
             parent.setExpanded(True)
             parent = parent.parent()
-        self.tree.setCurrentItem(item)
+        self._selecting = True
+        try:
+            self.tree.setCurrentItem(item)
+        finally:
+            self._selecting = False
         self.tree.scrollToItem(item)
 
     def current_element(self):
@@ -410,7 +417,14 @@ class ModelTree(QFrame):
 
     def _current_changed(self, current, _previous):
         uuid = current.data(0, UUID_ROLE) if current else None
+        if uuid and current.data(0, KIND_ROLE) == "requirement" and not self._selecting:
+            self.srs_item_chosen.emit(uuid)
+            return
         self.element_selected.emit(self.project.model.get(uuid) if uuid and self.project else None)
+
+    def _clicked(self, item, _column):
+        if item.data(0, UUID_ROLE) and item.data(0, KIND_ROLE) == "requirement":
+            self.srs_item_chosen.emit(item.data(0, UUID_ROLE))
 
     def _view_changed(self, current, _previous):
         """A click in «Viste grafiche»: the view opens (a functional breakdown, or a view of the users)."""
@@ -442,8 +456,9 @@ class ModelTree(QFrame):
         menu = QMenu(self)
         locked = kind == "requirement" and not self.srs_edit_mode.enabled
         if kind == "requirement" and not uuid:
+            only_da = self.srs_edit_mode.reason()  # who may change the SRS items
             menu.addAction(icon("mdi6.file-import-outline"), "Importa SRS…",
-                           lambda _=False: self.import_requested.emit())
+                           lambda _=False: self.import_requested.emit()).setEnabled(not only_da)
             menu.addSeparator()
             menu.addAction(icon("mdi6.book-open-page-variant-outline"), "Consulta il SUBSET-026",
                            lambda _=False: self.srs_reader_requested.emit())
@@ -453,10 +468,11 @@ class ModelTree(QFrame):
             toggle.setCheckable(True)
             toggle.setChecked(self.srs_edit_mode.enabled)
             toggle.toggled.connect(self.srs_edit_mode.set_enabled)
+            toggle.setEnabled(not only_da)
             delete_all = menu.addAction(icon("mdi6.delete-sweep-outline"), "Elimina tutte le voci SRS…",
                                         lambda _=False: self.delete_all_requirements())
             # Enabled also in read-only mode: it offers to switch to edit mode (a greyed entry looked broken).
-            delete_all.setEnabled(bool(self.project.model.of_kind("requirement")))
+            delete_all.setEnabled(bool(self.project.model.of_kind("requirement")) and not only_da)
             menu.addSeparator()
         denied = self.edit_denied(kind) if self.edit_denied else None
         if kind == "system_function" and not uuid:
@@ -576,12 +592,17 @@ class ModelTree(QFrame):
             return None
         return {field.name: picker.selected()[0]}
 
-    def _locked(self, kind):
-        """Imported SRS items can be created or deleted only in edit mode; the teams only by the members of the
-        Design Authority (see edit_denied)."""
+    def _locked_by_team(self, kind):
+        """Teams and SRS items: changed only by the members of the Design Authority (see edit_denied)."""
         denied = self.edit_denied(kind) if self.edit_denied else None
         if denied:
-            QMessageBox.information(self, "Team", denied)
+            QMessageBox.information(self, "Solo la Design Authority", denied)
+        return bool(denied)
+
+    def _locked(self, kind):
+        """Imported SRS items can be created or deleted only in edit mode; they and the teams only by the members
+        of the Design Authority (see edit_denied)."""
+        if self._locked_by_team(kind):
             return True
         if kind == "requirement" and not self.srs_edit_mode.enabled:
             QMessageBox.information(self, "Voci SRS in sola lettura",
@@ -619,7 +640,7 @@ class ModelTree(QFrame):
 
     def delete_all_requirements(self):
         uuids = [e.uuid for e in self.project.model.of_kind("requirement")]
-        if not uuids:
+        if not uuids or self._locked_by_team("requirement"):
             return
         if not self.srs_edit_mode.enabled:
             answer = QMessageBox.question(self, "Voci SRS in sola lettura",

@@ -421,6 +421,7 @@ class SrsReader(QWidget):
         super().__init__()
         self.project = project
         self.chapter = None
+        self._go_to_later = None  # asked while not visible: its rows are laid out only when shown
         self._pending_refresh = True
         self._refreshing = False
         self.edit_mode = edit_mode or SrsEditMode()
@@ -574,6 +575,9 @@ class SrsReader(QWidget):
         super().showEvent(event)
         if self._pending_refresh:
             self.refresh()
+        if self._go_to_later:
+            uuid, self._go_to_later = self._go_to_later, None
+            self.go_to(uuid)
 
     def refresh(self, *_):
         if not self.isVisible():
@@ -667,6 +671,30 @@ class SrsReader(QWidget):
             self.window_button.setToolTip("Stacca le voci SRS in una finestra separata, da tenere affiancata alle "
                                           "schede (es. su un secondo schermo)")
 
+    def go_to(self, uuid):
+        """Navigate to an item from outside the catalogue: its chapter, and without the filters that hide it."""
+        element = self.project.model.get(uuid)
+        if element is None:
+            return
+        if not self.isVisible():
+            self._go_to_later = uuid
+            return
+        chapter = chapter_of(element)
+        if self.chapter is not None and chapter != self.chapter:
+            index = next((i for i in range(self.tabs.count()) if self.tabs.tabData(i) == chapter), 0)
+            self.tabs.setCurrentIndex(index)
+        if all(e.uuid != uuid for e in self.model.elements):
+            for widget in (self.search, self.show_headings, *self.category_boxes.values()):
+                widget.blockSignals(True)
+            self.search.clear()
+            self.show_headings.setChecked(True)
+            for box in self.category_boxes.values():
+                box.setChecked(True)
+            for widget in (self.search, self.show_headings, *self.category_boxes.values()):
+                widget.blockSignals(False)
+            self.refresh()
+        self.reveal(uuid)
+
     def reveal(self, uuid):
         """Select and show an item (e.g. when coming back from its page); keeps filters and position."""
         row = next((i for i, e in enumerate(self.model.elements) if e.uuid == uuid), None)
@@ -727,6 +755,10 @@ class SrsReader(QWidget):
         if item is None:
             return
         if name == "domains":
+            reason = self.edit_mode.reason()  # it changes the item itself
+            if reason:
+                QMessageBox.information(self, "Solo la Design Authority", reason)
+                return
             dialog = ItemDomainsDialog(self.project, item, self)
             if not dialog.exec():
                 return
@@ -798,7 +830,8 @@ class SrsReader(QWidget):
             menu.addSeparator()
         if kind == "section":
             menu.addAction(icon("mdi6.sitemap-outline"), "Alloca ai domini funzionali…",
-                           lambda _=False: self.run_action(element.uuid, "domains"))
+                           lambda _=False: self.run_action(element.uuid, "domains")
+                           ).setEnabled(not self.edit_mode.reason())
         elif kind in ("clause", "item"):
             if kind == "clause":
                 menu.addAction(icon("mdi6.function-variant"), "Alloca alle funzioni di sistema…",

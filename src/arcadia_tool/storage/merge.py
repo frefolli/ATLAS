@@ -28,6 +28,7 @@ from arcadia_tool.model.serialization import dumps, loads
 from arcadia_tool.storage.repository import CHECKS_FILE, MODEL_DIR, PROJECT_FILE
 
 OURS, THEIRS = "ours", "theirs"
+LOCAL_KEY = "locale:"  # the choices about a conflict with the changes not published
 SETTINGS_FILES = (PROJECT_FILE, CHECKS_FILE)
 KIND_ORDER = {k.name: i for i, k in enumerate(KINDS)}  # parents before children: domains, functions, …
 
@@ -39,10 +40,11 @@ class Conflict:
     base: object = None
     ours: object = None  # value (or content of the file, None if deleted) on this PC
     theirs: object = None  # value received
+    local: bool = False  # between the changes not published and what is received (see Receive.merge)
 
     @property
     def key(self):
-        return f"{self.path}#{self.field or ''}"
+        return f"{LOCAL_KEY if self.local else ''}{self.path}#{self.field or ''}"
 
     @property
     def uuid(self):
@@ -60,6 +62,7 @@ class MergeResult:
     received: list = field(default_factory=list)  # paths that take content from the other side
     merged: list = field(default_factory=list)  # paths merged field by field
     relinked: list = field(default_factory=list)  # paths changed to keep the sheets in step (see relink)
+    published: dict = None  # the content of the version of the merge, when `files` also has local changes on top
 
     @property
     def resolved(self):
@@ -182,14 +185,15 @@ def _merge_yaml(merger, path, base, ours, theirs):
     return dumps(merged).encode("utf-8")
 
 
-def relink(result, ours):
+def relink(result, ours, also=()):
     """The elements merged field by field (changes of both sides on the same sheet): the sheets kept in step with
     them follow (see model.links: the team of a domain and its domains, the functions of an SA-3 record and their
-    SRS items, the exclusions…), as when the change is made in a sheet. Changes result.files and returns the paths
-    changed."""
+    SRS items, the exclusions…), as when the change is made in a sheet. also: other paths to treat so (the elements taken
+    alone from another branch: the sheets they are linked to did not come with them). Changes result.files and returns
+    the paths changed."""
     from arcadia_tool.model.links import keep_in_step
 
-    merged = [p for p in result.merged if _is_model_file(p) and p in result.files]
+    merged = sorted({p for p in (*result.merged, *also) if _is_model_file(p) and p in result.files})
     if not merged:
         return []
     elements = {p: loads(_text(d)) for p, d in result.files.items() if _is_model_file(p)}

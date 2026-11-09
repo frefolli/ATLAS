@@ -908,7 +908,7 @@ class ElementEditor(QScrollArea):
                 self.widgets[f.name] = widget
                 if f.stored:
                     self.getters[f.name] = getter
-                if f.analysis:
+                if f.analysis and not self.field_denied(f.name):
                     widget.setProperty("keepEnabled", True)  # editable also on a read-only SRS item
                 label = QLabel(f.label, objectName="formLabel")
                 if f.by_tool:  # written by the tool: not changed by hand

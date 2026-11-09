@@ -5,7 +5,7 @@
 <p align="center">
   <b>Arcadia Traceability, Logical Architecture Software</b><br>
   Strumento desktop di modellazione ARCADIA per l'EVC ERTMS di bordo<br>
-  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.4</sub>
+  <sub>RFI - Ricerca e Sviluppo - Sviluppo Sistemi · versione 0.9.5</sub>
 </p>
 
 > [!WARNING]
@@ -87,7 +87,7 @@ repository serve solo per scaricare e pubblicare le versioni.
   «Ricevi», e nell'albero (un pallino blu a sinistra dell'elemento da vedere). Si segnano come lette o di nuovo
   come non lette («Nuova»). I membri della Design
   Authority ricevono tutte le ADR non aperte dalla DA, in una scheda a parte del pannello («Il mio team», «Design
-  Authority», «Messaggi»). La lettura di un'ADR viene registrata nel progetto.
+  Authority», «Messaggi»). Aprire un'ADR non modifica il modello: «Letta» vale solo su questo PC.
 - **Discussione** in fondo alla scheda di ogni ADR e CQ: i membri dei team scrivono messaggi in fila, con risposta
   a un messaggio precedente e file allegati. Il messaggio si salva subito e arriva ai colleghi con Pubblica e
   Invia; l'albero indica i messaggi nuovi. L'autore modifica o elimina i propri messaggi, la DA può nasconderli e
@@ -217,7 +217,16 @@ repository serve solo per scaricare e pubblicare le versioni.
   Gli identificativi automatici in conflitto vengono rinumerati.
 - Rami: elenco dei rami di questo PC e del repository, nuovo ramo da una versione scelta, cambio di ramo. Si può
   pubblicare sul ramo attuale o su un nuovo ramo creato al momento della pubblicazione.
-- **Integra nel ramo in uso…** (finestra Rami): unisce le versioni di un altro ramo in quello in uso, come «Ricevi»
+- **Elimina ramo locale…** (finestra Rami): toglie un ramo da questo PC, non dal repository, e avvisa se contiene
+  versioni che non sono altrove.
+- **Ricevi senza perdere le modifiche locali:** «Ricevi e mantieni le modifiche» prende le versioni del repository e
+  lascia sopra le modifiche non pubblicate; se gli stessi campi sono cambiati da entrambe le parti, scegli tu.
+- **Integra nel ramo in uso…** (finestra Rami, o «Integra…» in Confronta), anche **selettiva** e mantenendo le modifiche locali: si spuntano solo alcuni elementi dell'altro ramo
+  (es. le ADR), con ciò a cui sono legati. A sinistra ci sono gli elementi cambiati nel ramo mittente, a destra il modello
+  di destinazione,
+  che si aggiorna a ogni spunta mostrando cosa viene aggiunto, modificato o rimosso; il
+  resto del ramo si può integrare in seguito. L'integrazione completa unisce le versioni di un altro ramo in quello in
+  uso, come «Ricevi»
   (per scheda e per campo, ID doppi rinumerati, tracciature riallineate). Il ramo principale lo modifica
   solo la Design Authority (pubblica, invia, integra, anche con «Ricevi»): un team lavora su un suo ramo; rami nati separatamente non si integrano. Prima di integrare mostra l'anteprima del risultato
   e lascia da scegliere solo i conflitti («Annulla integrazione» non cambia nulla). Dopo, propone di cancellare il

@@ -185,6 +185,7 @@ def _document_key(element):
 
 RECOVERY_NAME = ".arcadia/recovery.zip"
 LOCAL_SETTINGS = ".arcadia/local.json"
+BEFORE_RECEIVE = ".arcadia/before_receive.zip"
 RECOVERY_INFO = "recovery.json"
 
 
@@ -335,23 +336,58 @@ class Receive:
         "up_to_date", "no_branch", "fast_forward", "merge", "publish_first", "unrelated")
 
     def __init__(self, state, branch, theirs=None, incoming=(), base=None, ours=None, theirs_files=None,
-                 into=None):
+                 into=None, local=None):
         self.state, self.branch, self.theirs = state, branch, theirs
         self.incoming = list(incoming)  # the versions received, newest first
         self.base, self.ours, self.theirs_files = base or {}, ours or {}, theirs_files or {}
         self.into = into  # integration (Rami › Integra): the branch in use, the other one is `branch`
+        self.only = None  # selective integration: the uuids of the elements taken from the other branch
+        self.local = local  # changes not published kept: the content on disk, ours being the last version
         self.result = None
         # Versions merged outside ATLAS (with Git: no renumbering of the identifiers, no sheets kept in step).
         self.foreign = [v for v in self.incoming if v.is_merge and not made_by_atlas(v)]
 
     def merge(self, choices=None):
         from arcadia_tool.storage.merge import merge_files, relink, renumber_ids
+        from arcadia_tool.storage.selective import _uuid_of, selected_files
 
-        result = merge_files(self.base, self.ours, self.theirs_files, choices)
+        theirs = self.theirs_files if self.only is None else selected_files(self.base, self.theirs_files, self.only)
+        result = merge_files(self.base, self.ours, theirs, choices)
         if result.resolved:
-            renumber_ids(result, self.base, self.theirs_files)
-            relink(result, self.ours)
-        return result
+            renumber_ids(result, self.base, theirs)
+            relink(result, self.ours, [p for p in result.files if self.only and _uuid_of(p) in self.only])
+        return result if self.local is None else self._with_local(result, choices or {})
+
+    def _with_local(self, published, choices):
+        """The changes not published put back on top of the merge of the versions, as a merge of their own: what they
+        have changed against what the merge has changed. Their conflicts are chosen with the others (LOCAL_KEY)."""
+        from arcadia_tool.storage.merge import LOCAL_KEY, merge_files, relink, renumber_ids
+
+        own = {k[len(LOCAL_KEY):]: v for k, v in choices.items() if k.startswith(LOCAL_KEY)}
+        top = merge_files(self.ours, self.local, published.files, own)
+        for conflict in top.conflicts:
+            conflict.local = True
+        if published.resolved and top.resolved:
+            renumber_ids(top, self.ours, published.files)
+            relink(top, self.local)
+        top.conflicts = published.conflicts + top.conflicts
+        top.published = published.files
+        top.received += published.received
+        top.merged += published.merged
+        top.renumbered = published.renumbered + top.renumbered
+        top.relinked = published.relinked + top.relinked
+        return top
+
+    def selection(self):
+        """What can be taken alone from the other branch (see storage.selective): it reads the whole model."""
+        from arcadia_tool.storage.selective import integration_selection
+        return integration_selection(self.base, self.ours if self.local is None else self.local, self.theirs_files)
+
+
+def _label_of(data):
+    """How an element is named in the message of a version (data: its file)."""
+    element = loads(data.decode("utf-8"))
+    return str(element.get("id") or element.get("name") or element.get("title") or element.kind)
 
 
 ATLAS_MERGE = "Unione eseguita da ATLAS: identificativi rinumerati e tracciature riallineate."
@@ -511,6 +547,21 @@ class Project:
     def branches_to_delete(self):
         """The branches integrated and deleted here, to remove from the remote with the next send."""
         return list(self.local_settings().get("delete_branches") or [])
+
+    def versions_only_on_local_branch(self, name):
+        """The versions of the branch of this PC `name` that no other branch has, here or on the remote (as last known):
+        they would be lost with it."""
+        local, remote = self.repository.local_heads(), self.repository.remote_heads()
+        if name not in local:
+            return []
+        others = [h for n, h in local.items() if n != name] + list(remote.values())
+        return self.repository.versions_between(others, local[name])
+
+    def delete_local_branch(self, name):
+        """The branch `name` no longer on this PC; the one of the remote, if any, stays. Not the branch in use."""
+        if name == self.current_branch():
+            raise ProjectError(f"«{name}» è il ramo in uso: passa prima a un altro ramo.")
+        self.repository.delete_branch(name)
 
     def delete_integrated_branch(self, name):
         """After «Integra»: the branch `name` deleted on this PC and, if it is on the remote, from the remote with
@@ -1257,9 +1308,10 @@ class Project:
 
     # --- receiving the versions of the others ----------------------------------------------------------
 
-    def prepare_receive(self, **credentials):
+    def prepare_receive(self, keep_local=False, **credentials):
         """Download the working branch of the remote and work out how to receive it (see Receive). Saves the
-        edits first. Nothing changes in the project until apply_receive."""
+        edits first. Nothing changes in the project until apply_receive. keep_local: the changes not published stay on
+        top of what is received, also when both have published versions."""
         self.save()
         branch, url = self.push_branch(), self.remote()
         if not url:  # the receive of the versions of the others: see also prepare_integration
@@ -1282,38 +1334,42 @@ class Project:
         else:
             # Both have published versions: they are merged into a new version (then sent).
             head_files = self.repository.files_at(head)
-            if working != head_files:
+            if working != head_files and not keep_local:
                 return Receive(Receive.PUBLISH_FIRST, branch, theirs, incoming=incoming)
             base = self.repository.merge_base(head, theirs)
             receive = Receive(Receive.MERGE, branch, theirs, incoming=incoming,
-                              base=self.repository.files_at(base), ours=head_files, theirs_files=theirs_files)
+                              base=self.repository.files_at(base), ours=head_files, theirs_files=theirs_files,
+                              local=working if working != head_files else None)
         receive.result = receive.merge()
         return receive
 
-    def prepare_integration(self, branch, sha):
+    def prepare_integration(self, branch, sha, keep_local=False):
         """Integrate the version `sha` of the branch `branch` (of this PC or of the remote) into the branch in use,
         as Ricevi does: field by field, the identifiers renumbered, the sheets kept in step. Nothing changes until
         apply_receive. Branches with no version in common (projects created apart) are not integrated: their
-        elements would all be doubled."""
+        elements would all be doubled. keep_local: the changes not published stay on top of the integration."""
         self.save()
         into = self.current_branch()
-        if self.has_unpublished_changes():
+        unpublished = self.has_unpublished_changes()
+        if unpublished and not keep_local:
             return Receive(Receive.PUBLISH_FIRST, branch, sha, into=into)
         head = self.repository.head()
         if head is not None and self.repository.is_ancestor(sha, head):
             return Receive(Receive.UP_TO_DATE, branch, sha, into=into)
         incoming = self.repository.versions_between(head, sha) if head else self.repository.history(start=sha)
         theirs_files = self.repository.files_at(sha)
+        local = self._version_files() if unpublished else None
         if head is None or self.repository.is_ancestor(head, sha):
             receive = Receive(Receive.FAST_FORWARD, branch, sha, incoming=incoming,
-                              base=self.repository.files_at(head), ours=self._version_files(),
-                              theirs_files=theirs_files, into=into)
+                              base=self.repository.files_at(head),
+                              ours=self.repository.files_at(head) if unpublished else self._version_files(),
+                              theirs_files=theirs_files, into=into, local=local)
         else:
             base = self.repository.merge_base(head, sha)
             if base is None:
                 return Receive(Receive.UNRELATED, branch, sha, incoming=incoming, into=into)
             receive = Receive(Receive.MERGE, branch, sha, incoming=incoming, base=self.repository.files_at(base),
-                              ours=self.repository.files_at(head), theirs_files=theirs_files, into=into)
+                              ours=self.repository.files_at(head), theirs_files=theirs_files, into=into, local=local)
         receive.result = receive.merge()
         return receive
 
@@ -1342,9 +1398,23 @@ class Project:
         result = receive.merge(choices)
         if not result.resolved:
             return result
-        self._write_files(result.files, receive.ours)
+        current = receive.ours if receive.local is None else receive.local
+        if receive.into is None or receive.local is not None:
+            self._copy_local_changes(current)
+        self._write_files(result.files, current)
         relinked = getattr(result, "relinked", [])
-        if receive.state == Receive.FAST_FORWARD:
+        if receive.only is not None:
+            # A version like any other, not a merge: for Git the rest of the other branch is still to integrate.
+            names = sorted(_label_of(receive.theirs_files.get(p) or receive.base[p])
+                           for p in {*receive.base, *receive.theirs_files}
+                           if p.startswith(MODEL_DIR + "/") and p.rsplit("/", 1)[-1][:-5] in receive.only)
+            message = (f"Integrazione selettiva dal ramo «{receive.branch}» in «{receive.into}» "
+                       f"({len(names)} elementi)\n\nDalla versione {receive.theirs[:8]} di «{receive.branch}».\n"
+                       "Elementi: " + ", ".join(names[:40]) + (" …" if len(names) > 40 else ""))
+            self.repository.save_version(message, author or "ATLAS <atlas@localhost>",
+                                         result.files if result.published is None else result.published,
+                                         working=None if result.published is None else result.files)
+        elif receive.state == Receive.FAST_FORWARD:
             self.repository.move_to(receive.theirs, result.files)
         else:
             count = len(receive.incoming)
@@ -1353,12 +1423,31 @@ class Project:
                        else f"Integrazione di {what} {'ricevuta' if count == 1 else 'ricevute'} dal ramo "
                             f"«{receive.branch}»")
             message += f"\n\n{ATLAS_MERGE}" + (f" Schede riallineate: {len(relinked)}." if relinked else "")
-            self.repository.save_version(message, author or "ATLAS <atlas@localhost>", result.files,
-                                         merged=receive.theirs)
+            if result.published is None:
+                self.repository.save_version(message, author or "ATLAS <atlas@localhost>", result.files,
+                                             merged=receive.theirs)
+            else:  # the changes not published stay on disk, on top of the version
+                self.repository.save_version(message, author or "ATLAS <atlas@localhost>", result.published,
+                                             merged=receive.theirs, working=result.files)
         if receive.into is None:  # Ricevi: the working branch, now as on the remote
             self.set_local_settings(sent=receive.theirs, branch=receive.branch)
         self.discard_recovery()
         return result
+
+    def _copy_local_changes(self, current):
+        """Before receiving on top of them: a copy of the changes not published (.arcadia/before_receive.zip, of this
+        PC, the last one only; DELETED.txt lists the files removed), not to lose them if something goes wrong."""
+        head = self.repository.files_at(self.repository.head())
+        changed = {p: d for p, d in current.items() if head.get(p) != d}
+        removed = sorted(set(head) - set(current))
+        if not changed and not removed:
+            return
+        target = self.path / BEFORE_RECEIVE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
+            for path, data in changed.items():
+                z.writestr(path, data)
+            z.writestr("DELETED.txt", "\n".join(removed))
 
     def _write_files(self, files, current):
         """The project on disk becomes `files` (current: what is on disk now)."""

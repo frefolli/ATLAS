@@ -277,9 +277,9 @@ class PublishDialog(QDialog):
 
 
 class UnpublishedDialog(QDialog):
-    """Before receiving: the changes not published on the working branch, shown as in «Pubblica», to publish or
-    discard first. choice: PUBLISH, DISCARD or None (cancelled)."""
-    PUBLISH, DISCARD = "publish", "discard"
+    """Before receiving: the changes not published on the working branch, shown as in «Pubblica», to publish, discard
+    or keep on top of what is received. choice: PUBLISH, DISCARD, KEEP or None (cancelled)."""
+    PUBLISH, DISCARD, KEEP = "publish", "discard", "keep"
 
     def __init__(self, project, parent=None):
         super().__init__(parent)
@@ -290,9 +290,9 @@ class UnpublishedDialog(QDialog):
         versions = project.versions()
         base_label = version_label(versions[0]) if versions else "Nessuna versione pubblicata"
         self.diff = diff_models(project.published_model(), project.model)
-        intro = QLabel(f"Ci sono modifiche non ancora pubblicate sul ramo «{project.push_branch()}». Pubblicale, "
-                       "così vengono integrate con le versioni ricevute, oppure scartale: il progetto torna alla sua "
-                       "ultima versione pubblicata e riceve quelle del repository.")
+        intro = QLabel(f"Ci sono modifiche non ancora pubblicate sul ramo «{project.push_branch()}». Puoi mantenerle "
+                       "e ricevere comunque: restano da pubblicare, e se le versioni ricevute cambiano gli stessi "
+                       "campi scegli tu quale tenere. Oppure pubblicale prima, o scartale.")
         intro.setWordWrap(True)
         changes, changes_layout = card("Modifiche non pubblicate rispetto all'ultima pubblicazione")
         if self.diff:
@@ -304,11 +304,14 @@ class UnpublishedDialog(QDialog):
         self.publish_button.clicked.connect(lambda: self._choose(self.PUBLISH))
         self.discard_button = QPushButton(icon("mdi6.delete-outline", "#B42318"), "Scarta le modifiche")
         self.discard_button.clicked.connect(lambda: self._choose(self.DISCARD))
+        self.keep_button = primary(QPushButton(icon("mdi6.cloud-download-outline", "white"),
+                                               "Ricevi e mantieni le modifiche"))
+        self.keep_button.clicked.connect(lambda: self._choose(self.KEEP))
         cancel = QPushButton("Annulla")
         cancel.clicked.connect(self.reject)
         buttons = QHBoxLayout()
         buttons.addStretch()
-        for b in (cancel, self.discard_button, self.publish_button):
+        for b in (cancel, self.discard_button, self.publish_button, self.keep_button):
             buttons.addWidget(b)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -318,7 +321,7 @@ class UnpublishedDialog(QDialog):
         if not self.diff:
             layout.addStretch()
         layout.addLayout(buttons)
-        self.publish_button.setFocus()
+        self.keep_button.setFocus()
 
     def _choose(self, choice):
         self.choice = choice
@@ -430,12 +433,14 @@ class CompareDialog(QDialog):
     repository (local with local, local with remote, remote with remote), or the working state. since_common:
     only what «A» changed since the version it has in common with «Da» (e.g. what an activity branch changed since
     it started from main). credentials: to download the branches of the repository when the window opens (and
-    with «Aggiorna dal repository»)."""
+    with «Aggiorna dal repository»). integrating: «Integra…» too, for who opens it (the integration runs from there,
+    with request ("integrate", branch of «Da», its version, branch of «A»)); user: who integrates."""
 
     def __init__(self, project, before=None, after=None, parent=None, before_branch=None, after_branch=None,
-                 since_common=False, credentials=None):
+                 since_common=False, credentials=None, integrating=False, user=None):
         super().__init__(parent)
         self.project, self.credentials, self.worker = project, credentials, None
+        self.user, self.request = user, None
         self.setWindowTitle("Confronta versioni")
         maximizable(self)
         self.resize(1320, 780)
@@ -460,6 +465,11 @@ class CompareDialog(QDialog):
         self.fetch_button.clicked.connect(self.fetch)
         self.fetched = QLabel(objectName="muted")
         self._fetched_text()
+        self.integrate_button = QPushButton(icon("mdi6.source-merge"), "Integra…")
+        self.integrate_button.clicked.connect(lambda _=False: self.integrate())
+        self.integrate_button.setVisible(integrating)
+        for combo in (self.left.branch, self.left.version, self.right.branch, self.right.version):
+            combo.currentIndexChanged.connect(lambda _i: self._update_integrate())
 
         bar, bar_layout = card()
         grid = QFormLayout()
@@ -477,6 +487,7 @@ class CompareDialog(QDialog):
         options.addStretch()
         options.addWidget(self.fetched)
         options.addWidget(self.fetch_button)
+        options.addWidget(self.integrate_button)
         options.addWidget(compare)
         bar_layout.addLayout(options)
 
@@ -487,8 +498,53 @@ class CompareDialog(QDialog):
         layout.setSpacing(12)
         layout.addWidget(bar)
         layout.addWidget(self.result, 1)
+        self._update_integrate()
         if before or after:
             self.compare()
+
+    def _integration(self):
+        """What «Integra…» would do with what is selected: the version of «Da» goes into the branch of «A». Returns
+        (branch of «Da», branch of «A»), or (None, why it cannot be done)."""
+        source, target = self.left.selected_branch(), self.right.selected_branch()
+        if source is None or target is None:
+            return None, "Scegli i due rami"
+        if self.left.state in (None, WORKING):
+            return None, "«Da» è lo stato attuale: le modifiche non pubblicate non si integrano, scegli una versione"
+        if source.name == target.name:
+            return None, ("«Da» e «A» sono lo stesso ramo: scegli due rami diversi (per portare qui le versioni del "
+                          "repository usa «Ricevi»)")
+        if self.right.state not in (WORKING, target.head):
+            return None, (f"La destinazione è l'ultima versione del ramo: in «A» scegli l'ultima versione di "
+                          f"«{target.name}», o l'integrazione non corrisponderebbe a ciò che vedi")
+        here = self.project.repository.local_heads().get(target.name)
+        if target.remote and here is not None and here != target.head:
+            return None, (f"Su questo PC «{target.name}» è a un'altra versione: in «A» scegli il ramo di questo PC, "
+                          "oppure ricevi prima le versioni del repository")
+        denied = self.project.main_denied(self.user, target.name)
+        return (source, target) if not denied else (None, denied)
+
+    def _update_integrate(self):
+        source, target = self._integration()
+        current = self.project.current_branch()
+        if source is None:
+            self.integrate_button.setText("Integra…")
+            self.integrate_button.setEnabled(False)
+            self.integrate_button.setToolTip(target)
+            return
+        last = self.left.state == source.head
+        origin = source.name if last else f"{source.name} @ {self.left.state[:8]}"
+        self.integrate_button.setText(f"Integra «{origin}» in «{target.name}»…")
+        self.integrate_button.setEnabled(True)
+        self.integrate_button.setToolTip(
+            f"Apre l'integrazione, completa o selettiva, della versione scelta in «Da» nel ramo «{target.name}»"
+            + ("" if target.name == current else f". Il progetto passa prima al ramo «{target.name}»"))
+
+    def integrate(self):
+        source, target = self._integration()
+        if source is None:
+            return
+        self.request = ("integrate", source.name, self.left.state, target.name)
+        self.accept()
 
     @staticmethod
     def _select(combo, state):
@@ -833,7 +889,12 @@ class HistoryDialog(QDialog):
         b = self.selected_branch()
         name = b.name if b is not None else None
         after_branch = self.project.current_branch() if after == WORKING else name
-        CompareDialog(self.project, before, after, self, before_branch=name, after_branch=after_branch).exec()
+        dialog = CompareDialog(self.project, before, after, self, before_branch=name, after_branch=after_branch,
+                               integrating=True, user=self.user)
+        dialog.exec()
+        if dialog.request is not None:  # «Integra…»: from the main window
+            self.request = dialog.request
+            self.accept()
 
     def show_version(self, row):
         """Double click: what the version contains and where it is (sent to the repository or not); the local

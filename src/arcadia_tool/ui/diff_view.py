@@ -126,10 +126,12 @@ class DiffView(QWidget):
     leaves out those that need it, choosing one chooses those it needs (told in `note`)."""
     selection_changed = Signal()
 
-    def __init__(self, diff, before_label, after_label, needs=None):
+    def __init__(self, diff, before_label, after_label, needs=None, locked=None, linked_text="Si pubblica insieme a: "):
         super().__init__()
         self.diff = diff
         self.needs = needs
+        self.locked = locked or {}  # {uuid: why it cannot be ticked}: it can only follow what it is linked to
+        self.linked_text = linked_text
         self.chosen = {c.uuid for c in diff.changes} if needs is not None else set()
         self._ticking = False
         self.note = QLabel(objectName="muted")
@@ -137,8 +139,8 @@ class DiffView(QWidget):
         self.note.setVisible(False)
         counts = diff.summary()
         header = QHBoxLayout()
-        title = QLabel(f"<b>{escape(before_label)}</b>  →  <b>{escape(after_label)}</b>")
-        header.addWidget(title)
+        self.title = QLabel(f"<b>{escape(before_label)}</b>  →  <b>{escape(after_label)}</b>")
+        header.addWidget(self.title)
         header.addStretch()
         for k in (ADDED, MODIFIED, REMOVED):
             header.addWidget(summary_badge(k, counts.get(k, 0)))
@@ -167,7 +169,7 @@ class DiffView(QWidget):
         self.tree.header().setStretchLastSection(False)
         self.tree.currentItemChanged.connect(self._show_detail)
         self.detail = QTextBrowser()
-        splitter = QSplitter()
+        self.splitter = splitter = QSplitter()
         splitter.addWidget(self.tree)
         splitter.addWidget(self.detail)
         splitter.setSizes([560, 520])
@@ -216,11 +218,14 @@ class DiffView(QWidget):
                 item.setForeground(2, QBrush(QColor(MUTED)))
                 item.setData(0, CHANGE_ROLE, c)
                 if self.needs is not None:
-                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    if c.uuid not in self.locked:
+                        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                     item.setCheckState(0, Qt.Checked if c.uuid in self.chosen else Qt.Unchecked)
                     linked = self.needs.get(c.uuid)
-                    if linked:
-                        item.setToolTip(0, "Si pubblica insieme a: " + ", ".join(
+                    if c.uuid in self.locked:
+                        item.setToolTip(0, self.locked[c.uuid])
+                    elif linked:
+                        item.setToolTip(0, self.linked_text + ", ".join(
                             sorted(self.diff.label_of(u) for u in linked)))
                 first = first or item
             if self.needs is not None:
@@ -236,6 +241,9 @@ class DiffView(QWidget):
         from arcadia_tool.storage.selective import dependents, required
         on = item.checkState(0) == Qt.Checked
         if on == (change.uuid in self.chosen):
+            return
+        if change.uuid in self.locked:  # e.g. ticked by its group: as it was
+            self._refresh_ticks()
             return
         if on:
             moved = required(self.needs, [change.uuid]) - self.chosen
@@ -266,6 +274,9 @@ class DiffView(QWidget):
         """Choose these changes (with those they need, and leaving out what needs one left out)."""
         from arcadia_tool.storage.selective import required
         self.chosen = required(self.needs or {}, uuids)
+        others = sorted(self.diff.label_of(u) for u in self.chosen - set(uuids))
+        self.note.setText("Selezionate anche, perché legate: " + ", ".join(others) if others else "")
+        self.note.setVisible(bool(others))
         self._refresh_ticks()
         self.selection_changed.emit()
 

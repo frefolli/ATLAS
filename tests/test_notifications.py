@@ -75,12 +75,12 @@ def test_the_teams_of_the_destination_domains_are_notified_not_the_proposer(tmp_
 def test_read_unread_again_changed_moved_and_deleted(tmp_path):
     p, teams, domains, adr = project(tmp_path)
     mario = user(MARIO, "Mario Rossi")
-    record = n.mark_read(p, mario, n.collect(p, mario)[0])
-    assert record.get("member") == "Mario Rossi" and record.get("team") == teams["T2"].uuid
-    assert record.uuid not in p.pending()  # recorded in the project and saved at once
+    p.save()
+    n.mark_read(p, mario, n.collect(p, mario)[0])
+    assert not p.model.of_kind("reading") and not p.is_modified  # on this PC only: the model does not change
     assert show(p, mario) == [(n.NEW, "ADR-044 · Spostamento 3.10.1.3.1", False)] and n.unread_count(p, mario) == 0
     n.mark_unread(p, mario, n.collect(p, mario)[0])  # to look at it again: on this PC only
-    assert n.unread_count(p, mario) == 1 and len(n.readings_of(p.model, adr)) == 1
+    assert n.unread_count(p, mario) == 1
     n.mark_read(p, mario, n.collect(p, mario)[0])
     # Changed in any field: notified as changed, with the fields.
     adr.set("realloc_reason", "Perché i dati sono memorizzati a bordo")
@@ -88,20 +88,18 @@ def test_read_unread_again_changed_moved_and_deleted(tmp_path):
     changed = n.collect(p, mario)[0]
     assert changed.event == n.CHANGED and changed.unread
     assert changed.detail == "Campi modificati: Motivazione della riallocazione, Stato"
-    reading = n.readings_of(p.model, adr)[0]
-    assert reading.get("member") == "Mario Rossi" and reading.get("version") != n.fingerprint(adr)  # an earlier version
     n.mark_read(p, mario, changed)
-    assert n.readings_of(p.model, adr)[0].get("version") == n.fingerprint(adr)
+    assert not n.collect(p, mario)[0].unread
     # Moved to a domain of another team: the notification follows it.
     adr.set("primary_proposed", domains["DF07"].uuid)
+    p.update(adr)
     moved = n.collect(p, mario)[0]
     assert moved.unread and "non riguarda più i domini del tuo team" in moved.detail
     assert [x.title for x in n.collect(p, user(ANNA, "Anna Bianchi"))] == ["ADR-044 · Spostamento 3.10.1.3.1"]
     adr.set("primary_proposed", domains["DF04"].uuid)
     n.mark_read(p, mario, n.collect(p, mario)[0])
-    # Deleted: notified as deleted (its readings go with it), then read.
+    # Deleted: notified as deleted, then read.
     p.delete_element(adr.uuid)
-    assert not p.model.of_kind("reading")
     deleted = n.collect(p, mario)[0]
     assert (deleted.event, deleted.title, deleted.unread) == (n.DELETED, "ADR-044 · Spostamento 3.10.1.3.1", True)
     n.mark_read(p, mario, deleted)
@@ -128,23 +126,21 @@ def test_the_messages_of_the_discussions_of_the_user_are_notified(tmp_path):
         "Messaggio di Mario Rossi: Va bene per noi"]
 
 
-def test_two_readings_on_two_branches_are_both_kept(tmp_path):
-    from arcadia_tool.storage.merge import merge_files
+def test_opening_an_adr_does_not_change_the_model(app, tmp_path):
+    from arcadia_tool.ui.main_window import MainWindow
 
     p, teams, domains, adr = project(tmp_path)
-    adr.set("contributors_proposed", [domains["DF07"].uuid])
-    p.update(adr)
     p.save()
-    base = p._version_files()
-    n.mark_read(p, user(MARIO, "Mario Rossi"), n.collect(p, user(MARIO, "Mario Rossi"))[0])
-    ours = p._version_files()
-    for f in [f for f in ours if f not in base]:
-        (p.path / f).unlink()
-    other = Project.open(p.path)
-    anna = user(ANNA, "Anna Bianchi")
-    n.mark_read(other, anna, n.collect(other, anna)[0])
-    result = merge_files(base, ours, other._version_files())
-    assert result.resolved and len([f for f in result.files if f.startswith("model/x/readings/")]) == 2
+    p.publish("v1", "Prova <prova@example.com>")
+    window = MainWindow()
+    window.user = user(MARIO, "Mario Rossi")
+    window.user.username, window.user.email = "mario", "m@x.it"
+    window._set_project(p)
+    window._open_finding(adr.uuid)
+    assert n.unread_count(p, window.user) == 0  # its notification is read
+    assert not p.is_modified and not p.has_unpublished_changes() and not p.model.of_kind("reading")
+    window._set_project(None)
+    window.close()
 
 
 def test_the_bell_the_panel_the_alert_the_sheet_and_the_tree(app, tmp_path, monkeypatch):
@@ -215,9 +211,7 @@ def test_the_design_authority_is_told_every_adr_not_opened_by_it(app, tmp_path):
     assert titles == {"ADR-044", "ADR-045"}  # not those opened by the DA (its team, or one of its members)
     assert "ADR-046" in {x.title.split(" · ")[0] for x in n.collect(p, mario)}  # the destination team, yes
     assert n.unread_by_scope(p, anna) == {n.TEAM: 0, n.DA: 2, n.MESSAGES: 0}
-    # Read as DA: recorded with the DA team.
-    record = n.mark_read(p, anna, next(x for x in n.collect(p, anna) if x.subject == other.uuid))
-    assert record.get("team") == teams["T1"].uuid and record.get("member") == "Anna Bianchi"
+    n.mark_read(p, anna, next(x for x in n.collect(p, anna) if x.subject == other.uuid))
     assert member.uuid and by_da.uuid
     # The panel: a tab for the DA (only for its members), with its count.
     dialog = ui.NotificationsDialog(p, anna)
@@ -289,3 +283,38 @@ def test_the_state_is_new_until_the_user_of_this_pc_opens_it(app, tmp_path):
     dialog.unread_button.click()
     assert dialog.tree.topLevelItem(0).text(ui.STATE) == "Nuova"
     assert dialog.tree.topLevelItem(1).text(ui.DETAIL) == "Messaggio di Luca Guglielmo: Un parere?"
+
+
+def test_the_design_authority_removes_the_readings_of_the_earlier_versions(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui import main_window as mw
+
+    p, teams, domains, adr = project(tmp_path)
+    reading = p.new_element("reading", adr=adr.uuid, member="Mario Rossi")  # as written up to the version 0.9.4
+    other = p.new_element("team", name="Non salvato")
+    file = p.element_file(reading)
+    p.save(only={reading.uuid, *(e.uuid for e in p.model if e.uuid != other.uuid)})
+    assert file.is_file() and other.uuid in p.pending()
+    mario, anna = user(MARIO, "Mario Rossi"), user(ANNA, "Anna Bianchi")
+    for account in (mario, anna):
+        account.username, account.email = "u", "u@x.it"
+    window = mw.MainWindow()
+    window._set_project(p)
+    assert file.is_file()  # opening the project removes nothing
+    window.user = mario  # not of the DA: refused
+    window._refresh_state()
+    assert not window.remove_readings_action.isEnabled()
+    window.remove_readings()
+    assert p.model.get(reading.uuid) is reading
+    window.user = anna
+    window._refresh_state()
+    assert window.remove_readings_action.isEnabled()
+    window.remove_readings()  # the answer of the tests: «No»
+    assert p.model.get(reading.uuid) is reading and file.is_file()
+    monkeypatch.setattr(mw.QMessageBox, "question", lambda *a, **k: mw.QMessageBox.Yes)
+    window.remove_readings()
+    assert p.model.get(reading.uuid) is None and not file.exists()
+    assert other.uuid in p.pending()  # the other changes are not saved with them
+    assert not window.remove_readings_action.isEnabled()
+    window._set_project(None)
+    window.close()
+

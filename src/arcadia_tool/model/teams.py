@@ -118,7 +118,9 @@ def main_denied(model, user, main):
 
 # --- who may change the teams ------------------------------------------------------------------------------------
 
-DA_ONLY_KINDS = ("team",)  # sheets that only the members of the Design Authority create, change and delete
+# Sheets that only the members of the Design Authority create, change and delete (what they do).
+DA_ONLY_KINDS = {"team": "creare, modificare ed eliminare i team",
+                 "requirement": "importare, modificare ed eliminare le voci SRS"}
 # Fields of other sheets changed only by them: who works on a domain, the decision on an ADR. (what they do)
 DA_ONLY_FIELDS = {"domain": ("team",), "adr": ("da_decision", "da_notes")}
 DA_ONLY_WHAT = {"domain": "assegnare i domini ai team", "adr": "decidere sulle ADR (esito e osservazioni)"}
@@ -126,8 +128,8 @@ DA_ONLY_WHAT = {"domain": "assegnare i domini ai team", "adr": "decidere sulle A
 
 def edit_denied(model, user, kind, field=None):
     """Why the user may not create, change or delete a sheet of this kind (with field: change that field of it),
-    or None if they may. The teams, and the team assigned to a domain, are changed only by the members of the
-    Design Authority; while no DA team has members yet, by anyone (someone has to set it up)."""
+    or None if they may. The teams, the SRS items and the team assigned to a domain are changed only by the members of
+    the Design Authority; while no DA team has members yet, by anyone (someone has to set it up)."""
     if kind not in DA_ONLY_KINDS and (field is None or field not in DA_ONLY_FIELDS.get(kind, ())):
         return None
     da = design_authority(model)
@@ -136,7 +138,7 @@ def edit_denied(model, user, kind, field=None):
     if user is not None and is_member(da, user):
         return None
     name = " ".join(str(v) for v in (da.get("id"), da.get("name")) if v)
-    what = (DA_ONLY_WHAT[kind] if kind not in DA_ONLY_KINDS else "creare, modificare ed eliminare i team")
+    what = DA_ONLY_KINDS.get(kind) or DA_ONLY_WHAT[kind]
     return (f"Solo i membri della Design Authority ({name}) possono {what}. Se ne fai parte, comunica alla DA "
             "l'ID del tuo account (Utente › Modifica account), che lo indica nella tua riga del team.")
 
