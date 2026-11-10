@@ -34,7 +34,7 @@ def names(project):
 def window_on(p):
     window = mw.MainWindow()
     window._set_project(p)
-    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     return window
 
 

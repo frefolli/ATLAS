@@ -256,6 +256,38 @@ def test_the_discussion_of_an_adr_comes_from_all_the_branches(tmp_path, app):
     assert all(e.kind != "message" for e in o.shown())
 
 
+def test_the_view_says_when_the_branches_are_no_longer_those_seen(tmp_path, app):
+    from arcadia_tool.storage.overview import changes_since
+    from arcadia_tool.ui.overview import OverviewWindow
+
+    p, d = start(tmp_path)
+    p = on_branch(p, "att/A", lambda q: rename(q, d["Odometria"].uuid, "Odometria A"))
+    p = on_branch(p, "att/B", lambda q: rename(q, d["Radio"].uuid, "Radio B"))
+    o = view(p)
+    window = OverviewWindow(o, set(o.entries), project=p)
+    assert window.check() == [] and window.stale_box.isHidden()
+    window.verify()  # no repository: only checked
+    assert "ancora quelle della vista" in window.stale_label.text() and window.stale_button.isHidden()
+
+    p.switch_branch("att/A")
+    p = reopen(p)
+    rename(p, d["Frenatura"].uuid, "Frenatura A")
+    p.save()
+    p.publish("ancora su A", AUTHOR)
+    p.switch_branch("master")
+    p = reopen(p)
+    p.delete_local_branch("att/B")
+    window.project = p
+    changes = dict(changes_since(p, o))
+    assert changes["att/A"].startswith("1 versione nuova") and changes["att/B"] == "non c'è più"
+    assert "master" not in changes
+    window.check()
+    assert not window.stale_box.isHidden() and "att/A" in window.stale_label.text()
+    assert "att/B" in window.stale_label.text()
+    assert window._items[d["Odometria"].uuid]  # the view itself is unchanged: what was seen
+    window.close()
+
+
 def test_the_button_of_the_view_is_in_the_top_bar(tmp_path, app, monkeypatch):
     from PySide6.QtWidgets import QToolBar
 

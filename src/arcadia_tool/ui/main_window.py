@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtCore import QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu,
                                QMessageBox,
                                QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget,
@@ -39,13 +39,33 @@ from arcadia_tool.ui.model_tree import TAB_ICONS, ModelTree
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode
 from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
-from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, TEXT, icon, kind_icon
+from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, MUTED, TEXT, icon, kind_icon
 from arcadia_tool.ui.branches import BranchesDialog
 from arcadia_tool.ui.overview import OverviewSetup, OverviewWindow
 from arcadia_tool.ui.versions import CompareDialog, DiscardDialog, HistoryDialog, PublishDialog, UnpublishedDialog
 from arcadia_tool.ui import updates as updates_ui
 
 MAX_RECENT = 8
+UNREAD_RED = "#D92D20"
+
+
+def bell_icon(unread):
+    """The bell of the notifications; with a red dot in its corner when some are unread."""
+    bell = icon("mdi6.bell-outline")
+    if not unread:
+        return bell
+    result = QIcon()
+    for size in (16, 24, 32, 48):
+        pixmap = bell.pixmap(size, size)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("white"), max(1, size // 16)))
+        painter.setBrush(QColor(UNREAD_RED))
+        d = size * 0.45
+        painter.drawEllipse(QRectF(size - d - 0.5, 0.5, d, d))
+        painter.end()
+        result.addPixmap(pixmap)
+    return result
 
 
 def show_check_problems(parent, problems):
@@ -368,8 +388,12 @@ class MainWindow(QMainWindow):
         self.status_user = QLabel()
         self.status_project = QLabel()
         self.status_modified = QLabel()
+        # The notifications to read, left of the state of the saving: a click opens them.
+        self.status_notifications = QLabel(textFormat=Qt.RichText)
+        self.status_notifications.linkActivated.connect(lambda _link: self.open_notifications())
         self.statusBar().addWidget(self.status_user)
         self.statusBar().addWidget(self.status_project, 1)
+        self.statusBar().addPermanentWidget(self.status_notifications)
         self.statusBar().addPermanentWidget(self.status_modified)
 
     # --- user ----------------------------------------------------------------------------------
@@ -561,7 +585,7 @@ class MainWindow(QMainWindow):
         self._set_project(None)  # its files are about to change
         dialog = ReloadDialog(path, url, branch, credentials, self)
         dialog.exec()
-        self.open_project(str(path), confirmed=True)  # reloaded, or as it was if the download failed
+        self.open_project(str(path), confirmed=True, ask_update=False)  # reloaded, or as it was if the download failed
         if dialog.branch and self.project is not None:
             self.statusBar().showMessage(f"Progetto ricaricato dal ramo «{dialog.branch}» di {url}", 6000)
 
@@ -598,17 +622,31 @@ class MainWindow(QMainWindow):
     # --- notifications ---------------------------------------------------------------------------------
 
     def _show_notifications_count(self):
-        """The bell: how many notifications are unread."""
+        """How many notifications are unread: the red dot on the bell, and the count in the status bar (with those
+        for the Design Authority, for its members), updated as they are read."""
         from arcadia_tool.model.notifications import DA, MESSAGES, TEAM, unread_by_scope, unread_count
-        count = unread_count(self.project, self.user) if self.project is not None and self.user else 0
+        has = self.project is not None and self.user is not None
+        count = unread_count(self.project, self.user) if has else 0
         self.notifications_action.setText(f"Notifiche ({count})" if count else "Notifiche")
-        self.notifications_action.setIcon(icon("mdi6.bell-badge", ACCENT) if count else icon("mdi6.bell-outline"))
+        self.notifications_action.setIcon(bell_icon(count > 0))
         tip = "Le ADR di altri team che riguardano i domini del tuo team e i messaggi delle loro discussioni"
+        by = unread_by_scope(self.project, self.user) if count else {TEAM: 0, DA: 0, MESSAGES: 0}
         if count:
-            by = unread_by_scope(self.project, self.user)
             tip = (f"Non lette: {by[TEAM]} per il tuo team" + (f", {by[DA]} come Design Authority" if by[DA] else "")
                    + f", {by[MESSAGES]} messaggi")
         self.notifications_action.setToolTip(tip)
+        if not has:
+            self.status_notifications.clear()
+        elif count:
+            da = f" (di cui {by[DA]} per la DA)" if self.user_is_da and by[DA] else ""
+            what = "notifica da leggere" if count == 1 else "notifiche da leggere"
+            self.status_notifications.setText(
+                f"<a href='notifiche' style='color:{TEXT}; text-decoration:none'><span style='color:{UNREAD_RED}'>"
+                f"●</span> <b>{count}</b> {what}{da}</a>   ·")
+            self.status_notifications.setToolTip(f"{tip}\nClic per aprire le Notifiche")
+        else:
+            self.status_notifications.setText(f"<span style='color:{MUTED}'>Nessuna notifica da leggere</span>   ·")
+            self.status_notifications.setToolTip(tip)
 
     def open_notifications(self):
         from arcadia_tool.ui.notifications import NotificationsDialog
@@ -616,17 +654,10 @@ class MainWindow(QMainWindow):
             return None
         dialog = NotificationsDialog(self.project, self.user, self)
         dialog.open_requested.connect(self._open_finding)
+        dialog.changed.connect(self._show_notifications_count)  # the count follows what is marked read
         dialog.exec()
         self._discussion_changed()
         return dialog
-
-    def alert_notifications(self, after=""):
-        """The explicit alert of the notifications unread (after the opening of the project, after «Ricevi»)."""
-        from arcadia_tool.ui.notifications import alert
-        if self.project is None or self.user is None:
-            return None
-        self._notifications_alert = alert(self, self.project, self.user, self.open_notifications, after)
-        return self._notifications_alert
 
     def _discussion_changed(self):
         """A message written, changed or hidden (and saved): the tree shows the new messages, the state the
@@ -849,20 +880,21 @@ class MainWindow(QMainWindow):
             return
         dialog = CloneDialog(self.user, self)
         if dialog.exec() and dialog.path is not None:
-            self.open_project(str(dialog.path), confirmed=True)
+            self.open_project(str(dialog.path), confirmed=True, ask_update=False)  # just downloaded
             if self.project is not None:
                 self.statusBar().showMessage(f"Progetto scaricato in {dialog.path}", 6000)
 
-    def open_project(self, path, confirmed=False, restore=None, alert=True):
-        """alert: the notifications unread are told at once (not after «Ricevi», which tells them itself)."""
+    def open_project(self, path, confirmed=False, restore=None, ask_update=True):
+        """ask_update: opened by the user (not again after a change of its files): see offer_receive. The
+        notifications unread are not alerted: the red dot of the bell and the count in the status bar tell them."""
         if not confirmed and not self._confirm_discard():
             return
         self._denied = None
         loading = LoadingDialog(path, self._open_loaded, self)
         if loading.exec() and self._denied is None:
             self.offer_recovery(restore)
-            if alert:
-                self.alert_notifications()
+            if ask_update:
+                self.offer_receive("Progetto aperto")
         elif self._denied is not None:
             show_access_denied(self, self._denied, self.user)
         elif loading.error:
@@ -1179,7 +1211,8 @@ class MainWindow(QMainWindow):
             return
         self._flush_editors()
         if self.reader is None:
-            self.reader = SrsReader(self.project, self.srs_edit_mode)
+            self.reader = SrsReader(self.project, self.srs_edit_mode, user_of=lambda: self.user)
+            self.reader.analysis_changed.connect(self._refresh_state)  # saved: a change to publish
             self.reader.open_element.connect(self._open_from_reader)
             self.reader.derive_requested.connect(self._derive_from_reader)
             self.reader.elements_deleted.connect(self._model_changed)
@@ -1814,7 +1847,7 @@ class MainWindow(QMainWindow):
         if dialog.moved_to:  # not merged into the main branch: the versions of this PC on a new branch
             path = self.project.path
             self._set_project(None)
-            self.open_project(str(path), confirmed=True, alert=False)
+            self.open_project(str(path), confirmed=True, ask_update=False)
             if self.project is not None and QMessageBox.question(
                     self, "Ricevi dal repository", f"Le tue versioni sono ora sul ramo «{dialog.moved_to}». Inviarlo "
                     "ora al repository, perché la DA lo integri?") == QMessageBox.Yes:
@@ -1824,7 +1857,7 @@ class MainWindow(QMainWindow):
             return
         path, result = self.project.path, dialog.result
         self._set_project(None)  # its files changed
-        self.open_project(str(path), confirmed=True, alert=False)
+        self.open_project(str(path), confirmed=True, ask_update=False)
         if self.project is None:
             return
         if result.renumbered:
@@ -1837,11 +1870,27 @@ class MainWindow(QMainWindow):
         news = (f" · {sum(waiting)} {'nuovo messaggio' if sum(waiting) == 1 else 'nuovi messaggi'} in "
                 f"{len(waiting)} {'discussione' if len(waiting) == 1 else 'discussioni'}" if waiting else "")
         self.statusBar().showMessage(f"Versioni ricevute dal ramo «{self.project.push_branch()}»{news}", 10000)
-        self.alert_notifications(f"Versioni ricevute dal ramo «{self.project.push_branch()}»")
         if dialog.merged and QMessageBox.question(
                 self, "Ricevi dal repository", "Le versioni sono state integrate in una nuova versione. Inviarla "
                 "ora al repository?") == QMessageBox.Yes:
             self.send_versions()
+
+    def offer_receive(self, event):
+        """On opening the project and on moving to another branch: the model may lack what the others sent to the
+        repository since; the user is told, and asked whether to receive it now. True if received."""
+        if not self.project or not self.project.remote():
+            return False
+        branch = self.project.current_branch()
+        if QMessageBox.question(
+                self, "Aggiorna il modello",
+                f"{event} sul ramo «{branch}».\n\nIl modello potrebbe non essere aggiornato: nel repository ci possono "
+                "essere versioni inviate da altri dopo l'ultima ricezione su questo PC.\n\nRicevere ora le ultime "
+                "versioni dal repository?") != QMessageBox.Yes:
+            self.statusBar().showMessage(f"Ramo «{branch}»: il modello potrebbe non essere aggiornato (Versioni › "
+                                         "Ricevi dal repository)", 10000)
+            return False
+        self.receive_versions()
+        return True
 
     def _ready_to_receive(self):
         """Before receiving: the changes saved and not published on the working branch are published (a version,
@@ -1867,7 +1916,7 @@ class MainWindow(QMainWindow):
         path = self.project.path
         self.project.discard_unpublished()
         self._set_project(None)  # its files changed
-        self.open_project(str(path), confirmed=True)
+        self.open_project(str(path), confirmed=True, ask_update=False)
         return self.project is not None
 
     def compare(self):
@@ -1888,7 +1937,8 @@ class MainWindow(QMainWindow):
         if setup.exec() != QDialog.Accepted:
             return
         self._close_overview()
-        self.overview_window = OverviewWindow(setup.overview, setup.shown(), self)
+        self.overview_window = OverviewWindow(setup.overview, setup.shown(), self, project=self.project,
+                                              credentials=credentials)
         self.overview_window.reconfigure.connect(self.open_overview)
         self.overview_window.show()
 
@@ -1923,7 +1973,7 @@ class MainWindow(QMainWindow):
         path = self.project.path
         run_busy(self, "Annullamento delle modifiche locali…", lambda _report: self.project.discard_unpublished())
         self._set_project(None)  # its files changed
-        self.open_project(str(path), confirmed=True, alert=False)
+        self.open_project(str(path), confirmed=True, ask_update=False)
         if self.project is not None:
             self.statusBar().showMessage("Modifiche locali scartate: il modello è all'ultima versione pubblicata",
                                          8000)
@@ -1961,7 +2011,7 @@ class MainWindow(QMainWindow):
             return dialog
         path, result, into = self.project.path, dialog.result, self.project.current_branch()
         self._set_project(None)  # its files changed
-        self.open_project(str(path), confirmed=True, alert=False)
+        self.open_project(str(path), confirmed=True, ask_update=False)
         if self.project is None:
             return dialog
         if result.renumbered:
@@ -2016,6 +2066,11 @@ class MainWindow(QMainWindow):
         if not self._ready_to_leave_branch():
             return
         path = self.project.path
+        # Another branch, at its last version (from «Passa a» or from «Checkout»): what the others sent since may be
+        # missing. Not a version chosen of it, nor a new branch.
+        repository, before = self.project.repository, self.project.current_branch()
+        latest = {repository.local_heads().get(request[1]), repository.remote_heads().get(request[1])} - {None}
+        moved = request[0] == "switch" or (request[0] == "checkout" and request[1] != before and request[2] in latest)
         try:
             if request[0] == "create":
                 _kind, name, sha, send = request
@@ -2032,7 +2087,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Rami", f"Cambio di ramo non riuscito: {exc}")
             return
         self._set_project(None)  # its files changed
-        self.open_project(str(path), confirmed=True)
+        self.open_project(str(path), confirmed=True, ask_update=False)
         if self.project is None:
             return
         if request[0] == "checkout":
@@ -2041,6 +2096,9 @@ class MainWindow(QMainWindow):
                                          (": le differenze sono da pubblicare" if restored else ""), 10000)
         else:
             self.statusBar().showMessage(f"Ora lavori sul ramo «{name}»", 6000)
+        if moved:
+            self.offer_receive("Passato")
+            return
         if send:
             dialog = PushDialog(self.project, git_credentials(self.user, self.project.remote()), self)
             dialog.exec()

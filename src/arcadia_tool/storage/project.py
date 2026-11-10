@@ -981,6 +981,9 @@ class Project:
                 self.delete_element(other.uuid)
         if element.kind == "derived_requirement":
             self._forget_derived(element)
+        if element.kind == "requirement":  # who had analysed it goes with it
+            for mark in [m for m in self.model.of_kind("analysis") if m.get("requirement") == uuid]:
+                self.delete_element(mark.uuid)
 
     def _forget_derived(self, derived):
         """A derived requirement removed: its SA-3 record no longer lists it. With the last one the item is no longer

@@ -222,7 +222,7 @@ def test_the_main_window_creates_a_branch_from_a_version_and_switches(app, serve
     window = main_window.MainWindow()
     window._set_project(mine)
     v1 = mine.versions()[-1].sha
-    window.open_project = lambda path, confirmed=False: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     window.branch_request(("create", "att/T2-odometria", v1, True))
     assert window.project.current_branch() == "att/T2-odometria" and names(window.project) == ["Protezione"]
     assert sent == ["att/T2-odometria"] and "att/T2-odometria" in remote_branches(url)
@@ -233,6 +233,57 @@ def test_the_main_window_creates_a_branch_from_a_version_and_switches(app, serve
     monkeypatch.setattr(window, "_ready_to_leave_branch", lambda: True)
     window.branch_request(("switch", "main"))
     assert window.project.current_branch() == "main" and names(window.project) == ["Localizzazione", "Protezione"]
+    window._set_project(None)
+    window.close()
+
+
+def test_opening_and_switching_branch_ask_to_receive(app, server, monkeypatch, no_modal_message_boxes):
+    import arcadia_tool.ui.main_window as main_window
+    from PySide6.QtWidgets import QMessageBox
+
+    url, download, reopen = server
+    mine = download("mine")
+    mine.switch_branch("att/T2", mine.versions()[0].sha)
+    mine = reopen(mine)
+    mine.switch_branch("main")
+    path = mine.path
+    mine.close()
+    window = main_window.MainWindow()
+    received = []
+    monkeypatch.setattr(window, "receive_versions", lambda: received.append(window.project.current_branch()))
+    window.open_project(str(path), confirmed=True, ask_update=True)
+    asked = [t for kind, t in no_modal_message_boxes if kind == "question" and "Ricevere ora" in t]
+    assert len(asked) == 1 and "«main»" in asked[0] and "potrebbe non essere aggiornato" in asked[0]
+    assert received == []  # «No»: only said in the status bar
+    assert "potrebbe non essere aggiornato" in window.statusBar().currentMessage()
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    window.branch_request(("switch", "att/T2"))
+    assert window.project.current_branch() == "att/T2" and received == ["att/T2"]
+    window.open_project(str(path), confirmed=True, ask_update=False)  # opened again by the tool (e.g. after «Ricevi»)
+    assert received == ["att/T2"]
+    window.start.recent_requested.emit(str(path))  # from the start page: asked too
+    assert received == ["att/T2", "att/T2"]
+    main_head = window.project.repository.local_heads()["main"]
+    window.branch_request(("checkout", "main", main_head, False))  # «Checkout» of another branch at its last version
+    assert window.project.current_branch() == "main" and received[-1] == "main"
+    older = window.project.versions()[-1].sha
+    window.branch_request(("checkout", "att/T2", older, False))
+    if older != window.project.repository.local_heads().get("att/T2"):
+        assert received[-1] == "main"  # a version chosen of it: not asked
+    window._set_project(None)
+    window.close()
+
+
+def test_a_project_without_repository_is_not_asked_to_receive(app, tmp_path, monkeypatch, no_modal_message_boxes):
+    import arcadia_tool.ui.main_window as main_window
+
+    p = Project.create(tmp_path / "p", "Prova")
+    p.close()
+    window = main_window.MainWindow()
+    window.open_project(str(tmp_path / "p"), confirmed=True, ask_update=True)
+    assert window.project is not None
+    assert not [t for kind, t in no_modal_message_boxes if "Ricevere ora" in t]
     window._set_project(None)
     window.close()
 
@@ -406,7 +457,7 @@ def test_the_window_of_the_branches_asks_for_the_checkout_of_a_version(app, serv
     assert branches.request == ("checkout", "main", v2, False)
     window = main_window.MainWindow()
     window._set_project(mine)
-    window.open_project = lambda path, confirmed=False: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     window.branch_request(branches.request)
     assert names(window.project) == ["Localizzazione", "Protezione"] and window.project.has_unpublished_changes()
     assert "le differenze sono da pubblicare" in window.statusBar().currentMessage()
@@ -442,7 +493,7 @@ def test_the_versions_of_the_model_show_the_local_version_to_publish_or_discard(
     # is not in it removed (saved, not saved, new files).
     window = main_window.MainWindow()
     window._set_project(mine)
-    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     extra = mine.path / "model" / "x" / "readings"
     extra.mkdir(parents=True, exist_ok=True)
     (extra / "lettura.yaml").write_text("kind: reading\nuuid: 1\n", encoding="utf-8")

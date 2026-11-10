@@ -28,7 +28,7 @@ MODEL_TAB, VIEWS_TAB = 0, 1
 TREE_FIRST = ("external_actor",)
 # Not in the tree of the elements: the views have their own tab, the messages and the readings are in the sheet
 # of their ADR or CQ.
-NOT_IN_TREE = (DIAGRAM, "message", "reading")
+NOT_IN_TREE = (DIAGRAM, "message", "reading", "analysis")
 
 
 TAB_ICONS = ("mdi6.file-tree-outline", "mdi6.vector-polyline")

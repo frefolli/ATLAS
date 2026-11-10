@@ -137,7 +137,7 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     rect = reader.view.visualRect(index)
     *_, actions, _ = reader.delegate._layout(e["clause"], rect)
     buttons = {name: box for name, _, box in actions[1]}
-    assert set(buttons) == {"functions", "derive", "share", "exclude"}
+    assert [name for name, _, _box in actions[1]] == ["functions", "derive", "share", "exclude", "analyzed"]
     opened = []
     reader.open_element.connect(opened.append)
     _click(reader.view, buttons["functions"].center())  # «Mappa a Funzione» of the clause row

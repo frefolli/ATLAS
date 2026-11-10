@@ -215,8 +215,8 @@ def test_the_buttons_of_a_clause_in_the_srs_catalogue(app, tmp_path):
     from arcadia_tool.ui.srs_reader import ROW_ACTIONS, SrsReader
     from arcadia_tool.ui.model_tree import SHARED_CLAUSES, UNMAPPED_CLAUSES
 
-    assert [name for name, _l, _t in ROW_ACTIONS["clause"]] == ["functions", "derive", "share", "exclude"]
-    assert [label for _n, label, _t in ROW_ACTIONS["clause"]][2:] == ["Condividi", "Escludi"]
+    assert [name for name, _l, _t in ROW_ACTIONS["clause"]] == ["functions", "derive", "share", "exclude", "analyzed"]
+    assert [label for _n, label, _t in ROW_ACTIONS["clause"]][2:] == ["Condividi", "Escludi", "Non analizzato"]
     p, x = project(tmp_path)
     reader = SrsReader(p)
     asked = []

@@ -2,7 +2,7 @@
 the view itself, read only, with what is approved told from what is only on the branches (OverviewWindow)."""
 from html import escape
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QEvent, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem, QPushButton, QSplitter, QTextBrowser, QTreeWidget, QTreeWidgetItem,
@@ -13,8 +13,8 @@ from arcadia_tool.model.discussions import SUBJECTS, when
 from arcadia_tool.model.element import is_empty, natural_key
 from arcadia_tool.model.schema import GROUPS, KINDS, KINDS_BY_NAME, REF, REFS, STR, TABLE, TEXT
 from arcadia_tool.storage.overview import (APPROVED, CHANGED, DIVERGENT, NEW, NOT_SHOWN, REMOVED, STATE_LABELS, STATES,
-                                           OverviewBuilder)
-from arcadia_tool.ui.branches import FetchWorker
+                                           OverviewBuilder, changes_since)
+from arcadia_tool.ui.branches import FetchWorker, finish_in_background
 from arcadia_tool.ui.diff_view import CSS, _cell_text
 from arcadia_tool.ui.model_tree import TREE_FIRST
 from arcadia_tool.ui.theme import CHANGE_BG, CHANGE_COLORS, GROUP_ICONS, MUTED, icon, kind_icon
@@ -460,12 +460,16 @@ def entry_html(overview, entry, shown):
 
 
 class OverviewWindow(QDialog):
-    """The view, read only: a window of its own, the project stays usable. reconfigure: «Cambia selezione…»."""
+    """The view, read only: a window of its own, the project stays usable. reconfigure: «Cambia selezione…».
+
+    project: the versions of the branches are checked to be still those seen (when the window is activated, and
+    after downloading the branches with «Verifica i rami»); if not, a notice says what changed."""
     reconfigure = Signal()
 
-    def __init__(self, overview, shown, parent=None):
+    def __init__(self, overview, shown, parent=None, project=None, credentials=None):
         super().__init__(parent)
         self.overview, self.shown = overview, set(shown)
+        self.project, self.credentials, self.worker = project, credentials or {}, None
         self.setWindowTitle("Vista d'insieme (sola lettura)")
         self.setWindowFlag(Qt.WindowMaximizeButtonHint)
         self.setModal(False)
@@ -475,9 +479,26 @@ class OverviewWindow(QDialog):
                         f"Rami sovrapposti: <b>{escape(names)}</b>", wordWrap=True)
         change = QPushButton(icon("mdi6.tune-variant"), "Cambia selezione o aggiorna…")
         change.clicked.connect(lambda _=False: self.reconfigure.emit())
+        self.verify_button = QPushButton(icon("mdi6.cloud-sync-outline"), "Verifica i rami")
+        self.verify_button.setToolTip("Scarica i rami dal repository e controlla che le loro versioni siano ancora "
+                                      "quelle della vista")
+        self.verify_button.clicked.connect(lambda _=False: self.verify())
+        self.verify_button.setVisible(project is not None)
         top = QHBoxLayout()
         top.addWidget(header, 1)
+        top.addWidget(self.verify_button)
         top.addWidget(change)
+        self.stale_label = QLabel(wordWrap=True)
+        self.stale_label.setStyleSheet(f"color: {STATE_COLORS[DIVERGENT]};")
+        self.stale_button = QPushButton(icon("mdi6.refresh"), "Ricrea la vista…")
+        self.stale_button.clicked.connect(lambda _=False: self.reconfigure.emit())
+        self.stale_box = QWidget()
+        self.stale_box.setStyleSheet(f"background: {STATE_BG[DIVERGENT]};")
+        stale_layout = QHBoxLayout(self.stale_box)
+        stale_layout.addWidget(self.stale_label, 1)
+        stale_layout.addWidget(self.stale_button)
+        self.stale_box.hide()
+        self.changes = []
         counts = {s: 0 for s in STATES}
         included = [e for e in overview.shown() if e.uuid in self.shown]
         for e in included:
@@ -516,6 +537,7 @@ class OverviewWindow(QDialog):
         split.setSizes([480, 720])
         layout = QVBoxLayout(self)
         layout.addLayout(top)
+        layout.addWidget(self.stale_box)
         if overview.excluded:
             notice = "; ".join(f"«{s.name}» {why}" for s, why in overview.excluded)
             layout.addWidget(QLabel(f"Rami esclusi: {escape(notice)}", objectName="muted", wordWrap=True))
@@ -524,6 +546,73 @@ class OverviewWindow(QDialog):
         self._items = {}
         self._fill(included)
         self._apply_filter()
+
+    # --- still the versions seen? ----------------------------------------------------------------------------------
+
+    def check(self):
+        """The branches as they are now (as last downloaded, and on this PC) against those of the view: the notice
+        shown if they differ. The changes, [(branch, what)]."""
+        if self.project is None:
+            return []
+        try:
+            self.changes = changes_since(self.project, self.overview)
+        except Exception:
+            self.changes = []  # the repository not readable now: checked again later
+        if self.changes:
+            what = "; ".join(f"«{escape(b)}» {escape(w)}" for b, w in self.changes)
+            self.stale_label.setText(f"<b>La vista non corrisponde più ai rami:</b> {what}. Ciò che mostra è quello "
+                                     "delle versioni viste quando è stata creata.")
+        self.stale_box.setVisible(bool(self.changes))
+        return self.changes
+
+    def verify(self):
+        """«Verifica i rami»: downloaded from the repository (if any), then checked."""
+        if not self.project.remote():
+            self._verified()
+            return
+        self.verify_button.setEnabled(False)
+        self.verify_button.setText("Download dei rami…")
+        self.worker = FetchWorker(self.project, self.credentials)
+        self.worker.done.connect(self._verified)
+        self.worker.failed.connect(self._verify_failed)
+        self.worker.start()
+
+    def _end_verify(self):
+        if self.worker is not None:
+            self.worker.wait()
+            self.worker = None
+        self.verify_button.setEnabled(True)
+        self.verify_button.setText("Verifica i rami")
+
+    def _verified(self):
+        self._end_verify()
+        if not self.check():
+            self.stale_box.setVisible(True)
+            self.stale_label.setText("Le versioni dei rami sono ancora quelle della vista.")
+            self.stale_box.setStyleSheet(f"background: {STATE_BG[APPROVED]};")
+            self.stale_button.hide()
+        else:
+            self.stale_box.setStyleSheet(f"background: {STATE_BG[DIVERGENT]};")
+            self.stale_button.show()
+
+    def _verify_failed(self, message):
+        self._end_verify()
+        self.stale_box.setVisible(True)
+        self.stale_box.setStyleSheet(f"background: {STATE_BG[DIVERGENT]};")
+        self.stale_button.hide()
+        self.stale_label.setText(f"Verifica non riuscita: {escape(message)}")
+
+    def event(self, e):
+        if e.type() == QEvent.WindowActivate and self.worker is None and self.project is not None:
+            if self.check():  # what changed since, on this PC (e.g. a version published, a branch received)
+                self.stale_box.setStyleSheet(f"background: {STATE_BG[DIVERGENT]};")
+                self.stale_button.show()
+        return super().event(e)
+
+    def done(self, result):
+        if self.worker is not None and self.worker.isRunning():
+            finish_in_background(self.worker)
+        super().done(result)
 
     def _fill(self, included):
         bold = QFont()

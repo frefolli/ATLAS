@@ -6,6 +6,33 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.11.0] - 2026-11-10
+
+### Aggiunto
+- **Clausole SRS «Analizzato».** Nel catalogo delle voci SRS ogni clausola ha, a destra di «Escludi», il
+  pulsante «Non analizzato»: un membro di un team lo clicca per segnare di aver preso in carico la clausola, e
+  ricliccandolo toglie il proprio segno. Se la segnano altre persone (dello stesso team o di altri) il pulsante
+  mostra quante sono, per esempio «Analizzato (2)»; verde pieno se c'è anche il tuo segno. Col mouse sopra si
+  legge chi l'ha analizzata, con team, data e ora. I segni sono salvati subito nel modello, uno per persona e
+  clausola, e si pubblicano come le altre modifiche: quelli fatti in parallelo su rami diversi si sommano
+  all'integrazione.
+- **Aggiornamento del modello all'apertura e al cambio di ramo.** Ogni volta che apri un progetto con un
+  repository remoto (all'avvio, da «Apri», dai recenti, dalla pagina iniziale) o passi a un altro ramo dalla
+  finestra Rami («Passa a», o «Checkout» dell'ultima versione di un altro ramo), ATLAS avvisa che il modello
+  potrebbe non essere aggiornato e chiede se ricevere subito le ultime versioni dal repository. Se rispondi di
+  no, l'avviso resta nella barra di stato. Al checkout di una versione precedente la domanda non viene fatta.
+- **Vista d'insieme: controllo delle versioni dei rami.** La vista segnala quando i rami non sono più alle
+  versioni con cui è stata creata (versioni nuove, ramo spostato o eliminato): il controllo avviene ogni volta
+  che torni sulla finestra e, con «Verifica i rami», dopo aver scaricato i rami dal repository. «Ricrea la
+  vista…» la ricostruisce con le versioni attuali.
+
+### Modificato
+- **Notifiche senza avviso all'apertura.** All'apertura del progetto e dopo «Ricevi» non compare più la finestra
+  che invitava ad aprire le notifiche. Al suo posto la campanella mostra un pallino rosso quando ci sono notifiche
+  da leggere, e la barra in basso, a sinistra dell'indicazione di salvataggio, ne riporta il numero (per i membri
+  della Design Authority anche quante sono per la DA). Il numero scende man mano che le notifiche vengono segnate
+  come lette; un clic sull'indicazione apre le Notifiche.
+
 ## [0.10.1] - 2026-11-10
 
 ### Aggiunto
@@ -941,7 +968,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.10.1...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.11.0...main
+[0.11.0]: https://github.com/salvodesi/ATLAS/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/salvodesi/ATLAS/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/salvodesi/ATLAS/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/salvodesi/ATLAS/compare/v0.9.4...v0.9.5

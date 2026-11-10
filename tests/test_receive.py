@@ -401,7 +401,7 @@ def test_the_windows_of_receiving_and_keeping_the_changes(tmp_path, monkeypatch)
     window = mw.MainWindow()
     window.user = None
     window._set_project(mine)
-    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     monkeypatch.setattr(mw.UnpublishedDialog, "exec", lambda box: box.keep_button.click())
 
     def run(d):

@@ -688,6 +688,16 @@ KINDS = (
         Field("read_at", "Letta il"),
         Field("version", "Versione letta", hidden=True),  # see notifications.fingerprint
     )),
+    # «Analizzato»: a member of a team has taken an SRS clause in charge (see model.analysis). One per person and
+    # clause, a file of its own so that the merge keeps them all; shown on the row of the clause, not in the tree.
+    Kind("analysis", "Presa in carico", "Prese in carico delle voci SRS", "analyses", "Requisiti", "",
+         "", (
+             Field("requirement", "Voce SRS", REF, ref_kinds=("requirement",)),
+             Field("member", "Membro"),
+             Field("account", "ID account", hidden=True),
+             Field("team", "Team", REF, ref_kinds=("team",)),
+             Field("marked_at", "Analizzata il"),
+         )),
     # A graphic view of the SA, composed by the user with elements of the model (see model.diagrams): shown in the
     # model tree under the SA it belongs to, not as a kind of its own.
     Kind("diagram", "Vista grafica", "Viste grafiche", "sa/views", "System Analysis", "", "", (

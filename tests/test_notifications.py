@@ -160,16 +160,19 @@ def test_the_bell_the_panel_the_alert_the_sheet_and_the_tree(app, tmp_path, monk
     from arcadia_tool.ui.model_tree import UNREAD_ROLE
     item = window.tree._items[adr.uuid]
     assert item.text(1) == "1 nuovo" and item.data(0, UNREAD_ROLE)  # the blue dot on its left, the new message
-    box = window.alert_notifications("Versioni ricevute")  # explicit, not modal
-    assert box.isVisible() and "Versioni ricevute. Hai 1 ADR che riguarda i domini del tuo team e 1 messaggio " \
-        "nuovo nelle discussioni da leggere." == box.text()
-    box.close()
-    # The panel: read, unread again, all read; open.
+    # No alert: the red dot on the bell and the count in the status bar, a click on it opens the panel.
+    assert not hasattr(window, "alert_notifications")
+    status = window.status_notifications.text()
+    assert "<b>2</b> notifiche da leggere" in status and "DA" not in status and "href" in status
+    assert window.status_notifications in window.statusBar().findChildren(type(window.status_notifications))
+    # The panel: read, unread again, all read; open. The count of the status bar follows.
     dialog = ui.NotificationsDialog(p, window.user)
+    dialog.changed.connect(window._show_notifications_count)
     assert dialog.summary.text() == "2 notifiche non lette" and dialog.tree.topLevelItemCount() == 2
     dialog.tree.topLevelItem(0).setSelected(True)
     dialog.read_button.click()
     assert dialog.summary.text() == "1 notifica non letta"
+    assert "<b>1</b> notifica da leggere" in window.status_notifications.text()
     dialog.tree.topLevelItem(1).setSelected(True)  # the ADR, now read: after the unread message
     assert dialog.unread_button.isEnabled()
     dialog.unread_button.click()
@@ -177,6 +180,8 @@ def test_the_bell_the_panel_the_alert_the_sheet_and_the_tree(app, tmp_path, monk
     dialog.only_unread.setChecked(True)
     dialog.all_button.click()
     assert dialog.summary.text() == "Nessuna notifica non letta" and dialog.tree.topLevelItemCount() == 0
+    assert "Nessuna notifica da leggere" in window.status_notifications.text()
+    assert window.notifications_action.text() == "Notifiche"
     dialog.only_unread.setChecked(False)
     n.mark_unread(p, window.user, n.collect(p, window.user)[0])
     dialog.fill()
@@ -223,9 +228,16 @@ def test_the_design_authority_is_told_every_adr_not_opened_by_it(app, tmp_path):
     assert dialog.tree.topLevelItemCount() == 2  # ADR-044 unread, ADR-045 read
     of_mario = ui.NotificationsDialog(p, mario).tabs  # not of the DA: no tab for it
     assert [of_mario.tabText(i) for i in range(of_mario.count())] == ["Tutte (2)", "Il mio team (2)", "Messaggi"]
-    box = ui.alert(None, p, anna, lambda: None)
-    assert box.text() == "Hai 1 ADR da esaminare come Design Authority da leggere."
-    box.close()
+    # The status bar of a member of the DA: those for the DA too.
+    from arcadia_tool.accounts import Account
+    from arcadia_tool.ui.main_window import MainWindow
+    window = MainWindow()
+    window.user = Account(id=ANNA, first_name="Anna", last_name="Bianchi", username="anna", email="a@b.it")
+    window._set_project(p)
+    window._refresh_state()
+    assert "<b>1</b> notifica da leggere (di cui 1 per la DA)" in window.status_notifications.text()
+    window._set_project(None)
+    window.close()
 
 
 def test_the_notifications_are_worked_out_once_for_a_state(tmp_path):

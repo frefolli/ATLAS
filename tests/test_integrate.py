@@ -161,7 +161,7 @@ def test_the_window_of_the_branches_integrates_and_only_the_da_into_main(app, tm
     # The main window: the window of the merge, applied; the project opened again on master.
     window = mw.MainWindow()
     window._set_project(p)
-    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     window.user = SimpleNamespace(id="b" * 32, full_name="Mario Rossi", email="m@x.it", username="mario")
     assert window.branch_request(dialog.request) is None  # Mario: not into master, also from here
     window.user = SimpleNamespace(id="a" * 32, full_name="Anna Bianchi", email="a@x.it", username="anna")
@@ -675,7 +675,7 @@ def test_the_window_of_the_selective_integration(app, tmp_path, monkeypatch):
     mario = SimpleNamespace(id="b" * 32, full_name="Mario Rossi", email="m@x.it", username="mario")
     window = mw.MainWindow()
     window._set_project(p)
-    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     p.switch_branch("att/T9", p.repository.head())  # a team integrates in a branch of its own
     p = reopen(p)
     window._set_project(p)
@@ -781,7 +781,7 @@ def test_the_comparison_integrates_what_is_selected(app, tmp_path, monkeypatch):
     p.save()
     p.publish("DA", AUTHOR)
     window = mw.MainWindow()
-    window.open_project = lambda path, confirmed=False, alert=True: window._set_project(Project.open(path))
+    window.open_project = lambda path, confirmed=False, **_kw: window._set_project(Project.open(path))
     window._set_project(p)
     window.user = SimpleNamespace(id="a" * 32, full_name="Anna", email="a@x.it", username="anna")
     done = []

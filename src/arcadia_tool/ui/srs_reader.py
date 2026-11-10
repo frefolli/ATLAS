@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFram
                                QTabBar, QToolTip, QVBoxLayout, QWidget)
 
 from arcadia_tool.importers.srs_pdf import chapter_of_item
+from arcadia_tool.model.analysis import is_mine, mark_denied, marks_by_requirement, toggle, who_text
 from arcadia_tool.model.coverage import derivable
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.ui.element_editor import image_size, load_pixmap
@@ -87,6 +88,10 @@ PAD_TOP, PAD_BOTTOM, HEADING_PAD_TOP = 6, 8, 16
 CHIPS_WIDTH = 140
 CHIP_GAP = 4
 WRAP = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
+# «Analizzato» of a clause (see model.analysis): its button shows who has taken it in charge. Its colours: (border and
+# text, background) when nobody has, when others have, when the user has.
+ANALYZED = "analyzed"
+ANALYZED_STYLES = {"none": (MUTED, "white"), "others": ("#15803D", "#ECFDF3"), "mine": ("white", "#15803D")}
 # Actions in the row of a section (domains, A4) and of a clause (system functions, derived requirements).
 ROW_ACTIONS = {"section": (("domains", "Domini…", "Alloca la sezione ai domini funzionali (principale e "
                                                    "contributori)"),),
@@ -95,7 +100,9 @@ ROW_ACTIONS = {"section": (("domains", "Domini…", "Alloca la sezione ai domini
                           ("share", "Condividi", "Propone di condividere la clausola tra più domini: crea l'ADR "
                                                  "già compilata (Clausole condivise)"),
                           ("exclude", "Escludi", "Propone di non mappare la clausola su nessun dominio: crea l'ADR "
-                                                 "già compilata (Clausole non mappate)")),
+                                                 "già compilata (Clausole non mappate)"),
+                          (ANALYZED, "Non analizzato", "Segna che hai preso in carico la clausola; un altro clic "
+                                                      "toglie il tuo segno")),
                "item": (("derive", "Deriva…", "Deriva uno o più requisiti dalla voce (punto di elenco, riga di "
                                               "tabella…); la tracciabilità alle funzioni è quella della clausola"),)}
 ACTION_GAP = 6
@@ -137,6 +144,8 @@ class ItemDelegate(QStyledItemDelegate):
         self.domain_badges = None
         # function(element) → [(text, style)]: the functions and derived requirements of a clause, as badges
         self.link_badges = None
+        # function(element) → (label, style of ANALYZED_STYLES, who has analysed it): the button «Analizzato»
+        self.analysis = None
         self._sizes = {}
         self._pixmaps = {}
         self._figure_sizes = {}  # (width, height) of the figures: their layout does not decode them
@@ -318,6 +327,9 @@ class ItemDelegate(QStyledItemDelegate):
             x, buttons = right, []
             for name, label, _ in reversed(ROW_ACTIONS[kind]):
                 w = self.metrics["chip"].horizontalAdvance(label) + 22
+                if name == ANALYZED and self.analysis is not None:  # as wide as «Non analizzato» at least: the
+                    label = self.analysis(element)[0]               # other buttons stay where they are
+                    w = max(w, self.metrics["chip"].horizontalAdvance(label) + 22)
                 x -= w
                 buttons.insert(0, (name, label, QRect(x, line_top, w, line_h)))
                 x -= ACTION_GAP
@@ -383,6 +395,8 @@ class ItemDelegate(QStyledItemDelegate):
     def helpEvent(self, event, view, option, index):
         if event.type() == QEvent.ToolTip:
             tip = self.badge_tip(index, event.pos())
+            if tip is None and self.analysis is not None and self.button_at(index, event.pos()) == ANALYZED:
+                tip = self.analysis(index.data(ELEMENT_ROLE))[2]
             if tip:
                 QToolTip.showText(event.globalPos(), tip, view)
                 return True
@@ -489,10 +503,14 @@ class ItemDelegate(QStyledItemDelegate):
                 painter.drawText(text_box, Qt.AlignLeft | Qt.AlignVCenter,
                                  self.metrics["chip"].elidedText(text, Qt.ElideRight, text_box.width()))
             painter.setRenderHint(QPainter.Antialiasing)
-            for _, label, box in buttons:
-                painter.setPen(QColor(ACCENT))
-                painter.setBrush(QColor("white"))
+            for name, label, box in buttons:
+                fg, bg = ACCENT, "white"
+                if name == ANALYZED and self.analysis is not None:
+                    fg, bg = ANALYZED_STYLES[self.analysis(element)[1]]
+                painter.setPen(QColor(fg if fg != "white" else bg))
+                painter.setBrush(QColor(bg))
                 painter.drawRoundedRect(box.adjusted(0, 0, -1, -1), 6, 6)
+                painter.setPen(QColor(fg))
                 painter.drawText(box, Qt.AlignCenter, label)
         painter.setPen(QColor("#EEF1F5"))
         painter.drawLine(rect.x() + MARGIN_X, rect.bottom(), rect.right() - MARGIN_X, rect.bottom())
@@ -517,10 +535,13 @@ class SrsReader(QWidget):
     elements_changed = Signal(list)  # elements changed from a row (domains of a section, functions of a clause)
     elements_created = Signal()  # derived requirements created from a row
     clause_declared = Signal(str, str)  # «Condividi» or «Escludi» of a clause: the list (see model_tree), its uuid
+    analysis_changed = Signal()  # «Analizzato» of a clause: the mark saved (a change to publish)
 
-    def __init__(self, project, edit_mode=None):
+    def __init__(self, project, edit_mode=None, user_of=None):
         super().__init__()
         self.project = project
+        self.user_of = user_of or (lambda: None)  # the user logged in now (who marks «Analizzato»)
+        self._marks = {}
         self.chapter = None
         self._go_to_later = None  # asked while not visible: its rows are laid out only when shown
         self._pending_refresh = True
@@ -582,6 +603,7 @@ class SrsReader(QWidget):
         self.delegate.links = self._links_text
         self.delegate.domain_badges = self._domain_badges
         self.delegate.link_badges = self._link_badges
+        self.delegate.analysis = self._analysis
         self.delegate.action_clicked.connect(self.run_action)
         self.view.setItemDelegate(self.delegate)
         self._links = {}
@@ -603,7 +625,8 @@ class SrsReader(QWidget):
                       "Clausole: i badge sono le funzioni mappate (azzurre; grigie se mappate alla sezione) e i "
                       "requisiti derivati (viola); «Mappa a Funzione» le mappa "
                       "alle funzioni di sistema, «Deriva…» crea uno o più requisiti derivati, «Condividi» ed «Escludi» "
-                      "creano l'ADR per condividerle tra domini o non mapparle. Doppio clic apre la voce. "
+                      "creano l'ADR per condividerle tra domini o non mapparle, «Non analizzato» segna che l'hai presa "
+                      "in carico (col mouse sopra: chi l'ha analizzata). Doppio clic apre la voce. "
                       "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
                       "modalità modifica, Canc elimina le voci selezionate.",
                       objectName="muted")
@@ -832,6 +855,37 @@ class SrsReader(QWidget):
             if d.get("parent"):
                 derived.setdefault(d.get("parent"), []).append(d)
         self._links = {"functions": functions, "derived": derived}
+        self._marks = marks_by_requirement(self.project.model)
+
+    def _analysis(self, element):
+        """The button «Analizzato» of a clause: (label, style, who has analysed it). «Non analizzato» if nobody has;
+        with more than one person, how many."""
+        marks = self._marks.get(element.uuid, [])
+        if not marks:
+            return "Non analizzato", "none", "Nessuno ha ancora analizzato questa clausola.\nClic: la segni come " \
+                                               "analizzata da te."
+        user = self.user_of()
+        mine = any(is_mine(m, user) for m in marks)
+        label = "Analizzato" if len(marks) == 1 else f"Analizzato ({len(marks)})"
+        click = "Clic: togli il tuo segno." if mine else "Clic: la segni come analizzata anche da te."
+        people = "1 persona" if len(marks) == 1 else f"{len(marks)} persone"
+        return label, "mine" if mine else "others", (f"Analizzata da {people}:\n{who_text(self.project.model, marks)}"
+                                                    f"\n\n{click}")
+
+    def toggle_analysis(self, item):
+        """«Analizzato» clicked: the mark of the user added or taken back, and saved at once (only it)."""
+        from arcadia_tool.ui.busy import save_project
+
+        user = self.user_of()
+        denied = mark_denied(self.project.model, user)
+        if denied:
+            QMessageBox.information(self, "Analizzato", denied)
+            return
+        changed, _marked = toggle(self.project, item, user)
+        save_project(self, self.project, changed)
+        self._marks = marks_by_requirement(self.project.model)
+        self.view.viewport().update()
+        self.analysis_changed.emit()
 
     def _domain(self, uuid):
         """A domain as the rows name it: code and name («DF03 - Movement Authority Management»)."""
@@ -923,6 +977,9 @@ class SrsReader(QWidget):
             if chosen is None:
                 return
             changed = self.project.trace_item_to_functions(item, chosen)
+        elif name == ANALYZED:
+            self.toggle_analysis(item)
+            return
         elif name in ("share", "exclude"):  # an ADR for the clause, created and opened by the window
             from arcadia_tool.ui.model_tree import SHARED_CLAUSES, UNMAPPED_CLAUSES
             self.clause_declared.emit(SHARED_CLAUSES if name == "share" else UNMAPPED_CLAUSES, uuid)

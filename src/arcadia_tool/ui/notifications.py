@@ -1,11 +1,11 @@
 """«Notifiche»: the ADR proposed by other teams that concern a domain of the team of the user (created, changed,
 deleted), every ADR for the members of the Design Authority, and the messages of their discussions (see
 model.notifications), in tabs: all, for my team, as Design Authority, messages. A notification is opened (its
-sheet), marked read, or unread again to look at it again; the alert at the opening of the project and after
-«Ricevi» says how many are unread."""
+sheet), marked read, or unread again to look at it again; the red dot of the bell and the count in the status bar
+of the main window say how many are unread (changed: emitted as they are marked)."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
                                QPushButton, QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from arcadia_tool.model import notifications as n
@@ -24,6 +24,7 @@ ALL = "all"
 class NotificationsDialog(QDialog):
     """The notifications of the user. open_requested: the uuid of the ADR or CQ to show (the window closes)."""
     open_requested = Signal(str)
+    changed = Signal()  # marked read or unread
 
     def __init__(self, project, user, parent=None):
         super().__init__(parent)
@@ -142,6 +143,7 @@ class NotificationsDialog(QDialog):
             elif not read and x.opened:
                 n.mark_unread(self.project, self.user, x)
         self.fill()
+        self.changed.emit()
 
     def mark_all(self):
         self.mark(True, [x for x in self.notifications if x.unread])
@@ -158,28 +160,3 @@ class NotificationsDialog(QDialog):
         self.open_requested.emit(chosen[0].subject)
         self.accept()
 
-
-def alert(parent, project, user, open_panel, after=""):
-    """The explicit alert of the notifications unread (not modal: the work goes on). after: what has just happened
-    («Versioni ricevute»). Returns the box, or None if nothing is unread."""
-    unread = [x for x in n.collect(project, user) if x.unread]
-    if not unread:
-        return None
-    team = sum(1 for x in unread if n.TEAM in x.scopes)
-    da = sum(1 for x in unread if n.DA in x.scopes and n.TEAM not in x.scopes)
-    messages = sum(1 for x in unread if n.MESSAGES in x.scopes)
-    parts = [f"{team} {'ADR che riguarda' if team == 1 else 'ADR che riguardano'} i domini del tuo team"
-             if team else "", f"{da} ADR da esaminare come Design Authority" if da else "",
-             f"{messages} {'messaggio nuovo' if messages == 1 else 'messaggi nuovi'} nelle discussioni"
-             if messages else ""]
-    parts = [p for p in parts if p]
-    listed = ", ".join(parts[:-1]) + " e " + parts[-1] if len(parts) > 1 else parts[0]
-    box = QMessageBox(QMessageBox.Question, "Notifiche", (f"{after}. " if after else "") + "Hai " + listed +
-                      " da leggere.", parent=parent)
-    box.setInformativeText("Vuoi aprire le Notifiche?")
-    opened = box.addButton("Apri le Notifiche", QMessageBox.AcceptRole)
-    box.addButton("Più tardi", QMessageBox.RejectRole)
-    box.setWindowModality(Qt.NonModal)
-    box.buttonClicked.connect(lambda button: open_panel() if button is opened else None)
-    box.show()
-    return box

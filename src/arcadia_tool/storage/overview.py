@@ -19,7 +19,7 @@ APPROVED, CHANGED, NEW, REMOVED, DIVERGENT = "approved", "changed", "new", "remo
 STATES = (APPROVED, CHANGED, NEW, REMOVED, DIVERGENT)
 STATE_LABELS = {APPROVED: "Approvato", CHANGED: "Modificato", NEW: "Nuovo", REMOVED: "Rimosso", DIVERGENT: "Divergente"}
 # Not elements of their own in the view: the messages are in the sheet of their ADR or CQ, the readings are no more.
-NOT_SHOWN = ("message", "reading")
+NOT_SHOWN = ("message", "reading", "analysis")  # «Analizzato»: on the rows of the SRS clauses
 
 
 @dataclass(frozen=True)
@@ -209,3 +209,26 @@ class OverviewBuilder:
                     entry.proposals.append(found)
         model = Model(e.element for e in entries.values())
         return Overview(main, overlaid, entries, excluded, model)
+
+
+def changes_since(project, overview):
+    """What the branches of the view (the base, those overlaid, those that could not be) are now, if not the versions
+    seen when it was made: [(branch, what)], as last downloaded from the repository and on this PC."""
+    repository = project.repository
+    local, remote = repository.local_heads(), repository.remote_heads()
+    gone = set(project.branches_to_delete())
+    found = []
+    for s in [overview.main, *overview.branches, *(s for s, _why in overview.excluded)]:
+        now = None if s.name in gone else remote.get(s.name) or local.get(s.name)
+        if now == s.sha:
+            continue
+        if now is None:
+            found.append((s.name, "non c'è più"))
+            continue
+        try:
+            new = len(repository.versions_between(s.sha, now))
+        except Exception:
+            new = 0
+        found.append((s.name, f"{new} {'versione nuova' if new == 1 else 'versioni nuove'} ({s.sha[:8]} → {now[:8]})"
+                      if new else f"è a un'altra versione ({s.sha[:8]} → {now[:8]})"))
+    return found
