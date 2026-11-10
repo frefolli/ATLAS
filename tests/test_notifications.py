@@ -283,6 +283,12 @@ def test_the_state_is_new_until_the_user_of_this_pc_opens_it(app, tmp_path):
     dialog.unread_button.click()
     assert dialog.tree.topLevelItem(0).text(ui.STATE) == "Nuova"
     assert dialog.tree.topLevelItem(1).text(ui.DETAIL) == "Messaggio di Luca Guglielmo: Un parere?"
+    header = [dialog.tree.headerItem().text(i) for i in range(dialog.tree.columnCount())]
+    assert header == ["ID", "Titolo", "Descrizione", "Tipo", "Stato", "Data e ora"]
+    rows = {dialog.tree.topLevelItem(i).text(ui.KIND): dialog.tree.topLevelItem(i) for i in range(2)}
+    assert set(rows) == {"ADR", "Messaggio (ADR)"}
+    for row in rows.values():
+        assert row.text(ui.IDENT) == adr.get("id") and row.text(ui.TITLE) == adr.get("title")
 
 
 def test_the_design_authority_removes_the_readings_of_the_earlier_versions(app, tmp_path, monkeypatch):

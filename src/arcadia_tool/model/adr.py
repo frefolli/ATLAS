@@ -7,7 +7,7 @@ from arcadia_tool.model.schema import (ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_DOMAI
                                        ADR_EXCLUSION, ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN,
                                        ADR_OWNER,
                                        ADR_PRODUCT_OPTION,
-                                       ADR_SECTION, ADR_SPLIT_DOMAIN, KINDS_BY_NAME)
+                                       ADR_SECTION, ADR_SHARED, ADR_SPLIT_DOMAIN, ADR_UNMAPPED, KINDS_BY_NAME)
 from arcadia_tool.model.teams import person_key
 
 PROPOSED, IN_REVIEW, REVIEWED, DECIDED = "Proposta", "In revisione DA", "Revisionato DA", "Decisa"
@@ -194,10 +194,101 @@ def exclusion_defaults(model, item, domain):
             "title": f"Esclusione di {item.get('id') or ''} da {domain.get('id') or model.label(domain)}"}
 
 
+# --- clauses shared among domains, clauses mapped to no domain (declared by the teams) --------------------------------
+
+CLAUSE_FIELDS = {ADR_SHARED: "shared_items", ADR_UNMAPPED: "unmapped_items"}
+# The reason of a clause mapped to no domain, proposed from its category of chapter 9.
+UNMAPPED_FROM_CATEGORY = (("Terra", "Requisito di terra"), ("Definizione", "Informativa o definizione"),
+                          ("Informativa", "Informativa o definizione"))
+
+
+def clauses_of(model, adr):
+    """The SRS clauses an ADR of sharing or of a clause mapped to no domain is about."""
+    uuids = adr.get(CLAUSE_FIELDS.get(adr.get("adr_type"), "")) or []
+    return [e for e in (model.get(u) for u in uuids) if e is not None]
+
+
+def shared_primary(model, adr):
+    """The principal domain the clauses to share have (of the first that has one)."""
+    return next((d for d in (principal_of(model, e) for e in clauses_of(model, adr)) if d), None)
+
+
+def shared_contributors(model, adr):
+    """The contributing domains the clauses to share have now; once the sharing is applied, those they had then."""
+    if adr.get("share_applied"):
+        return list(adr.get("contributors_before_share") or [])
+    result = []
+    for item in clauses_of(model, adr):
+        part = allocated_part(model, item)
+        result += [d for d in (part.get("contributing_domains") or [] if part is not None else []) if d not in result]
+    return result
+
+
+def unmapped_sections(model, adr):
+    """The sections containing the clauses mapped to no domain."""
+    found = []
+    for item in clauses_of(model, adr):
+        section = section_of(model, item)
+        if section is not None and section.uuid not in found:
+            found.append(section.uuid)
+    return found
+
+
+def unmapped_section_domains(model, adr):
+    """The principal domains of the sections containing the clauses mapped to no domain."""
+    found = []
+    for uuid in unmapped_sections(model, adr):
+        domain = principal_of(model, model.get(uuid))
+        if domain and domain not in found:
+            found.append(domain)
+    return found
+
+
+def _clause_title(what, items):
+    ids = [e.get("id") or "" for e in items]
+    if len(ids) == 1:
+        return f"{what} della clausola {ids[0]}"
+    return f"{what} delle clausole {', '.join(ids[:3])}" + (" …" if len(ids) > 3 else "")
+
+
+def sharing_defaults(model, items, proposer=None):
+    """A new ADR of sharing of the clauses (elements). The domains to share them with are not proposed: the user says
+    them (proposer: the team proposing, kept for the callers)."""
+    values = {"adr_type": ADR_SHARED, "status": PROPOSED, "shared_items": [e.uuid for e in items],
+              "title": _clause_title("Condivisione", items)}
+    return {k: v for k, v in values.items() if v}
+
+
+def unmapped_defaults(model, items):
+    """A new ADR of clauses mapped to no domain (elements): the reason proposed from their category of chapter 9."""
+    categories = {c for e in items for c in e.get("category") or []}
+    reason = next((r for c, r in UNMAPPED_FROM_CATEGORY if c in categories), None)
+    values = {"adr_type": ADR_UNMAPPED, "status": PROPOSED, "unmapped_items": [e.uuid for e in items],
+              "title": _clause_title("Non mappatura", items), "unmapped_reason": reason}
+    return {k: v for k, v in values.items() if v}
+
+
+def clause_decisions(model, adr_type):
+    """(clause, ADR) of the ADR of the type (sharing, or clauses mapped to no domain), whatever their status: what the
+    teams have declared, in the order of the clauses."""
+    from arcadia_tool.model.element import natural_key
+
+    rows = [(item, adr) for adr in model.of_kind("adr") if adr.get("adr_type") == adr_type
+            for item in clauses_of(model, adr)]
+    return sorted(rows, key=lambda r: (natural_key(r[0].get("id") or ""), natural_key(r[1].get("id") or "")))
+
+
+def unmapped_by_decision(model):
+    """The uuids of the clauses an approved ADR maps to no domain."""
+    return {item.uuid for item, adr in clause_decisions(model, ADR_UNMAPPED) if outcome(adr) == APPROVED}
+
+
 # Fields computed from the others (see Field.computed).
 COMPUTED = {"merged_srs_items": merged_srs_items, "current_mission": current_mission,
             "item_primary": item_primary, "item_contributors": item_contributors,
-            "function_domain": function_domain, "item_producers": item_producers, "excluded_within": excluded_within}
+            "function_domain": function_domain, "item_producers": item_producers, "excluded_within": excluded_within,
+            "shared_primary": shared_primary, "shared_contributors": shared_contributors,
+            "unmapped_sections": unmapped_sections, "unmapped_section_domains": unmapped_section_domains}
 
 
 def split_domain_items(model, adr):
@@ -212,8 +303,24 @@ def split_destinations(model, adr):
     return [(name, name) for name in dict.fromkeys(n for n in names if n)]
 
 
+def shared_derived(model, adr):
+    """(uuid, label) of the derived requirements (SA-4) of the clauses to share, or of the items inside them: the
+    sub-requirements the sharing is structured in."""
+    clauses = {e.uuid for e in clauses_of(model, adr)}
+    inside = model.descendants(clauses) if clauses else set()
+    found = [d for d in model.of_kind("derived_requirement") if d.get("parent") in inside]
+    return [(d.uuid, model.choice_label(d)) for d in found]
+
+
+def split_domains(adr):
+    """The domains of destination of the sub-requirements of a sharing, in their order."""
+    return list(dict.fromkeys(row.get("domain") for row in adr.get("share_split") or []
+                              if isinstance(row, dict) and row.get("domain")))
+
+
 # Lists to choose from in the cells of a table, computed from the element (see Column.choices).
-CHOICES = {"split_domain_items": split_domain_items, "split_destinations": split_destinations}
+CHOICES = {"split_domain_items": split_domain_items, "split_destinations": split_destinations,
+           "shared_derived": shared_derived}
 
 
 def type_fields(adr_type):
@@ -256,6 +363,10 @@ def adr_defaults(model, adr_type, element=None):
         values["realloc_item"] = [element.uuid]  # its domains now: read from it (see item_primary)
     elif kind == "requirement" and adr_type == ADR_EXCLUSION:
         values["excluded_item"] = [element.uuid]
+    elif kind == "requirement" and adr_type == ADR_SHARED:
+        values["shared_items"] = [element.uuid]
+    elif kind == "requirement" and adr_type == ADR_UNMAPPED:
+        values["unmapped_items"] = [element.uuid]
     elif kind == "requirement" and adr_type == ADR_IMPLEMENTATION:
         values["impl_item"] = element.uuid  # its domain: read from it (see item_primary)
     elif kind == "system_function" and adr_type in (ADR_FUNCTION, ADR_PRODUCT_OPTION):
@@ -318,6 +429,14 @@ def impacted_domains(model, adr):
 
     found = {}
     for f in adr.schema.fields:
+        if f.type == "table" and f.applies(adr):  # the domains in its rows (e.g. of the sub-requirements of a sharing)
+            for column in f.columns:
+                if column.type == "ref" and "domain" in column.ref_kinds:
+                    for row in adr.values.get(f.name) or []:
+                        domain = model.get(row.get(column.name)) if isinstance(row, dict) else None
+                        if domain is not None and domain.kind == "domain":
+                            found[domain.uuid] = domain
+            continue
         if "domain" not in f.ref_kinds or f.type not in ("ref", "refs") or not (f.applies(adr) or f.name == "concerns"):
             continue
         value = COMPUTED[f.computed](model, adr) if f.computed in COMPUTED else adr.values.get(f.name)
@@ -338,9 +457,9 @@ COMPUTED["related_adrs"] = related_adrs_ids  # the table of the ADR of a domain 
 # --- the approval of the Design Authority ---------------------------------------------------------------------
 
 def can_approve(adr):
-    """An ADR the Design Authority can approve with an action of the tool: a new domain or a reallocation still
-    proposed (or under its review), not rejected."""
-    return adr.kind == "adr" and adr.get("adr_type") in (ADR_NEW_DOMAIN, ADR_SECTION) and \
+    """An ADR the Design Authority can approve with an action of the tool: a new domain, a reallocation, a sharing of
+    clauses or clauses mapped to no domain, still proposed (or under its review), not rejected."""
+    return adr.kind == "adr" and adr.get("adr_type") in (ADR_NEW_DOMAIN, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED) and \
         adr.get("status") in OPEN and adr.get("da_decision") != "Respinta"
 
 
@@ -517,4 +636,88 @@ def reallocation_pending(model, adr):
     return [item for item in realloc_targets(model, adr) if principal_of(model, item) != primary
             and not any(a.get("primary_proposed") == principal_of(model, item)
                         for a in decided_reallocations(model, item))]
+
+
+# --- the approval of a sharing, of clauses mapped to no domain --------------------------------------------------------
+
+def sharing_domains(model, adr):
+    """The domains the clauses are shared with: those named, and those of destination of the sub-requirements."""
+    return [d for d in dict.fromkeys([*(adr.get("shared_with") or []), *split_domains(adr)]) if model.get(d) is not None]
+
+
+def sharing_problems(model, adr):
+    """What is missing to approve the sharing (empty list: it can be approved)."""
+    problems = []
+    if not clauses_of(model, adr):
+        problems.append("Mancano le clausole da condividere.")
+    if not sharing_domains(model, adr):
+        problems.append("Mancano i domini con cui condividerle (o i domini di destinazione dei sottorequisiti).")
+    return problems
+
+
+def derived_moves(model, adr):
+    """The derived requirements of the ripartition that go to another domain: (derived, domain of destination)."""
+    moves = []
+    for row in adr.get("share_split") or []:
+        derived = model.get(row.get("derived")) if isinstance(row, dict) and row.get("derived") else None
+        if derived is not None and row.get("domain") and derived.get("domain") != row.get("domain") \
+                and model.get(row.get("domain")) is not None:
+            moves.append((derived, row.get("domain")))
+    return moves
+
+
+def sharing_preview(model, adr):
+    """What approving the sharing changes: (clause, the domains it gains as contributors)."""
+    result = []
+    for item in clauses_of(model, adr):
+        part = allocated_part(model, item)
+        now = list(part.get("contributing_domains") or []) if part is not None else []
+        primary = principal_of(model, item)
+        result.append((item, [d for d in sharing_domains(model, adr) if d not in now and d != primary]))
+    return result
+
+
+def _decide(project, adr, previous, today):
+    adr.set("status", DECIDED)
+    if adr.get("da_decision") not in ("Accolta", "Accolta con modifiche"):
+        adr.set("da_decision", "Accolta")
+    adr.set("decision_date", decision_date_of(adr, today=today))
+    project.update(adr, previous)
+
+
+def approve_sharing(project, adr, today=None):
+    """The Design Authority approves the sharing: the domains of the ADR (named, or of destination of the
+    sub-requirements) become contributors of its clauses (those the clause had from its section stay); each derived
+    requirement of the ripartition goes to its domain of destination; the ADR is decided. Returns the other elements
+    changed."""
+    model = project.model
+    problems = sharing_problems(model, adr)
+    if problems:
+        raise ValueError(" ".join(problems))
+    before, changed = shared_contributors(model, adr), []
+    for item, added in sharing_preview(model, adr):
+        if not added:
+            continue
+        part = allocated_part(model, item)
+        previous = item.copy()
+        item.set("contributing_domains", [*(part.get("contributing_domains") or [] if part is not None else []),
+                                          *added])
+        changed += [item, *(project.update(item, previous) or [])]
+    for derived, domain in derived_moves(model, adr):
+        previous = derived.copy()
+        derived.set("domain", domain)
+        changed += [derived, *(project.update(derived, previous) or [])]
+    previous = adr.copy()
+    adr.set("share_applied", True)
+    adr.set("contributors_before_share", before)
+    _decide(project, adr, previous, today)
+    return list({e.uuid: e for e in changed}.values())
+
+
+def approve_unmapped(project, adr, today=None):
+    """The Design Authority approves that the clauses are mapped to no domain: the ADR is decided (the clauses are not
+    changed: the decision is the ADR, see unmapped_by_decision)."""
+    if not clauses_of(project.model, adr):
+        raise ValueError("Mancano le clausole non mappate.")
+    _decide(project, adr, adr.copy(), today)
 

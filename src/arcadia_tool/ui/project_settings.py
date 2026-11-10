@@ -2,7 +2,7 @@
 
 - Generale (shared with the team, in project.yaml): name, SRS baseline, description.
 - Repository Git: URL of the remote, any Git server (shared, in project.yaml, and the «origin» of the local
-  Git); working branch (this PC only); access to the server (user and password/token or SSH key, kept in the
+  Git); main branch of the project (shared, chosen by the Design Authority); working branch (this PC only); access to the server (user and password/token or SSH key, kept in the
   account of the logged-in user, never in the project); check of the connection.
 - Verifiche (shared, in checks.yaml): profiles of checks of the methodology (none active by default), with the
   parameters, severity and scope of each check, kept until they are changed.
@@ -158,7 +158,22 @@ class ProjectSettingsDialog(QDialog):
         self.check_button.clicked.connect(self.check_connection)
         self.check_result = QLabel(objectName="muted")
         self.check_result.setWordWrap(True)
+        # The main branch of the project: shared (project.yaml), chosen by the Design Authority only.
+        self.main_branch = QComboBox()
+        self.main_branch.addItem("Automatico (main o master)", "")
+        configured = self.project.settings.get("main_branch", "")
+        names = sorted({b.name for b in self.project.branches()} | ({configured} if configured else set()),
+                       key=str.lower)
+        for name in names:
+            self.main_branch.addItem(name, name)
+        self.main_branch.setCurrentIndex(max(self.main_branch.findData(configured), 0))
+        denied = self.project.main_branch_choice_denied(self.user)
+        self.main_branch.setEnabled(not denied)
+        self.main_branch.setToolTip(denied or "Il ramo in cui la Design Authority integra il lavoro dei team: solo la DA "
+                                    "lo modifica, e i rami mostrano le versioni avanti e indietro rispetto a esso. "
+                                    "Condiviso con il team.")
         form.addRow("URL del repository", self.remote)
+        form.addRow("Ramo principale", self.main_branch)
         form.addRow("Ramo di lavoro", self.branch)
 
         # Access to the server: set here, kept in the account of the user (one per server), not in the project.
@@ -292,8 +307,10 @@ class ProjectSettingsDialog(QDialog):
         self.remote_changed = bool(remote) and remote != self.project.remote()  # the project may be reloaded
         checks = self.checks_page.value()
         self.checks_changed = checks != self.project.checks
+        main = (self.main_branch.currentData() if self.main_branch.isEnabled()
+                else self.project.settings.get("main_branch", ""))
         self.project.update_settings(name=name, baseline=self.baseline.text().strip(),
-                                     description=self.description.markdown(), remote=remote)
+                                     description=self.description.markdown(), remote=remote, main_branch=main)
         if self.checks_changed:
             self.project.update_checks(checks)
         self.project.repository.set_remote_url(remote)  # also the standard «origin» of the local Git

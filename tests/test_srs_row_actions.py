@@ -137,12 +137,21 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     rect = reader.view.visualRect(index)
     *_, actions, _ = reader.delegate._layout(e["clause"], rect)
     buttons = {name: box for name, _, box in actions[1]}
-    assert set(buttons) == {"functions", "derive"}
+    assert set(buttons) == {"functions", "derive", "share", "exclude"}
     opened = []
     reader.open_element.connect(opened.append)
     _click(reader.view, buttons["functions"].center())  # «Mappa a Funzione» of the clause row
     assert e["sf"].get("sections") == [e["clause"].uuid] and opened == []  # done; the item was not opened
     assert reader._links_text(e["clause"]).startswith("Funzioni: SF-DF01-01 · SF-DF01-02 (sezione)")
+    badges = reader._link_badges(e["clause"])  # drawn as badges: code and name, the one of the section in grey
+    assert [style for _t, style, *_tip in badges][:2] == ["function", "inherited"]
+    assert badges[0][0] == f"SF-DF01-01 - {e['sf'].get('name')}"
+    assert "direttamente alla clausola" in badges[0][2] and "sezione" in badges[1][2]  # the kind of mapping
+    rect = reader.view.visualRect(index)
+    text_box = reader.delegate._layout(e["clause"], rect)[-2][0]
+    first = reader.delegate._badge_places(text_box, badges)[0][0]
+    tip = reader.delegate.badge_tip(index, first.center())  # the mouse on the badge
+    assert tip.startswith("SF-DF01-01") and "direttamente" in tip
 
     class Domains:  # «Domini…» of the section row, answered
         def __init__(self, project, item, parent=None):
@@ -156,7 +165,9 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     monkeypatch.setattr(row_actions, "ItemDomainsDialog", Domains)
     reader.run_action(e["section"].uuid, "domains")
     assert e["section"].get("primary_domain") == e["d6"].uuid
-    assert reader._links_text(e["section"]) == "Domini: DF01 (principale) · DF02 (contributo)"
+    assert reader._links_text(e["section"]) == "Domini: DF01 - Protezione (principale) · DF02 - Velocità (contributo)"
+    assert reader._domain_badges(e["section"]) == [("DF01 - Protezione", True), ("DF02 - Velocità", False)]
+    assert not reader.grab().isNull()  # the row drawn with its badges
     assert window.project.is_modified
     window.close()
 

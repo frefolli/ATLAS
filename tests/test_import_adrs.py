@@ -153,6 +153,7 @@ def test_every_template_of_the_types_is_read_back_as_generated(tmp_path):
     ei = p.new_element("exchange_item", name="velocita_stimata")
     lf = p.new_element("logical_function", name="Calcolare la velocità", refines=sf.uuid)
     fc = p.new_element("functional_chain", name="Frenatura di servizio")
+    derived = p.new_element("derived_requirement", parent=items["3.14.1.3"].uuid, domain=domains[1].uuid)
     picks = {"domain": [domains[1], domains[2]], "requirement": [items["3.14.1.3"], items["3.14.1.4"]],
              "team": [teams["T3"]], "system_function": [sf], "exchange_item": [ei], "logical_function": [lf],
              "functional_chain": [fc]}
@@ -182,9 +183,12 @@ def test_every_template_of_the_types_is_read_back_as_generated(tmp_path):
                 row = {}
                 for c in f.columns:
                     if c.type == REF:
-                        row[c.name] = (teams["T3"] if "team" in c.ref_kinds else sf).uuid
+                        row[c.name] = (teams["T3"] if "team" in c.ref_kinds else domains[1] if "domain" in c.ref_kinds
+                                       else sf).uuid
                     elif c.choices == "split_domain_items":
                         row[c.name] = items["3.14.1.3"].uuid
+                    elif c.choices == "shared_derived":
+                        row[c.name] = derived.uuid
                     else:
                         row[c.name] = c.options[0] if c.options else f"{c.name} 1"
                 values[f.name] = [row]

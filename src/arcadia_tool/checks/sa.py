@@ -175,9 +175,12 @@ def _sections(ctx):
 
 @check("A4-01", "Sezione dei capitoli 3, 4, 5 o dell'Appendice A senza dominio principale", "E", "A4, Parte VI")
 def a4_section_without_domain(ctx):
+    from arcadia_tool.model.adr import unmapped_by_decision
+
     chapters = {str(c).strip() for c in ctx.param("chapters") or []}
+    unmapped = unmapped_by_decision(ctx.model)  # declared by a team, approved by the Design Authority
     for s in _sections(ctx):
-        if (s.get("id") or "").split(".")[0] in chapters and not s.get("primary_domain"):
+        if (s.get("id") or "").split(".")[0] in chapters and not s.get("primary_domain") and s.uuid not in unmapped:
             yield issue(s, "Sezione senza dominio principale: lacuna nella proposta dei domini.")
 
 

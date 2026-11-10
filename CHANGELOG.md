@@ -6,6 +6,54 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.10.1] - 2026-11-10
+
+### Aggiunto
+- **Dominio delle sezioni nel menu laterale.** Sotto «Voci SRS», accanto al titolo di ogni sezione (es. 3.3.1)
+  compare un badge con codice e nome del dominio principale a cui è assegnata (es. «DF02 · Radio»). Anche nel
+  catalogo SRS ogni sezione mostra i suoi domini come badge colorati, accanto ai pulsanti della riga: blu il
+  principale, grigi i contributori, con codice e nome (es. «DF03 - Movement Authority Management»), a destra del
+  titolo. Le clausole mostrano come badge, sotto il testo, le funzioni di sistema mappate (azzurre; grigie quelle
+  mappate alla sezione) e i requisiti derivati (viola), al posto di «Funzioni: …». Col mouse su un badge si
+  legge il tipo di mappatura (diretta alla clausola, o ereditata dalla sezione, con il ruolo nel registro
+  SA-3 se c'è) e, sui domini, se sono principali o contributori.
+- **System Requirements Specifications.** Nel menu laterale «Voci SRS» diventa «System Requirements Specifications»,
+  con un nodo per la specifica del progetto (per ora quella importata, col nome della baseline) e sotto: «Voci SRS»
+  (come prima), «Clausole condivise» e «Clausole non mappate». Le due liste contengono solo ciò che i team indicano,
+  ciascuna clausola con la sua ADR e l'esito: nulla è dedotto dal modello. Un clic su una riga apre l'ADR; doppio clic
+  sulla lista apre il catalogo in una scheda, con tutte le ADR anche chiuse o respinte.
+- **ADR «Condivisione di clausola» e «Clausola non mappata».** Con il clic destro sulla lista si scelgono le clausole
+  nella stessa finestra della tracciabilità delle funzioni; ATLAS crea l'ADR già compilata (tipo, stato, proponente,
+  titolo, clausole, domini attuali letti dal modello; per la non mappatura il motivo proposto dalla categoria del
+  cap. 9). I domini con cui condividere una clausola li indica sempre chi propone l'ADR.
+  - La condivisione ha la **ripartizione in requisiti derivati**: per ogni sottorequisito (un derivato SA-4 della
+    clausola, o uno ancora da derivare descritto a testo) il dominio di destinazione. L'ADR compare tra le ADR di quel
+    dominio e il suo team ne riceve la notifica.
+  - All'approvazione della DA: per la condivisione i domini indicati e quelli di destinazione diventano contributori
+    delle clausole e ogni derivato passa al suo dominio; per la non mappatura la clausola risulta non mappata per
+    decisione e la verifica A4-01 non segnala più la sezione.
+  - Nuovi modelli Excel X-1.12 e X-1.13; quelli successivi diventano X-1.14 – X-1.16.
+  - Nel catalogo SRS ogni clausola ha anche «Condividi» ed «Escludi», accanto a «Mappa a Funzione» e
+    «Deriva…»: creano subito l'ADR per quella clausola.
+- **Eliminare un ramo dal repository.** Nella finestra Rami, «Elimina ramo remoto…» toglie il ramo selezionato dal
+  repository, per tutto il team; la copia di questo PC, se c'è, resta. La conferma avvisa se il ramo ha versioni che
+  nessun altro ramo contiene. «main», «master» e il ramo principale delle impostazioni li elimina solo la Design
+  Authority; il ramo in uso non si elimina. Eliminando una delle due copie del ramo (di questo PC o del
+  repository), ATLAS chiede se eliminare anche l'altra, se c'è e se la si può eliminare.
+- **Ramo principale nelle impostazioni.** In *Impostazioni › Repository Git* la Design Authority sceglie il ramo
+  principale del progetto (condiviso con il team); di default resta automatico, «main» o «master». Valgono lì le regole
+  del ramo principale, ed è la base della vista d'insieme. In automatico, un «main» vuoto (la prima versione creata dal
+  server Git) non è più il ramo principale se «master» contiene il modello.
+
+### Modificato
+- **Separatori tra le colonne delle tabelle.** Nelle intestazioni di tutte le tabelle una linea separa le colonne e
+  indica dove trascinare per allargarle o restringerle; l'intestazione si schiarisce al passaggio del mouse.
+- **Finestra Rami: versioni avanti e indietro rispetto al ramo principale.** La colonna ne mostra il nome
+  («Rispetto a «master»») e, per un ramo senza versioni in comune, lo dice invece di contare versioni prive di senso.
+- **Colonne delle notifiche.** ID, Titolo, Descrizione, Tipo (ADR, messaggio di un'ADR o di una CQ), Stato, Data e ora;
+  il pallino delle non lette è accanto all'ID. Tolta dalla nota la frase sulle letture registrate nel progetto, non più
+  vera dalla 0.9.5.
+
 ## [0.10.0] - 2026-11-09
 
 ### Corretto
@@ -893,7 +941,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.10.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.10.1...main
+[0.10.1]: https://github.com/salvodesi/ATLAS/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/salvodesi/ATLAS/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/salvodesi/ATLAS/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/salvodesi/ATLAS/compare/v0.9.3...v0.9.4

@@ -18,11 +18,16 @@ COMPUTED_HINTS = {
     "item_contributors": "i domini contributori della voce, suoi o della sezione che la contiene (A4)",
     "function_domain": "il dominio della funzione, dal catalogo delle funzioni (SA-2)",
     "item_producers": "i produttori degli scambi che portano l'informazione (SA-5)",
+    "shared_primary": "il dominio principale della clausola, suo o della sezione che la contiene (A4)",
+    "shared_contributors": "i domini contributori della clausola, suoi o della sezione che la contiene (A4)",
+    "unmapped_sections": "le sezioni che contengono le clausole",
+    "unmapped_section_domains": "il dominio principale di quelle sezioni (A4)",
 }
 # The choices of a column computed from the other fields (see model.adr.CHOICES).
 CHOICE_HINTS = {
     "split_domain_items": "una voce SRS del dominio da scindere",
     "split_destinations": "uno dei domini risultanti scritti sopra",
+    "shared_derived": "un requisito derivato (SA-4) delle clausole, es. 3.5.3.7-D1",
 }
 # The guides of the general template, for the fields it has too.
 FIELD_HINTS = {"context": "Il problema e perché va deciso ora",

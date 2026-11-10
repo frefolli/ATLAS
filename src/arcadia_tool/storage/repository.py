@@ -244,6 +244,18 @@ class Repository:
                 del self._repo.refs[ref]
         return self.head()
 
+    def delete_remote_branch(self, url, branch, **credentials):
+        """Remove `branch` from the remote `url`; the branch of this PC, if any, stays. Raises PushRefused with the
+        reason if the remote refuses (e.g. a protected branch)."""
+        result = porcelain.push(self._repo, url, [f":refs/heads/{branch}".encode()], outstream=io.BytesIO(),
+                                errstream=io.BytesIO(), **credentials)
+        refused = {ref: status for ref, status in (getattr(result, "ref_status", None) or {}).items() if status}
+        if refused:
+            raise PushRefused("; ".join(f"{ref.decode()}: {status}" for ref, status in refused.items()))
+        ref = f"refs/remotes/origin/{branch}".encode()
+        if ref in self._repo.refs:
+            del self._repo.refs[ref]
+
     @staticmethod
     def _entries(files):
         """files: {relative posix path: content bytes} → [(path bytes, Blob)] sorted by path."""

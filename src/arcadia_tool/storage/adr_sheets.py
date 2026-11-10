@@ -486,6 +486,13 @@ class _Plan:
                         self.warn(f"{f.label}: «{text}» non è una voce SRS del progetto", f"{f.label}: {text}")
                         continue
                     values[c.name] = items[0].uuid
+                elif c.choices == "shared_derived":  # a derived requirement (SA-4) of the clauses shared
+                    e = self.r.element(("derived_requirement",), text)
+                    if e is None:
+                        self.warn(f"{f.label}: «{text}» non è un requisito derivato del progetto",
+                                  f"{f.label}: {text}")
+                        continue
+                    values[c.name] = e.uuid
                 elif c.type == REF:
                     e = self.r.element(c.ref_kinds, text) if c.ref_kinds != ("team",) else self.r.team(text)
                     if e is None:

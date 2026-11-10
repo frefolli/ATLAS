@@ -16,7 +16,8 @@ from arcadia_tool.model.teams import memberships
 from arcadia_tool.ui.element_editor import card
 from arcadia_tool.ui.theme import ACCENT, MUTED, icon
 
-BRANCH_COLUMNS = (("Ramo", 250), ("Ultima versione", 0), ("Autore", 170), ("Dove", 250), ("Rispetto a main", 200))
+BRANCH_COLUMNS = (("Ramo", 250), ("Ultima versione", 0), ("Autore", 170), ("Dove", 250),
+                  ("Rispetto al ramo principale", 220))
 BRANCH_PREFIX = "att/"
 SHOW = (("all", "Tutti i rami"), ("local", "Solo su questo PC"), ("remote", "Solo nel repository"))
 
@@ -360,6 +361,8 @@ class BranchesDialog(QDialog):
         self.new_button.clicked.connect(lambda: self.new_branch())
         self.delete_button = QPushButton(icon("mdi6.trash-can-outline"), "Elimina ramo locale…")
         self.delete_button.clicked.connect(lambda _=False: self.delete_local())
+        self.delete_remote_button = QPushButton(icon("mdi6.cloud-remove-outline"), "Elimina ramo remoto…")
+        self.delete_remote_button.clicked.connect(lambda _=False: self.delete_remote())
         self.checkout_button = QPushButton(icon("mdi6.source-commit"), "Checkout di una versione…")
         self.checkout_button.setToolTip("Il modello completo a una versione del ramo selezionato, di questo PC o "
                                         "del repository")
@@ -373,7 +376,8 @@ class BranchesDialog(QDialog):
         close = QPushButton("Chiudi")
         close.clicked.connect(self.reject)
         buttons = QHBoxLayout()
-        for b in (self.switch_button, self.new_button, self.delete_button, self.checkout_button, self.integrate_button):
+        for b in (self.switch_button, self.new_button, self.delete_button, self.delete_remote_button,
+                  self.checkout_button, self.integrate_button):
             buttons.addWidget(b)
         buttons.addStretch()
         buttons.addWidget(close)
@@ -416,8 +420,10 @@ class BranchesDialog(QDialog):
         self.table.setRowCount(len(self.branches))
         bold = QFont()
         bold.setBold(True)
+        main = self.project.main_branch()
+        self.table.horizontalHeaderItem(4).setText(f"Rispetto a «{main}»" if main else "Rispetto al ramo principale")
         for r, b in enumerate(self.branches):
-            relation = "" if b.main or b.ahead is None else (
+            relation = "" if b.main else "nessuna versione in comune" if b.unrelated else "" if b.ahead is None else (
                 "allineato" if not b.ahead and not b.behind else
                 ", ".join(p for p in (f"{b.ahead} avanti" if b.ahead else "",
                                       f"{b.behind} indietro" if b.behind else "") if p))
@@ -433,8 +439,9 @@ class BranchesDialog(QDialog):
                 if c == 1 and b.last is not None:
                     item.setToolTip(b.last.message)
                 if c == 4 and relation and not b.main:
-                    item.setToolTip(f"{b.ahead} versioni del ramo non sono in main; main ha {b.behind} versioni "
-                                    "che il ramo non ha")
+                    item.setToolTip(f"Il ramo non ha versioni in comune con «{main}»" if b.unrelated else
+                                    f"Avanti: {b.ahead} versioni del ramo non sono in «{main}». Indietro: «{main}» ha "
+                                    f"{b.behind} versioni che il ramo non ha.")
                 self.table.setItem(r, c, item)
         current = next((r for r, b in enumerate(self.branches) if b.current), 0)
         if self.branches:
@@ -456,6 +463,10 @@ class BranchesDialog(QDialog):
         why = self._not_deletable(b)
         self.delete_button.setEnabled(not why)
         self.delete_button.setToolTip(why or "Toglie il ramo da questo PC; quello del repository, se c'è, resta")
+        why = "Seleziona un ramo" if b is None else self.project.remote_delete_denied(self.user, b.name)
+        self.delete_remote_button.setEnabled(not why)
+        self.delete_remote_button.setToolTip(why or "Toglie il ramo dal repository, per tutti; la copia di questo PC, "
+                                                    "se c'è, resta")
         denied = self.integrate_denied()
         self.integrate_button.setEnabled(b is not None and not b.current and not denied)
         self.integrate_button.setToolTip(denied or self.integrate_button.toolTip())
@@ -510,25 +521,79 @@ class BranchesDialog(QDialog):
         return None
 
     def delete_local(self):
+        """The branch off this PC; then, if it is in the repository too and the user may, the question of removing
+        it from there as well."""
         b = self.selected()
         if self._not_deletable(b):
             return
-        only_here = self.project.versions_only_on_local_branch(b.name)
-        where = ("Il ramo resta nel repository: potrai riaverlo su questo PC passando a quel ramo." if b.remote else
-                 "Non è nel repository: su questo PC non resterà nessuna sua copia.")
-        lost = (f"\n\nAttenzione: {len(only_here)} {'versione' if len(only_here) == 1 else 'versioni'} di questo ramo "
-                "non sono né su altri rami né nel repository e andranno perse." if only_here else "")
-        if QMessageBox.question(self, "Elimina ramo locale",
-                                f"Eliminare il ramo «{b.name}» da questo PC?\n\n{where}{lost}",
-                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if self._remove_local(b) and b.remote and not self.project.remote_delete_denied(self.user, b.name):
+            self._remove_remote(b, also=True)
+        self.fill()
+        self._update()
+
+    def delete_remote(self):
+        """The branch off the repository; then, if this PC has it too, the question of removing it from here as well."""
+        b = self.selected()
+        if b is None or self.project.remote_delete_denied(self.user, b.name):
             return
+        if self._remove_remote(b) and b.local and not b.current:
+            self._remove_local(b, also=True)
+        self.fill()
+
+    @staticmethod
+    def _versions(count):
+        return f"{count} {'versione' if count == 1 else 'versioni'}"
+
+    def _remove_local(self, b, also=False):
+        """Asks, then deletes the branch of this PC. also: asked after removing it from the repository. True if done."""
+        only_here = self.project.versions_only_on_local_branch(b.name)
+        lost = (f"\n\nAttenzione: {self._versions(len(only_here))} di questo ramo non sono né su altri rami né nel "
+                "repository e andranno perse." if only_here else "")
+        if also:
+            text = f"Il ramo «{b.name}» è stato eliminato dal repository. Eliminare anche la copia di questo PC?{lost}"
+        else:
+            where = ("Il ramo resta nel repository: potrai riaverlo su questo PC passando a quel ramo." if b.remote
+                     else "Non è nel repository: su questo PC non resterà nessuna sua copia.")
+            text = f"Eliminare il ramo «{b.name}» da questo PC?\n\n{where}{lost}"
+        if QMessageBox.question(self, "Elimina ramo locale", text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return False
         try:
             self.project.delete_local_branch(b.name)
         except Exception as exc:
             QMessageBox.warning(self, "Elimina ramo locale", str(exc))
-            return
-        self.fill()
-        self._update()
+            return False
+        self.status.setStyleSheet(f"color: {MUTED};")
+        self.status.setText(f"Ramo «{b.name}» eliminato da questo PC" + (" e dal repository." if also else "."))
+        return True
+
+    def _remove_remote(self, b, also=False):
+        """Asks, then removes the branch from the repository. also: asked after deleting it from this PC. True if
+        done."""
+        from arcadia_tool.ui.busy import run_busy
+
+        only_there = self.project.versions_only_on_remote_branch(b.name)
+        lost = (f"\n\nAttenzione: {self._versions(len(only_there))} di questo ramo non sono su nessun altro ramo, né "
+                "qui né nel repository: nessuno le avrà più." if only_there else "")
+        if also:
+            text = (f"Il ramo «{b.name}» è stato eliminato da questo PC. Eliminarlo anche dal repository?\n\n"
+                    f"Sparisce per tutto il team.{lost}")
+        else:
+            here = ("La copia di questo PC resta: potrai inviarla di nuovo." if b.local else
+                    "Su questo PC non c'è una copia del ramo.")
+            text = f"Eliminare il ramo «{b.name}» dal repository?\n\nSparisce per tutto il team. {here}{lost}"
+        if QMessageBox.question(self, "Elimina ramo remoto", text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return False
+        try:
+            run_busy(self, f"Eliminazione di «{b.name}» dal repository…",
+                     lambda _report: self.project.delete_remote_branch(b.name, self.user, **self.credentials))
+        except Exception as exc:
+            QMessageBox.warning(self, "Elimina ramo remoto", f"Il ramo non è stato eliminato: {exc}")
+            return False
+        self.status.setStyleSheet(f"color: {MUTED};")
+        self.status.setText(f"Ramo «{b.name}» eliminato dal repository" + (" e da questo PC." if also else "."))
+        return True
 
     def integrate_denied(self):
         """Why the user may not integrate into the branch in use, or None: the main branch only by the Design

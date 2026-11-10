@@ -170,6 +170,7 @@ class MainWindow(QMainWindow):
         self.tree.functions_import_requested.connect(self.import_functions)
         self.tree.adrs_import_requested.connect(self.import_adrs)
         self.tree.list_requested.connect(self.open_element_list)
+        self.tree.clause_catalog_requested.connect(self.open_clause_catalog)
         self.tree.breakdown_requested.connect(self.open_breakdown)
         self.tree.view_created.connect(lambda _uuid: self._diagram_saved("Vista creata"))
         self.list_pages = {}  # kind → tab with its elements as a table (e.g. X-2, the requests for clarification)
@@ -1185,6 +1186,8 @@ class MainWindow(QMainWindow):
             self.reader.window_toggled.connect(self._toggle_reader_window)
             self.reader.elements_changed.connect(self._reader_changed)
             self.reader.elements_created.connect(self._model_changed)
+            # «Condividi» / «Escludi» of a clause: its ADR, as from the lists of the tree (it opens in its sheet).
+            self.reader.clause_declared.connect(lambda key, uuid: self.tree.declare_clauses(key, [uuid]))
             self._reader_to_tab()
         self._show_reader()
 
@@ -1581,9 +1584,38 @@ class MainWindow(QMainWindow):
         for editor in editors:
             editor.refresh_adrs()
 
+    def open_clause_catalog(self, key):
+        """«Clausole condivise» or «Clausole non mappate»: their catalogue in a tab (one each, like the tables of the
+        elements); the ADR of a row opens in its sheet."""
+        from arcadia_tool.model.schema import ADR_SHARED, ADR_UNMAPPED
+        from arcadia_tool.ui.clause_catalog import ClauseCatalog
+        from arcadia_tool.ui.model_tree import SHARED_CLAUSES
+
+        if self.project is None:
+            return
+        page = self.list_pages.get(key)
+        if page is None:
+            page = ClauseCatalog(self.project, ADR_SHARED if key == SHARED_CLAUSES else ADR_UNMAPPED)
+            page.open_requested.connect(lambda uuid: self._select(self.project.model.get(uuid)))
+            page.new_requested.connect(lambda k=key: self.tree.declare_clauses(k))  # as from the list in the tree
+            denied = self.edit_denied("adr")
+            page.new_button.setEnabled(not denied)
+            if denied:
+                page.new_button.setToolTip(denied)
+            self.list_pages[key] = page
+            index = self.pages.addTab(page, icon("mdi6.share-variant-outline" if key == SHARED_CLAUSES else
+                                                 "mdi6.link-variant-off", ACCENT), page.title)
+            self.pages.setTabToolTip(index, f"{page.title} · {self.project.baseline or 'SRS'}")
+        self.pages.setCurrentWidget(page)
+
     def _element_changed(self, element):
         if element.kind == "adr":
             self._refresh_adr_tables()
+            self.tree.refresh_clause_lists()
+            from arcadia_tool.ui.model_tree import CLAUSE_LISTS
+            for key in CLAUSE_LISTS:  # the catalogues of the clauses open in a tab
+                if key in self.list_pages:
+                    self.list_pages[key].reload()
         if element.kind == "requirement" and not self._domain_refresh_pending:
             # E.g. excluded from a domain by the save of its ADR: the lists of the domain sheets open, once for
             # all the items changed together.

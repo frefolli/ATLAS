@@ -157,6 +157,10 @@ QTreeWidget::item, QListWidget::item {{ padding: 3px 2px; }}
 QTreeWidget::item:selected, QListWidget::item:selected, QTableWidget::item:selected {{ background: {ACCENT_SOFT}; color: {TEXT}; }}
 QTreeWidget::item:hover, QListWidget::item:hover {{ background: #F0F4FA; }}
 QHeaderView::section {{ background: #F6F8FA; border: none; border-bottom: 1px solid {BORDER}; padding: 5px 6px; color: {MUTED}; font-weight: 600; }}
+/* The line between two columns: where a column is widened or narrowed (the cursor changes on it). */
+QHeaderView::section:horizontal {{ border-right: 1px solid #C9D1DB; }}
+QHeaderView::section:horizontal:last {{ border-right: none; }}
+QHeaderView::section:horizontal:hover {{ background: #EEF2F7; }}
 QTableWidget {{ gridline-color: #EEF1F5; }}
 
 QScrollArea {{ border: none; background: transparent; }}

@@ -21,7 +21,7 @@ from arcadia_tool.model import discussions
 from arcadia_tool.model.adr import OPEN
 from arcadia_tool.model.schema import (ADR_DELETE_DOMAIN, ADR_DOMAIN_SCOPE, ADR_EXCLUSION, ADR_FUNCTION,
                                        ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN, ADR_OWNER,
-                                       ADR_PRODUCT_OPTION, ADR_SECTION, ADR_SPLIT_DOMAIN, KINDS_BY_NAME)
+                                       ADR_PRODUCT_OPTION, ADR_SECTION, ADR_SHARED, ADR_SPLIT_DOMAIN, KINDS_BY_NAME)
 from arcadia_tool.model.teams import design_authority, member_rows, memberships, normalize_account_id, person_key
 
 NEW, CHANGED, DELETED, MESSAGE = "Nuova", "Modificata", "Eliminata", "Messaggio"
@@ -34,6 +34,8 @@ DESTINATIONS = {
                   ("contributors_proposed", "contributore proposto")),
     ADR_FUNCTION: (("to_domain", "dominio proposto"),),
     ADR_EXCLUSION: (("traced_by", "dominio che traccia al posto dell'escluso"),),
+    ADR_SHARED: (("shared_with", "dominio con cui condividere"),
+                 ("share_split", "dominio di destinazione di un sottorequisito")),
     ADR_MERGE_DOMAINS: (("merged_domains", "dominio da fondere"), ("kept_domain", "dominio che resta"),
                         ("team_proposed", "team proposto")),
     ADR_SPLIT_DOMAIN: (("split_domain", "dominio da scindere"), ("new_domains", "team proposto per un dominio "
@@ -60,6 +62,9 @@ class Notification:
     unread: bool = True
     message: str = None  # the uuid of the message
     scopes: frozenset = field(default_factory=frozenset)  # TEAM, DA, MESSAGES: why it reaches the user
+    ident: str = ""  # the ID of the ADR or CQ («ADR-022»)
+    name: str = ""  # its title, without the ID
+    kind: str = "ADR"  # what it is: «ADR», «Messaggio (ADR)», «Messaggio (CQ)»
     # Opened (or marked read) by the user of this PC: «Letta»; else «Nuova» (never opened, or marked unread to look at
     # it again). The readings of the others, even of the same team, do not count. Changed after it was read: still
     # «Letta», but unread (to look at again).
@@ -99,7 +104,7 @@ def destination_teams(model, adr):
             refs = [value]
         elif isinstance(value, list):
             for v in value:  # a list of uuids, or the rows of a table (their team, their function)
-                refs += [v] if isinstance(v, str) else [v.get("team"), v.get("function")]
+                refs += [v] if isinstance(v, str) else [v.get("team"), v.get("function"), v.get("domain")]
         for uuid in refs:
             element = model.get(uuid) if uuid else None
             team = _team_of(model, element)
@@ -154,7 +159,8 @@ def fingerprint(adr):
 
 def _snapshot(adr, relevant):
     return {"hash": fingerprint(adr), "values": json.loads(json.dumps(adr.values, default=str)),
-            "title": _title(adr), "relevant": relevant, "seen_at": discussions.now()}
+            "title": _title(adr), "id": adr.get("id") or "", "name": adr.get("title") or "", "relevant": relevant,
+            "seen_at": discussions.now()}
 
 
 def _title(adr):
@@ -258,7 +264,8 @@ def _collect(project, user, local):
         if snap is None:
             if adr.get("status") not in OPEN:
                 continue  # received already decided: nothing to look at
-            result.append(Notification(key, NEW, adr.uuid, _title(adr), about, when, True, scopes=scopes))
+            result.append(Notification(key, NEW, adr.uuid, _title(adr), about, when, True, scopes=scopes,
+                                       ident=adr.get("id") or "", name=adr.get("title") or ""))
             continue
         if changed:
             fields = _changed_fields(adr, snap.get("values") or {})
@@ -270,14 +277,19 @@ def _collect(project, user, local):
         result.append(Notification(key, CHANGED if changed or not scopes else NEW, adr.uuid, _title(adr), detail,
                                    when, changed or key in forced,  # marked unread: «Nuova» again (see opened)
                                    scopes=scopes or frozenset({TEAM}),
-                                   opened="hash" in snap and key not in forced))
+                                   opened="hash" in snap and key not in forced,
+                                   ident=adr.get("id") or "", name=adr.get("title") or ""))
     for uuid, snap in seen.items():  # ADR seen, and no longer in the project
         if uuid not in present and snap.get("relevant", True):
             key = f"adr:{uuid}"
+            ident, name = snap.get("id"), snap.get("name")
+            if ident is None:  # seen before the version 0.10.1: only the title with the ID is kept
+                parts = (snap.get("title") or "").split(" · ", 1)
+                ident, name = (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
             result.append(Notification(key, DELETED, uuid, snap.get("title") or "ADR", "L'ADR è stata eliminata",
                                        noticed_at(f"{key}:deleted"), not snap.get("deleted_seen") or key in forced,
                                        scopes=frozenset(snap.get("scopes") or (TEAM,)),
-                                       opened="hash" in snap and key not in forced))
+                                       opened="hash" in snap and key not in forced, ident=ident, name=name))
     if noticed != first_noticed:
         _save_state(project, user, {**state, "noticed": noticed})
     result += _messages(project, who, local, set(state["opened"]))
@@ -311,6 +323,9 @@ def _messages(project, who, local, opened=frozenset()):
         seen = set(read.get(uuid) or [])
         title = _title(subject) if subject.kind == "adr" else " · ".join(
             t for t in (subject.get("id"), "richiesta di chiarimento") if t)
+        ident = subject.get("id") or ""
+        name = subject.get("title") or subject.get("name") or ("" if subject.kind == "adr" else "Richiesta di chiarimento")
+        kind = "Messaggio (ADR)" if subject.kind == "adr" else "Messaggio (CQ)"
         for m in messages:
             if discussions.is_author(m, user) or m.get("deleted"):
                 continue
@@ -319,7 +334,8 @@ def _messages(project, who, local, opened=frozenset()):
             result.append(Notification(f"msg:{m.uuid}", MESSAGE, uuid, title,
                                        f"Messaggio di {m.get('author') or 'un membro'}: {start}",
                                        m.get("posted") or "", m.uuid not in seen, m.uuid,
-                                       scopes=frozenset({MESSAGES}), opened=m.uuid in seen))
+                                       scopes=frozenset({MESSAGES}), opened=m.uuid in seen,
+                                       ident=ident, name=name, kind=kind))
     return result
 
 

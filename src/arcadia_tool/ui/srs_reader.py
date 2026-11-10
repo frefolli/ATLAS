@@ -9,7 +9,8 @@ from html import escape
 from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut, QTextDocument
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QListView, QMenu, QMessageBox, QProgressDialog, QPushButton, QStyle, QStyledItemDelegate, QTabBar, QVBoxLayout, QWidget)
+                               QListView, QMenu, QMessageBox, QProgressDialog, QPushButton, QStyle, QStyledItemDelegate,
+                               QTabBar, QToolTip, QVBoxLayout, QWidget)
 
 from arcadia_tool.importers.srs_pdf import chapter_of_item
 from arcadia_tool.model.coverage import derivable
@@ -90,10 +91,22 @@ WRAP = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
 ROW_ACTIONS = {"section": (("domains", "Domini…", "Alloca la sezione ai domini funzionali (principale e "
                                                    "contributori)"),),
                "clause": (("functions", "Mappa a Funzione", "Mappa la clausola alle funzioni di sistema"),
-                          ("derive", "Deriva…", "Deriva uno o più requisiti dalla clausola")),
+                          ("derive", "Deriva…", "Deriva uno o più requisiti dalla clausola"),
+                          ("share", "Condividi", "Propone di condividere la clausola tra più domini: crea l'ADR "
+                                                 "già compilata (Clausole condivise)"),
+                          ("exclude", "Escludi", "Propone di non mappare la clausola su nessun dominio: crea l'ADR "
+                                                 "già compilata (Clausole non mappate)")),
                "item": (("derive", "Deriva…", "Deriva uno o più requisiti dalla voce (punto di elenco, riga di "
                                               "tabella…); la tracciabilità alle funzioni è quella della clausola"),)}
 ACTION_GAP = 6
+# The badges of a row, drawn like its buttons: (text and border, background). The domains of a section: principal
+# (True), contributing (False); the system functions of a clause: mapped to it, or to its section; its derived
+# requirements.
+DOMAIN_BADGES = {True: ("#1F5FBF", "#E6F0FF"), False: ("#5B6B7C", "#F1F3F6"),
+                 "function": ("#0E7490", "#E0F5F9"), "inherited": ("#5B6B7C", "#F1F3F6"),
+                 "derived": ("#7C3AED", "#F3EEFF")}
+BADGE_TIPS = {True: "Dominio principale della sezione (A4)", False: "Dominio che contribuisce alla sezione (A4)",
+              "derived": "Requisito derivato (SA-4) dalla voce"}
 
 
 def row_kind(element):
@@ -120,6 +133,10 @@ class ItemDelegate(QStyledItemDelegate):
         self.view = view
         self.project = project
         self.links = None  # function(element) → what the item is allocated to, shown in its row of actions
+        # function(element) → [(text, principal)]: the domains of a section, drawn as badges (None: the text of links)
+        self.domain_badges = None
+        # function(element) → [(text, style)]: the functions and derived requirements of a clause, as badges
+        self.link_badges = None
         self._sizes = {}
         self._pixmaps = {}
         self._figure_sizes = {}  # (width, height) of the figures: their layout does not decode them
@@ -260,15 +277,28 @@ class ItemDelegate(QStyledItemDelegate):
         else:
             body_left, chips_left = left + NUMBER_WIDTH, right - CHIPS_WIDTH
         body_width = max((chips_left - 12 if chips_left else right) - body_left, 120)
+        kind = row_kind(element)
+        # A section: the badges of its domains right of its title (which leaves them up to half of the row).
+        badges = (self.domain_badges(element) or []) if self.domain_badges and kind == "section" else []
+        badge_box, chip_h = None, self.metrics["chip"].height() + 8
+        room = 0
+        if badges:
+            want = sum(self.metrics["chip"].horizontalAdvance(t) + 22 for t, _p in badges) + ACTION_GAP * (len(badges) - 1)
+            room = min(want, body_width // 2)
         placed, y = [], top
-        for key, colour, text in self._blocks(element):
-            doc = self._highlighted(key, colour, text, body_width)
+        for n, (key, colour, text) in enumerate(self._blocks(element)):
+            width = body_width - room - 12 if n == 0 and room else body_width
+            doc = self._highlighted(key, colour, text, width)
             if doc is not None:
                 h = int(doc.size().height())
-                placed.append(("rich", None, doc, QRect(body_left, y, body_width, h)))
+                placed.append(("rich", None, doc, QRect(body_left, y, width, h)))
             else:
-                h = self._text_height(key, text, body_width)
-                placed.append((key, colour, text, QRect(body_left, y, body_width, h)))
+                h = self._text_height(key, text, width)
+                placed.append((key, colour, text, QRect(body_left, y, width, h)))
+            if n == 0 and room:
+                title_w = min(self.metrics[key].horizontalAdvance(text), width)
+                line = self.metrics[key].height()
+                badge_box = QRect(body_left + title_w + 12, y + (line - chip_h) // 2, room, chip_h)
             y += h + 2
         size = self._figure_size(element)
         if size is not None:
@@ -282,7 +312,6 @@ class ItemDelegate(QStyledItemDelegate):
             chips = (chips_left, top, rows, chip_h)
             height = max(height, len(rows) * (chip_h + CHIP_GAP), self.metrics["bold"].height())
         actions = None
-        kind = row_kind(element)
         if kind:  # a line below the text: what the item is allocated to, and the buttons to change it
             line_h = self.metrics["chip"].height() + 8
             line_top = top + height + 4
@@ -292,9 +321,72 @@ class ItemDelegate(QStyledItemDelegate):
                 x -= w
                 buttons.insert(0, (name, label, QRect(x, line_top, w, line_h)))
                 x -= ACTION_GAP
-            actions = (QRect(body_left, line_top, max(x - 8 - body_left, 40), line_h), buttons)
+            actions = (QRect(body_left, line_top, max(x - 8 - body_left, 40), line_h), buttons, badge_box, badges)
             height += line_h + 6
         return left, top, placed, chips, actions, height + (top - rect.y()) + PAD_BOTTOM
+
+    def _badge_places(self, box, badges):
+        """Where the badges go in the box, from the left: [(rect, badge)]; then (rect, None) for «+n», the badges
+        that do not fit. A badge: (text, style[, what it means, shown when the mouse is on it])."""
+        metrics = self.metrics["chip"]
+        places, x, right = [], box.left(), box.right()
+        for n, badge in enumerate(badges):
+            rest = len(badges) - n - 1
+            more = metrics.horizontalAdvance(f"+{rest}") + 18 if rest else 0
+            width = min(metrics.horizontalAdvance(badge[0]) + 22, right - x - more)
+            if width < 60:  # no room left: how many are not shown
+                places.append((QRect(x, box.top(), right - x, box.height()), None, len(badges) - n))
+                break
+            places.append((QRect(x, box.top(), width, box.height()), badge, 0))
+            x += width + ACTION_GAP
+        return places
+
+    def _paint_domain_badges(self, painter, box, badges):
+        """The badges of a row (the domains of a section, the functions of a clause…), from the left; those that do
+        not fit are counted («+2»)."""
+        metrics = self.metrics["chip"]
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        for chip, badge, hidden in self._badge_places(box, badges):
+            if badge is None:
+                painter.setPen(QColor(MUTED))
+                painter.drawText(chip, Qt.AlignLeft | Qt.AlignVCenter, f"+{hidden}")
+                break
+            fg, bg = DOMAIN_BADGES[badge[1]]
+            painter.setPen(QColor(fg))
+            painter.setBrush(QColor(bg))
+            painter.drawRoundedRect(chip.adjusted(0, 0, -1, -1), 6, 6)
+            painter.drawText(chip.adjusted(10, 0, -10, 0), Qt.AlignCenter,
+                             metrics.elidedText(badge[0], Qt.ElideRight, chip.width() - 20))
+        painter.restore()
+
+    def badge_tip(self, index, pos):
+        """What the badge under a point of the viewport means (e.g. how a function is mapped), or None."""
+        element = index.data(ELEMENT_ROLE)
+        if element is None or not row_kind(element):
+            return None
+        *_, actions, _ = self._layout(element, self.view.visualRect(index))
+        if actions is None:
+            return None
+        text_box, _buttons, badge_box, badges = actions
+        links = self.link_badges(element) if self.link_badges and row_kind(element) in ("clause", "item") else []
+        for box, listed in ((badge_box, badges), (text_box, links if not badges else [])):
+            if box is None or not listed:
+                continue
+            for chip, badge, hidden in self._badge_places(box, listed):
+                if chip.contains(pos):
+                    if badge is None:
+                        return "Altri: " + ", ".join(b[0] for b in listed[len(listed) - hidden:])
+                    return badge[0] + "\n" + (badge[2] if len(badge) > 2 else BADGE_TIPS.get(badge[1], ""))
+        return None
+
+    def helpEvent(self, event, view, option, index):
+        if event.type() == QEvent.ToolTip:
+            tip = self.badge_tip(index, event.pos())
+            if tip:
+                QToolTip.showText(event.globalPos(), tip, view)
+                return True
+        return super().helpEvent(event, view, option, index)
 
     def button_at(self, index, pos):
         """Action of the button of the row under a point of the viewport, or None."""
@@ -382,12 +474,20 @@ class ItemDelegate(QStyledItemDelegate):
                     x += w + CHIP_GAP
                 y += chip_h + CHIP_GAP
         if actions is not None:
-            text_box, buttons = actions
+            text_box, buttons, badge_box, badges = actions
             painter.setFont(self.fonts["chip"])
             painter.setPen(QColor(MUTED))
-            text = self.links(element) if self.links else ""
-            painter.drawText(text_box, Qt.AlignLeft | Qt.AlignVCenter,
-                             self.metrics["chip"].elidedText(text, Qt.ElideRight, text_box.width()))
+            links = self.link_badges(element) if self.link_badges and row_kind(element) in ("clause", "item") else []
+            if badges and badge_box is not None:  # right of the title: the line below has only the buttons
+                self._paint_domain_badges(painter, badge_box, badges)
+                painter.setFont(self.fonts["chip"])
+            elif links:  # the functions and the derived requirements of a clause, left of its buttons
+                self._paint_domain_badges(painter, text_box, links)
+                painter.setFont(self.fonts["chip"])
+            else:
+                text = self.links(element) if self.links else ""
+                painter.drawText(text_box, Qt.AlignLeft | Qt.AlignVCenter,
+                                 self.metrics["chip"].elidedText(text, Qt.ElideRight, text_box.width()))
             painter.setRenderHint(QPainter.Antialiasing)
             for _, label, box in buttons:
                 painter.setPen(QColor(ACCENT))
@@ -416,6 +516,7 @@ class SrsReader(QWidget):
     window_toggled = Signal()  # «Apri in altra finestra» / «Riporta nelle schede»
     elements_changed = Signal(list)  # elements changed from a row (domains of a section, functions of a clause)
     elements_created = Signal()  # derived requirements created from a row
+    clause_declared = Signal(str, str)  # «Condividi» or «Escludi» of a clause: the list (see model_tree), its uuid
 
     def __init__(self, project, edit_mode=None):
         super().__init__()
@@ -479,6 +580,8 @@ class SrsReader(QWidget):
         self.view.setModel(self.model)
         self.delegate = ItemDelegate(self.view, project)
         self.delegate.links = self._links_text
+        self.delegate.domain_badges = self._domain_badges
+        self.delegate.link_badges = self._link_badges
         self.delegate.action_clicked.connect(self.run_action)
         self.view.setItemDelegate(self.delegate)
         self._links = {}
@@ -496,8 +599,11 @@ class SrsReader(QWidget):
         self.view.customContextMenuRequested.connect(self._context_menu)
         QShortcut(QKeySequence.Delete, self.view, activated=self.delete_selected)
 
-        hint = QLabel("Sezioni: «Domini…» le alloca ai domini funzionali. Clausole: «Mappa a Funzione» le mappa "
-                      "alle funzioni di sistema, «Deriva…» crea uno o più requisiti derivati. Doppio clic apre la voce. "
+        hint = QLabel("Sezioni: i badge sono i domini (blu il principale, grigi i contributori), «Domini…» le alloca. "
+                      "Clausole: i badge sono le funzioni mappate (azzurre; grigie se mappate alla sezione) e i "
+                      "requisiti derivati (viola); «Mappa a Funzione» le mappa "
+                      "alle funzioni di sistema, «Deriva…» crea uno o più requisiti derivati, «Condividi» ed «Escludi» "
+                      "creano l'ADR per condividerle tra domini o non mapparle. Doppio clic apre la voce. "
                       "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
                       "modalità modifica, Canc elimina le voci selezionate.",
                       objectName="muted")
@@ -708,7 +814,16 @@ class SrsReader(QWidget):
     # --- allocation from the rows --------------------------------------------------------------------
 
     def _rebuild_links(self):
-        """What the rows show: system functions tracing each item directly, derived requirements of each item."""
+        """What the rows show: system functions tracing each item directly, derived requirements of each item; the
+        roles of the functions in the SA-3 register of each item (primary, secondary)."""
+        roles = {}
+        for record in self.project.model.of_kind("trace_record"):
+            item = record.get("requirement")
+            for f in record.get("primary_functions") or []:
+                roles[(item, f)] = "funzione primaria"
+            for f in record.get("secondary_functions") or []:
+                roles.setdefault((item, f), "funzione secondaria")
+        self._roles = roles
         functions, derived = {}, {}
         for sf in self.project.model.of_kind("system_function"):
             for uuid in sf.get("sections") or []:
@@ -718,17 +833,57 @@ class SrsReader(QWidget):
                 derived.setdefault(d.get("parent"), []).append(d)
         self._links = {"functions": functions, "derived": derived}
 
-    def _short(self, uuid):
+    def _domain(self, uuid):
+        """A domain as the rows name it: code and name («DF03 - Movement Authority Management»)."""
         e = self.project.model.get(uuid)
-        return (e.get("id") or self.project.model.label(e)) if e is not None else "?"
+        if e is None:
+            return "?"
+        return " - ".join(t for t in (e.get("id"), e.get("name")) if t) or self.project.model.label(e)
+
+    def _domain_badges(self, element):
+        """The domains of a section as badges: [(«DF03 - Movement Authority Management», principal)]."""
+        badges = [(self._domain(element.get("primary_domain")), True)] if element.get("primary_domain") else []
+        return badges + [(self._domain(d), False) for d in element.get("contributing_domains") or []]
+
+    def _link_badges(self, element):
+        """The badges of a clause (or of a list item): the system functions mapped to it («SF-DF02-03 - Determinare
+        la posizione del treno»), those mapped to its section or clause (grey), its derived requirements (purple)."""
+        functions = self._links.get("functions", {})
+
+        def named(f):
+            return " - ".join(t for t in (f.get("id"), f.get("name")) if t) or f.label
+
+        model, ident = self.project.model, element.get("id") or ""
+
+        def role(f):
+            found = getattr(self, "_roles", {}).get((element.uuid, f.uuid))
+            return f"\nNel registro SA-3 della voce: {found}." if found else ""
+
+        direct = [(f, None) for f in functions.get(element.uuid, [])]
+        inherited, parent = [], element.get("parent")
+        while parent:  # functions tracing a section (or a clause) that contains it
+            seen = [f for f, _p in direct + inherited]
+            inherited += [(f, parent) for f in functions.get(parent, []) if f not in seen]
+            parent = self.parents.get(parent)
+
+        def where(uuid):
+            part = model.get(uuid)
+            kind = "sezione" if part is not None and part.get("item_type") == "Sezione" else "clausola"
+            return f"{kind} {part.get('id') if part is not None else '?'}"
+
+        derived = self._links.get("derived", {}).get(element.uuid, [])
+        return ([(named(f), "function", f"Mappata direttamente alla clausola {ident}.{role(f)}") for f, _p in direct]
+                + [(named(f), "inherited", f"Mappata alla {where(p)}, che contiene la voce {ident}: la voce la eredita."
+                    f"{role(f)}") for f, p in inherited]
+                + [(d.get("id") or "?", "derived", f"Requisito derivato (SA-4) dalla voce {ident}.") for d in derived])
 
     def _links_text(self, element):
         kind = row_kind(element)
         if kind == "section":
             parts = []
             if element.get("primary_domain"):
-                parts.append(f"{self._short(element.get('primary_domain'))} (principale)")
-            parts += [f"{self._short(d)} (contributo)" for d in element.get("contributing_domains") or []]
+                parts.append(f"{self._domain(element.get('primary_domain'))} (principale)")
+            parts += [f"{self._domain(d)} (contributo)" for d in element.get("contributing_domains") or []]
             return "Domini: " + " · ".join(parts) if parts else "Nessun dominio allocato"
         if kind in ("clause", "item"):
             functions = self._links.get("functions", {})
@@ -748,7 +903,7 @@ class SrsReader(QWidget):
         return ""
 
     def run_action(self, uuid, name):
-        """«Domini…» of a section, «Mappa a Funzione» or «Deriva…» of a clause."""
+        """«Domini…» of a section, «Mappa a Funzione», «Deriva…», «Condividi» or «Escludi» of a clause."""
         from arcadia_tool.ui.srs_row_actions import DeriveDialog, ItemDomainsDialog, choose_functions
 
         item = self.project.model.get(uuid)
@@ -768,6 +923,10 @@ class SrsReader(QWidget):
             if chosen is None:
                 return
             changed = self.project.trace_item_to_functions(item, chosen)
+        elif name in ("share", "exclude"):  # an ADR for the clause, created and opened by the window
+            from arcadia_tool.ui.model_tree import SHARED_CLAUSES, UNMAPPED_CLAUSES
+            self.clause_declared.emit(SHARED_CLAUSES if name == "share" else UNMAPPED_CLAUSES, uuid)
+            return
         elif name == "derive":
             dialog = DeriveDialog(self.project, item, self)
             if not dialog.exec():

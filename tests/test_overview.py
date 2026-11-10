@@ -302,7 +302,7 @@ def test_an_empty_main_next_to_master_is_not_the_base(tmp_path):
     commit.author_timezone = commit.commit_timezone = 0
     repo.object_store.add_object(commit)
     repo.refs[b"refs/remotes/origin/main"] = commit.id  # what a Git server creates with a new repository
-    assert p.main_branch() == "main"
+    assert p.main_branch() == "master"  # the empty «main» is not the main branch
     main, sources = p.overview_sources()
     assert main.name == "master" and all(s.name != "main" for s in sources)
 
@@ -320,4 +320,64 @@ def test_an_element_renumbered_by_the_integration_is_approved(tmp_path):
     assert p.apply_receive(receive, None, AUTHOR).renumbered
     p = reopen(p)
     assert view(p).entries[made["a"].uuid].state == APPROVED
+
+
+def test_the_main_branch_set_in_the_settings_counts_ahead_and_behind(tmp_path, app):
+    from types import SimpleNamespace
+
+    from arcadia_tool.ui.branches import BranchesDialog
+    from arcadia_tool.ui.project_settings import ProjectSettingsDialog
+
+    p, d = start(tmp_path)
+    p = on_branch(p, "sviluppo", lambda q: rename(q, d["Radio"].uuid, "Radio S"))
+    p = on_branch(p, "att/A", lambda q: rename(q, d["Odometria"].uuid, "Odometria A"))
+    rename(p, d["Frenatura"].uuid, "Frenatura M")
+    p.save()
+    p.publish("master va avanti", AUTHOR)
+    by_name = {b.name: b for b in p.branches()}
+    assert p.main_branch() == "master" and (by_name["att/A"].ahead, by_name["att/A"].behind) == (1, 1)
+    p.update_settings(main_branch="sviluppo")  # chosen in the settings
+    by_name = {b.name: b for b in p.branches()}
+    assert p.main_branch() == "sviluppo" and by_name["sviluppo"].main
+    assert (by_name["att/A"].ahead, by_name["att/A"].behind) == (1, 1) and (by_name["master"].ahead, by_name["master"].behind) == (1, 1)
+    dialog = BranchesDialog(p, {}, None)
+    row = next(r for r in range(dialog.table.rowCount()) if dialog.table.item(r, 0).text().startswith("att/A"))
+    assert dialog.table.horizontalHeaderItem(4).text() == "Rispetto a «sviluppo»"
+    assert dialog.table.item(row, 4).text() == "1 avanti, 1 indietro"
+    # The choice: only the Design Authority, once it has members.
+    rfi = p.new_element("team", name="RFI")
+    rfi.set("design_authority", True)
+    rfi.set("members", [{"name": "Anna", "account": "a" * 32}])
+    p.update(rfi)
+    from arcadia_tool.ui.accounts import GitAccess
+
+    def account(ident, name):  # no server access stored: the settings only read it
+        return SimpleNamespace(id=ident, full_name=name, email=f"{name}@x.it", username=name.lower(),
+                               git_access=lambda host: GitAccess())
+
+    anna, mario = account("a" * 32, "Anna"), account("b" * 32, "Mario")
+    assert not ProjectSettingsDialog(p, mario).main_branch.isEnabled()
+    settings = ProjectSettingsDialog(p, anna)
+    assert settings.main_branch.isEnabled() and settings.main_branch.currentData() == "sviluppo"
+    settings.main_branch.setCurrentIndex(0)  # automatic
+    settings._save()
+    assert "main_branch" not in p.settings and p.main_branch() == "master"
+
+
+def test_a_branch_with_nothing_in_common_says_so(tmp_path, app):
+    from dulwich.objects import Commit, Tree
+
+    p, d = start(tmp_path)
+    repo = p.repository._repo
+    tree = Tree()
+    repo.object_store.add_object(tree)
+    commit = Commit()
+    commit.tree, commit.parents, commit.message = tree.id, [], b"altro progetto"
+    commit.author = commit.committer = b"Server <server@example.com>"
+    commit.author_time = commit.commit_time = 1
+    commit.author_timezone = commit.commit_timezone = 0
+    repo.object_store.add_object(commit)
+    repo.refs[b"refs/remotes/origin/altro"] = commit.id
+    other = next(b for b in p.branches() if b.name == "altro")
+    assert other.unrelated and other.ahead is None
 

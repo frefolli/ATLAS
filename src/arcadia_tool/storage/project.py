@@ -309,6 +309,7 @@ class Branch:
         self.name, self.local, self.remote, self.current, self.main = name, local, remote, current, main
         self.last = None  # the Version of its head
         self.ahead = self.behind = None  # versions it has that main has not, and the other way round
+        self.unrelated = False  # no version in common with the main branch
 
     @property
     def head(self):
@@ -568,6 +569,41 @@ class Project:
         if name == self.current_branch():
             raise ProjectError(f"«{name}» è il ramo in uso: passa prima a un altro ramo.")
         self.repository.delete_branch(name)
+
+    def remote_delete_denied(self, user, name):
+        """Why the user may not remove the branch `name` from the repository, or None. «main», «master» and the main
+        branch of the project only the Design Authority (while it has no members, anyone); never the branch in use."""
+        from arcadia_tool.model.teams import main_denied
+        if not self.remote():
+            return "Il progetto non ha un repository remoto"
+        if name not in self.repository.remote_heads():
+            return "Non è nel repository (o non ancora scaricato: usa «Aggiorna dal repository»)"
+        if name in (self.current_branch(), self.push_branch()):
+            return "È il ramo in uso: passa prima a un altro ramo"
+        if name in MAIN_BRANCHES or name == self.main_branch():
+            denied = main_denied(self.model, user, name)
+            if denied:
+                return f"Solo la Design Authority elimina il ramo principale «{name}» dal repository"
+        return None
+
+    def versions_only_on_remote_branch(self, name):
+        """The versions of the branch `name` of the remote that no other branch has, here or on the remote (as last
+        known): nobody would have them any more once it is removed."""
+        local, remote = self.repository.local_heads(), self.repository.remote_heads()
+        if name not in remote:
+            return []
+        others = list(local.values()) + [h for n, h in remote.items() if n != name]
+        return self.repository.versions_between(others, remote[name])
+
+    def delete_remote_branch(self, name, user=None, **credentials):
+        """Remove the branch `name` from the repository (see remote_delete_denied); the one of this PC, if any, stays.
+        credentials: see accounts.git_credentials."""
+        denied = self.remote_delete_denied(user, name)
+        if denied:
+            raise ProjectError(denied)
+        self.repository.delete_remote_branch(self.remote(), name, **credentials)
+        if name in self.branches_to_delete():  # no longer waiting for the next send
+            self.set_local_settings(delete_branches=[b for b in self.branches_to_delete() if b != name])
 
     def delete_integrated_branch(self, name):
         """After «Integra»: the branch `name` deleted on this PC and, if it is on the remote, from the remote with
@@ -1210,9 +1246,29 @@ class Project:
         return self.local_settings().get("fetched", "")
 
     def main_branch(self):
-        """The branch the Design Authority integrates into: «main» (or «master»), on this PC or on the remote."""
-        names = set(self.repository.local_heads()) | set(self.repository.remote_heads())
-        return next((n for n in MAIN_BRANCHES if n in names), None)
+        """The branch the Design Authority integrates into: the one set in the settings of the project (Impostazioni ›
+        Repository Git, by the Design Authority), else «main» or «master», on this PC or on the remote. Of these two, an
+        empty one (the first version a Git server creates) is not the main branch when the other has the model."""
+        configured = self.settings.get("main_branch")
+        if configured:
+            return configured
+        heads = {**self.repository.remote_heads(), **self.repository.local_heads()}
+        present = [n for n in MAIN_BRANCHES if n in heads]
+        with_model = [n for n in present if self._has_model(heads[n])]
+        return (with_model or present or [None])[0]
+
+    def _has_model(self, sha):
+        known = self.__dict__.setdefault("_with_model", {})
+        if sha not in known:
+            known[sha] = bool(self.repository.model_blobs(sha))
+        return known[sha]
+
+    def main_branch_choice_denied(self, user):
+        """Why the user may not choose the main branch of the project, or None: only the Design Authority (it decides
+        where the rules of the main branch apply); while no DA team has members yet, anyone."""
+        from arcadia_tool.model.teams import main_denied
+        return ("Solo la Design Authority sceglie il ramo principale del progetto."
+                if main_denied(self.model, user, self.main_branch() or "main") else None)
 
     def overview_sources(self):
         """What the overview of the branches can overlay: (the main branch, the other branches), as Sources: each with
@@ -1223,8 +1279,9 @@ class Project:
 
         found = [Source(b.name, b.remote or b.local, only_here=b.remote is None and bool(self.remote()),
                         differs=bool(b.remote and b.local and b.remote != b.local)) for b in self.branches()]
-        found = [s for s in found if s.name not in MAIN_BRANCHES or self.repository.model_blobs(s.sha)]
-        main = next((s for n in MAIN_BRANCHES for s in found if s.name == n), None)
+        name = self.main_branch()
+        found = [s for s in found if s.name == name or s.name not in MAIN_BRANCHES or self._has_model(s.sha)]
+        main = next((s for s in found if s.name == name), None)
         return main, [s for s in found if s is not main] if main else []
 
     def branches(self):
@@ -1238,9 +1295,11 @@ class Project:
             b = Branch(name, local.get(name), remote.get(name), name == current, name == main)
             head = b.head
             b.last = self.repository.version(head)
-            if main_sha and not b.main:
+            if main_sha and not b.main and self.repository.merge_base(main_sha, head) is not None:
                 b.ahead = len(self.repository.versions_between(main_sha, head))
                 b.behind = len(self.repository.versions_between(head, main_sha))
+            elif main_sha and not b.main:
+                b.unrelated = True  # no version in common: the counts would mean nothing
             result.append(b)
         return result
 

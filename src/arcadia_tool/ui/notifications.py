@@ -10,12 +10,13 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QHBoxLayou
 
 from arcadia_tool.model import notifications as n
 from arcadia_tool.model.discussions import when
-from arcadia_tool.ui.theme import ACCENT, MUTED, icon
+from arcadia_tool.ui.model_tree import _dot
+from arcadia_tool.ui.theme import MUTED, icon
 
 # «Stato»: Nuova (never opened by the user of this PC), Letta (opened at least once); what happened (changed,
-# deleted, a message) is in the detail; the dot and the bold: what is to look at (unread).
-COLUMNS = ("", "Stato", "ADR o discussione", "Dettaglio", "Quando")
-DOT, STATE, SUBJECT, DETAIL, WHEN = range(len(COLUMNS))
+# deleted, a message) is in the description; the dot beside the ID and the bold: what is to look at (unread).
+COLUMNS = ("ID", "Titolo", "Descrizione", "Tipo", "Stato", "Data e ora")
+IDENT, TITLE, DETAIL, KIND, STATE, WHEN = range(len(COLUMNS))
 COLOURS = {n.NEW: "#166534", n.READ: MUTED}
 ALL = "all"
 
@@ -34,9 +35,9 @@ class NotificationsDialog(QDialog):
                       "aperta su questo PC; il pallino segna ciò che è da vedere (anche cambiato dopo la lettura). "
                       "Le ADR proposte da altri team che riguardano un dominio del tuo team come destinazione (create, "
                       "modificate o eliminate) e i messaggi delle loro discussioni. Una notifica si legge aprendola; "
-                      "«Segna come non letta» la ripropone per riesaminarla. La lettura di un'ADR viene registrata "
-                      "anche nel progetto, con il tuo nome. I membri della Design Authority ricevono tutte le ADR "
-                      "non aperte dalla DA, nella loro scheda.", objectName="muted")
+                      "«Segna come non letta» la ripropone per riesaminarla. Lo stato di lettura resta su questo PC. "
+                      "I membri della Design Authority ricevono tutte le ADR non aperte dalla DA, nella loro "
+                      "scheda.", objectName="muted")
         # The tabs: why the notifications reach the user (the Design Authority only for its members).
         self.tabs = QTabBar()
         self.tabs.setDrawBase(False)
@@ -53,9 +54,9 @@ class NotificationsDialog(QDialog):
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         header = self.tree.header()
-        for column, (mode, width) in enumerate(((QHeaderView.Fixed, 28), (QHeaderView.Interactive, 110),
-                                                (QHeaderView.Interactive, 330), (QHeaderView.Stretch, 0),
-                                                (QHeaderView.Interactive, 130))):
+        for column, (mode, width) in enumerate(((QHeaderView.Interactive, 110), (QHeaderView.Interactive, 320),
+                                                (QHeaderView.Stretch, 0), (QHeaderView.Interactive, 120),
+                                                (QHeaderView.Interactive, 80), (QHeaderView.Interactive, 130))):
             header.setSectionResizeMode(column, mode)
             if width:
                 header.resizeSection(column, width)
@@ -107,9 +108,9 @@ class NotificationsDialog(QDialog):
         bold = QFont()
         bold.setBold(True)
         for x in shown:
-            item = QTreeWidgetItem(["●" if x.unread else "", x.state, x.title, x.detail, when(x.when)])
+            item = QTreeWidgetItem([x.ident, x.name or x.title, x.detail, x.kind, x.state, when(x.when)])
             item.setData(0, Qt.UserRole, x.key)
-            item.setForeground(DOT, QBrush(QColor(ACCENT)))
+            item.setIcon(IDENT, _dot(x.unread))  # the blue dot: to look at
             item.setForeground(STATE, QBrush(QColor(COLOURS[x.state])))
             item.setToolTip(STATE, "Mai aperta da te su questo PC, o rimessa come non letta" if x.state == n.NEW
                             else "Aperta da te" + (": è cambiata dopo" if x.unread else ""))
@@ -119,7 +120,7 @@ class NotificationsDialog(QDialog):
                 elif column != STATE:
                     item.setForeground(column, QBrush(QColor(MUTED)))
             item.setToolTip(DETAIL, x.detail)
-            item.setToolTip(SUBJECT, x.title)
+            item.setToolTip(TITLE, x.title)
             self.tree.addTopLevelItem(item)
         self.all_button.setEnabled(bool(unread))
         self._update()

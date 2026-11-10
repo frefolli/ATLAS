@@ -24,8 +24,8 @@ from arcadia_tool.model.adr import (approval_problems, approve_new_domain, appro
                                     reallocation_preview, reallocation_problems, sections_taken)
 from arcadia_tool.model.element import is_empty
 from arcadia_tool.model.required import save_refusal
-from arcadia_tool.model.schema import (ADR_DETAILS, ADR_SECTION, BOOL, DA_DECISION, ENUM, IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF,
-                                       REFS, STR, STRLIST, TABLE, TEXT, enum_option)
+from arcadia_tool.model.schema import (ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
+                                       IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.storage.project import local_change, local_changes
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
 from arcadia_tool.ui.dialogs import replace_page
@@ -618,6 +618,8 @@ class ElementEditor(QScrollArea):
         element, model = self.element, self.project.model
         if element.get("adr_type") == ADR_SECTION:
             return self._approve_reallocation()
+        if element.get("adr_type") in (ADR_SHARED, ADR_UNMAPPED):
+            return self._approve_clauses()
         problems = approval_problems(model, element)
         if problems:
             QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
@@ -643,6 +645,47 @@ class ElementEditor(QScrollArea):
         self._build()
         QMessageBox.information(self, "Approva ADR", f"ADR approvata: creato il dominio "
                                 f"{model.label(domain)}.")
+
+    def _approve_clauses(self):
+        """A sharing: the domains become contributors of the clauses; clauses mapped to no domain: the decision only.
+        After a confirmation that says what changes (see model.adr.approve_sharing, approve_unmapped)."""
+        from arcadia_tool.model.adr import (approve_sharing, approve_unmapped, clauses_of, sharing_preview,
+                                            sharing_problems)
+
+        element, model = self.element, self.project.model
+        sharing = element.get("adr_type") == ADR_SHARED
+        problems = sharing_problems(model, element) if sharing else (
+            [] if clauses_of(model, element) else ["Mancano le clausole non mappate."])
+        if problems:
+            QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
+            return
+
+        def short(uuid):
+            target = model.get(uuid)
+            return (target.get("id") or model.label(target)) if target is not None else "?"
+
+        if sharing:
+            from arcadia_tool.model.adr import derived_moves
+            lines = [f"• {item.get('id')}: " + (", ".join(short(d) for d in added) if added else "già condivisa")
+                     for item, added in sharing_preview(model, element)[:15]]
+            moves = [f"• {d.get('id') or model.label(d)} → {short(domain)}" for d, domain in derived_moves(model, element)]
+            question = ("Approvare l'ADR? I domini diventano contributori delle clausole:\n\n" + "\n".join(lines)
+                        + ("\n\nRequisiti derivati assegnati al dominio di destinazione:\n" + "\n".join(moves[:15])
+                           if moves else ""))
+        else:
+            ids = [e.get("id") or "" for e in clauses_of(model, element)]
+            question = ("Approvare l'ADR? Le clausole risultano non mappate per decisione della Design Authority "
+                        "(la verifica A4-01 non le segnala più):\n\n" + ", ".join(ids[:30]))
+        if QMessageBox.question(self, "Approva ADR", question) != QMessageBox.Yes:
+            return
+        changed = approve_sharing(self.project, element) if sharing else (approve_unmapped(self.project, element) or [])
+        self.draft = element.copy()
+        for e in [*changed, element]:
+            self.element_changed.emit(e)
+        self.saved.emit()  # the project is saved
+        self._build()
+        QMessageBox.information(self, "Approva ADR", "ADR approvata: " + (
+            "clausole condivise." if sharing else "clausole non mappate per decisione."))
 
     def _approve_reallocation(self):
         """The items of the ADR pass to the proposed domain (see model.adr.approve_reallocation), after a confirmation
@@ -1032,14 +1075,21 @@ class ElementEditor(QScrollArea):
             pending = reallocation_pending(self.project.model, element)
             if (can_approve(element) or pending) and self.approver is not None and self.approver():
                 reallocation = element.get("adr_type") == ADR_SECTION
+                kind = element.get("adr_type")
                 self.approve_button = QPushButton(icon("mdi6.check-decagram-outline", "white"),
                                                   "Applica la riallocazione" if pending else
                                                   "Approva e sposta le voci" if reallocation else
+                                                  "Approva e condividi le clausole" if kind == ADR_SHARED else
+                                                  "Approva la non mappatura" if kind == ADR_UNMAPPED else
                                                   "Approva e crea il dominio")
                 self.approve_button.setProperty("primary", True)
                 self.approve_button.setToolTip(
                     "Design Authority: approva l'ADR e porta le sezioni e le clausole al dominio proposto, con i "
                     "contributori proposti" if reallocation else
+                    "Design Authority: approva l'ADR; i domini indicati diventano contributori delle clausole"
+                    if kind == ADR_SHARED else
+                    "Design Authority: approva l'ADR; le clausole risultano non mappate per decisione"
+                    if kind == ADR_UNMAPPED else
                     "Design Authority: approva l'ADR e crea il nuovo dominio funzionale (con l'ID assegnato dal tool), "
                     "la missione, il team e le sezioni proposti")
                 self.approve_button.clicked.connect(lambda _=False: self.approve())

@@ -1,11 +1,11 @@
 """Left panel, in two tabs: «Modello», the navigator phase → element kind → elements (nested when a kind has a
 parent of the same kind), and «Viste grafiche», the graphic views of the SA grouped by type. The tabs are chosen
 from the bar of icons at its left (ui.activity_bar), which also closes and opens the panel."""
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainterPath, QPen
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox,
-                               QPushButton, QStackedWidget, QTabBar, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+                               QPushButton, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+                               QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from arcadia_tool.model.diagrams import BREAKDOWN_TYPES, BREAKDOWN_VIEWS, DIAGRAM, VIEW_GROUPS, views_of
 from arcadia_tool.model.element import natural_key
@@ -32,6 +32,75 @@ NOT_IN_TREE = (DIAGRAM, "message", "reading")
 
 
 TAB_ICONS = ("mdi6.file-tree-outline", "mdi6.vector-polyline")
+# «System Requirements Specifications»: a node for each specification imported (for now the one of the project),
+# with its SRS items and the clauses the teams declare shared among domains or mapped to no domain (by an ADR).
+SRS_ROOT, SRS_SPEC = "srs_root", "srs_spec"
+SHARED_CLAUSES, UNMAPPED_CLAUSES = "shared_clauses", "unmapped_clauses"
+CLAUSE_LISTS = {SHARED_CLAUSES: "Clausole condivise", UNMAPPED_CLAUSES: "Clausole non mappate"}
+CLAUSE_ROLE = Qt.UserRole + 21  # a row of a list of clauses: the clause (the row opens its ADR)
+BADGE_ROLE = Qt.UserRole + 22  # a section of the SRS (three numbers): «DF02 · Radio», its principal domain
+
+
+def section_badge(model, element):
+    """The badge of a section of the SRS (item type «Sezione», e.g. 3.3.1): the ID and name of its principal domain,
+    or None (not a section, or no domain assigned)."""
+    if element.kind != "requirement" or element.get("item_type") != "Sezione" or not element.get("primary_domain"):
+        return None
+    domain = model.get(element.get("primary_domain"))
+    if domain is None:
+        return None
+    return " · ".join(t for t in (domain.get("id"), domain.get("name")) if t) or model.label(domain)
+
+
+class BadgeDelegate(QStyledItemDelegate):
+    """The rows with a badge (BADGE_ROLE) draw it right after their text, which is shortened to leave it room."""
+
+    def paint(self, painter, option, index):
+        badge = index.data(BADGE_ROLE)
+        if not badge:
+            return super().paint(painter, option, index)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        widget = opt.widget
+        style = widget.style() if widget is not None else None
+        text, opt.text = opt.text, ""
+        if style is None:
+            return super().paint(painter, option, index)
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, widget)  # background, selection, icon
+        rect = style.subElementRect(QStyle.SE_ItemViewItemText, opt, widget)
+        metrics = opt.fontMetrics
+        small = QFont(opt.font)
+        small.setPointSizeF(max(opt.font.pointSizeF() - 1.5, 7))
+        small.setWeight(QFont.DemiBold)
+        badge_metrics = type(metrics)(small)
+        # The title first: the badge takes at most 40% of the row, its name shortened, at least the code (DF10).
+        code = badge.split(" · ")[0]
+        limit = max(int(rect.width() * 0.4), badge_metrics.horizontalAdvance(code) + 14)
+        badge_width = min(badge_metrics.horizontalAdvance(badge) + 14, limit)
+        if badge_width < badge_metrics.horizontalAdvance(badge) + 14 and \
+                badge_width < badge_metrics.horizontalAdvance(f"{code} · …") + 14:
+            badge = code  # no room for any of the name
+            badge_width = badge_metrics.horizontalAdvance(code) + 14
+        shown = metrics.elidedText(text, Qt.ElideRight, max(rect.width() - badge_width - 8, 24))
+        painter.save()
+        painter.setFont(opt.font)
+        painter.setPen(opt.palette.color(opt.palette.ColorRole.Text))
+        painter.drawText(rect, Qt.AlignVCenter | Qt.AlignLeft, shown)
+        x = rect.left() + metrics.horizontalAdvance(shown) + 8
+        height = badge_metrics.height() + 2
+        box = QRectF(x, rect.center().y() - height / 2 + 0.5, min(badge_width, max(rect.right() - x, 0)), height)
+        if box.width() > 16:
+            path = QPainterPath()
+            path.addRoundedRect(box, height / 2, height / 2)
+            painter.setRenderHint(painter.RenderHint.Antialiasing)
+            painter.fillPath(path, QColor("#E6F0FF"))
+            painter.setPen(QPen(QColor("#B6CCF0"), 1))
+            painter.drawPath(path)
+            painter.setPen(QColor(ACCENT))
+            painter.setFont(small)
+            painter.drawText(box.adjusted(7, 0, -7, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                             badge_metrics.elidedText(badge, Qt.ElideRight, int(box.width()) - 14))
+        painter.restore()
 UNREAD_ROLE = Qt.UserRole + 20  # an ADR or a CQ with something to look at (its dot)
 _DOTS = {}
 
@@ -109,6 +178,7 @@ class ModelTree(QFrame):
     element_created = Signal(str)  # «Nuovo…»: the uuid of the element just created (its sheet opens next)
     list_requested = Signal(str)  # a kind whose elements are shown as a table in a tab (e.g. X-2)
     breakdown_requested = Signal(str)  # the functional breakdown of the SA of this kind (SA-1 or SA-2)
+    clause_catalog_requested = Signal(str)  # a double click on «Clausole condivise» or «Clausole non mappate»
     view_created = Signal(str)  # «Nuova vista»: the uuid of the view, created and to be saved with the project
 
     def __init__(self, srs_edit_mode=None):
@@ -135,6 +205,7 @@ class ModelTree(QFrame):
         self.filter = _search("Cerca per ID o nome")
         self.filter.textChanged.connect(self._apply_filter)
         self.tree = _navigator()
+        self.tree.setItemDelegateForColumn(0, BadgeDelegate(self.tree))  # the domain of the SRS sections
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self._selecting = False  # select(): opens the element shown, also an SRS item, in its sheet
         self.tree.currentItemChanged.connect(self._current_changed)
@@ -181,6 +252,7 @@ class ModelTree(QFrame):
         layout.addLayout(self.footer)
         self._kind_items = {}
         self._items = {}
+        self._srs_nodes = {}  # SRS_ROOT, SRS_SPEC → their item (expanded or not, kept across a reload)
         self._view_groups = {}  # diagram type (None: the functional breakdown) → its group in «Viste grafiche»
         self._view_items = {}  # uuid of a view → its item
 
@@ -197,10 +269,13 @@ class ModelTree(QFrame):
         self.tree.setUpdatesEnabled(False)
         self.tree.blockSignals(True)
         expanded = {k for k, item in self._kind_items.items() if item.isExpanded()}
+        collapsed = {k for k, item in self._srs_nodes.items() if not item.isExpanded()}
         self.tree.clear()
-        self._kind_items, self._items = {}, {}
+        self._kind_items, self._items, self._srs_nodes = {}, {}, {}
         if self.project is not None:
             self._build(expanded)
+            for key, item in self._srs_nodes.items():
+                item.setExpanded(key not in collapsed)
         self.tree.blockSignals(False)
         self.tree.setUpdatesEnabled(True)
         self._apply_filter(self.filter.text())
@@ -225,7 +300,8 @@ class ModelTree(QFrame):
         for k in sorted(kinds, key=lambda k: TREE_FIRST.index(k.name) if k.name in TREE_FIRST else len(TREE_FIRST)):
             elements = model.of_kind(k.name)
             title = f"{k.template} · {k.plural}" if k.template else k.plural
-            kind_item = QTreeWidgetItem(groups[k.group], [title, str(len(elements))])
+            parent = self._srs_spec(groups[k.group]) if k.name == "requirement" else groups[k.group]
+            kind_item = QTreeWidgetItem(parent, [title, str(len(elements))])
             kind_item.setIcon(0, kind_icon(k.name))
             kind_item.setForeground(1, muted)
             kind_item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
@@ -243,6 +319,69 @@ class ModelTree(QFrame):
                     children.setdefault(parent if parent in uuids else None, []).append(e)
                 self._add_nested(kind_item, None, children)
             kind_item.setExpanded(k.name in expanded)
+            if k.name == "requirement":
+                for key in CLAUSE_LISTS:
+                    self._clause_list(kind_item.parent(), key, key in expanded)
+
+    def _srs_spec(self, group):
+        """«System Requirements Specifications» and, under it, the specification (for now the one of the project, named
+        by its baseline): where its SRS items and its lists of clauses go."""
+        bold = QFont()
+        bold.setWeight(QFont.DemiBold)
+        srs = QTreeWidgetItem(group, ["System Requirements Specifications", ""])
+        srs.setIcon(0, icon("mdi6.bookshelf", "#3D4B5C"))
+        srs.setData(0, KIND_ROLE, SRS_ROOT)
+        srs.setToolTip(0, "Le specifiche di sistema del progetto, ciascuna con le sue voci SRS e le clausole condivise "
+                          "o non mappate indicate dai team")
+        spec = QTreeWidgetItem(srs, [self.project.baseline or "Specifica SRS", ""])
+        spec.setIcon(0, icon("mdi6.book-open-page-variant-outline", ACCENT))
+        spec.setFont(0, bold)
+        spec.setData(0, KIND_ROLE, SRS_SPEC)
+        self._srs_nodes = {SRS_ROOT: srs, SRS_SPEC: spec}
+        return spec
+
+    def _clause_list(self, spec, key, expanded=False):
+        """«Clausole condivise» or «Clausole non mappate»: a row for each clause and ADR that declares it (whatever its
+        status); a click on a row opens the ADR."""
+        from arcadia_tool.model.adr import clause_decisions, outcome
+        from arcadia_tool.model.schema import ADR_SHARED, ADR_UNMAPPED
+
+        rows = clause_decisions(self.project.model, ADR_SHARED if key == SHARED_CLAUSES else ADR_UNMAPPED)
+        node = QTreeWidgetItem(spec, [CLAUSE_LISTS[key], str(len(rows))])
+        node.setIcon(0, icon("mdi6.share-variant-outline" if key == SHARED_CLAUSES else "mdi6.link-variant-off",
+                             ACCENT))
+        node.setForeground(1, QBrush(QColor(MUTED)))
+        node.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+        node.setData(0, KIND_ROLE, key)
+        node.setToolTip(0, "Clic destro per indicarne una (con un'ADR); doppio clic per il catalogo")
+        for item, adr in rows:
+            row = QTreeWidgetItem(node, [f"{item.get('id') or ''} · {adr.get('id') or 'ADR'} · {outcome(adr)}", ""])
+            row.setData(0, KIND_ROLE, "adr")
+            row.setData(0, UUID_ROLE, adr.uuid)
+            row.setData(0, CLAUSE_ROLE, item.uuid)
+            row.setToolTip(0, f"{adr.get('title') or ''}\n{(item.get('text') or '')[:300]}".strip())
+        node.setExpanded(expanded)
+        self._kind_items[key] = node
+        return node
+
+    def refresh_clause_lists(self):
+        """The lists of clauses again (an ADR changed: its status, its clauses)."""
+        spec = self._srs_nodes.get(SRS_SPEC)
+        if spec is None:
+            return
+        self.tree.blockSignals(True)
+        for key in CLAUSE_LISTS:
+            old = self._kind_items.get(key)
+            expanded = old is not None and old.isExpanded()
+            index = spec.indexOfChild(old) if old is not None else -1
+            if old is not None:
+                spec.removeChild(old)
+            node = self._clause_list(spec, key, expanded)
+            if index >= 0:
+                spec.removeChild(node)
+                spec.insertChild(index, node)
+                node.setExpanded(expanded)
+        self.tree.blockSignals(False)
 
     def _build_views(self):
         """Tab «Viste grafiche»: the functional breakdown of SA-1 and SA-2, then the views of the users, a group for
@@ -315,6 +454,7 @@ class ModelTree(QFrame):
         item.setData(0, KIND_ROLE, element.kind)
         item.setData(0, UUID_ROLE, element.uuid)
         item.setToolTip(0, element.get("text") or label)
+        self._show_badge(item, element)
         self._items[element.uuid] = item
         self._show_unread(item, element)
         return item
@@ -350,10 +490,22 @@ class ModelTree(QFrame):
             item = self._add(parent_item, e)
             self._add_nested(item, e.uuid, children)
 
+    def _show_badge(self, item, element):
+        badge = section_badge(self.project.model, element)
+        item.setData(0, BADGE_ROLE, badge)
+        if badge:
+            item.setToolTip(0, f"{element.get('text') or self.project.model.choice_label(element)}\n"
+                               f"Dominio principale: {badge}")
+
     def refresh_label(self, element):
         item = self._items.get(element.uuid)
         if item is not None:
             item.setText(0, self.project.model.choice_label(element))
+            self._show_badge(item, element)
+        if element.kind == "domain":  # its ID or name changed: the badges of its sections
+            for section in self.project.model.of_kind("requirement"):
+                if section.get("primary_domain") == element.uuid and section.uuid in self._items:
+                    self._show_badge(self._items[section.uuid], section)
         view = self._view_items.get(element.uuid)
         if view is not None:
             view.setText(0, element.get("name") or "(vista senza nome)")
@@ -411,6 +563,9 @@ class ModelTree(QFrame):
             for i in range(kind_item.childCount()):
                 visit(kind_item.child(i))
             kind_item.setHidden(False)
+        if text and self._srs_nodes:
+            for node in self._srs_nodes.values():
+                node.setExpanded(True)
         self.tree.setUpdatesEnabled(True)
 
     # --- actions -------------------------------------------------------------------------------
@@ -437,7 +592,9 @@ class ModelTree(QFrame):
 
     def _double_clicked(self, item, _column):
         kind = item.data(0, KIND_ROLE)
-        if kind == "requirement" and not item.data(0, UUID_ROLE):
+        if kind in CLAUSE_LISTS:
+            self.clause_catalog_requested.emit(kind)
+        elif kind == "requirement" and not item.data(0, UUID_ROLE):
             self.srs_reader_requested.emit()
         elif kind in LIST_COLUMNS and not item.data(0, UUID_ROLE):
             self.list_requested.emit(kind)  # a tab with its elements as a table, instead of the branch
@@ -454,6 +611,12 @@ class ModelTree(QFrame):
         kind = item.data(0, KIND_ROLE)
         uuid = item.data(0, UUID_ROLE)
         menu = QMenu(self)
+        if kind in CLAUSE_LISTS or item.data(0, CLAUSE_ROLE):
+            self._clause_menu(menu, item)
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
+            return
+        if kind in (SRS_ROOT, SRS_SPEC):
+            return
         locked = kind == "requirement" and not self.srs_edit_mode.enabled
         if kind == "requirement" and not uuid:
             only_da = self.srs_edit_mode.reason()  # who may change the SRS items
@@ -505,6 +668,54 @@ class ModelTree(QFrame):
             delete.setEnabled(not locked and not denied)
             delete.setToolTip(denied or "")
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _clause_menu(self, menu, item):
+        """On «Clausole condivise» or «Clausole non mappate»: declare one (an ADR), the catalogue; on a row: its ADR,
+        its clause in the SRS catalogue."""
+        clause = item.data(0, CLAUSE_ROLE)
+        if clause:
+            menu.addAction(icon("mdi6.open-in-app"), "Apri l'ADR",
+                           lambda _=False: self.element_selected.emit(self.project.model.get(item.data(0, UUID_ROLE))))
+            menu.addAction(icon("mdi6.book-open-page-variant-outline"), "Mostra la clausola nel catalogo SRS",
+                           lambda _=False: self.srs_item_chosen.emit(clause))
+            return
+        key = item.data(0, KIND_ROLE)
+        denied = self.edit_denied("adr") if self.edit_denied else None
+        action = menu.addAction(icon("mdi6.plus"), "Condividi una clausola…" if key == SHARED_CLAUSES else
+                                "Indica una clausola non mappata…", lambda _=False: self.declare_clauses(key))
+        action.setEnabled(not denied and bool(self.project.model.of_kind("requirement")))
+        action.setToolTip(denied or "Crea un'ADR già compilata per le clausole scelte")
+        menu.setToolTipsVisible(True)
+        menu.addAction(icon("mdi6.table-search"), "Apri il catalogo",
+                       lambda _=False: self.clause_catalog_requested.emit(key))
+
+    def declare_clauses(self, key, chosen=None):
+        """A team declares clauses shared or mapped to no domain: chosen (uuids, else asked with ticks), then a new ADR
+        filled with what the tool knows, opened to complete it."""
+        from arcadia_tool.model.adr import proposer_defaults, sharing_defaults, unmapped_defaults
+        from arcadia_tool.model.element import Element
+        from arcadia_tool.model.schema import ADR_SHARED, ADR_UNMAPPED
+        from arcadia_tool.ui import srs_trace
+
+        model = self.project.model
+        if chosen is None:
+            # The window of the traceability (chapters, search, categories, ticks), as for the clauses of a function.
+            adr_type = ADR_SHARED if key == SHARED_CLAUSES else ADR_UNMAPPED
+            field = "shared_items" if key == SHARED_CLAUSES else "unmapped_items"
+            current = self.current_element()
+            preselect = [current.uuid] if current is not None and current.kind == "requirement" else []
+            probe = Element("adr", values={"adr_type": adr_type, "title": f"Nuova ADR · {adr_type}"})
+            chosen = srs_trace.choose_items(self.project, probe, field, preselect, self)
+            if not chosen:
+                return None
+        items = [model.get(u) for u in chosen if model.get(u) is not None]
+        if not items:
+            return None
+        user = self.user_of() if self.user_of else None
+        proposer = proposer_defaults(model, user).get("proposer")
+        values = sharing_defaults(model, items, proposer) if key == SHARED_CLAUSES else unmapped_defaults(model, items)
+        self.create("adr", values)
+        return values
 
     def _views_menu(self, pos):
         """Menu of «Viste grafiche»: on a group, a new view of its type; on a view, open, rename, delete; on the

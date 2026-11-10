@@ -923,7 +923,8 @@ def test_a_local_branch_is_deleted_from_the_window_of_the_branches(app, tmp_path
     buttons = [dialog.delete_button, dialog.checkout_button]
     layout = dialog.layout().itemAt(1).layout()
     order = [layout.itemAt(i).widget() for i in range(layout.count())]
-    assert order.index(buttons[0]) == order.index(buttons[1]) - 1  # right before the checkout
+    # Before the checkout, followed by the removal from the repository.
+    assert order.index(buttons[0]) + 1 == order.index(dialog.delete_remote_button) == order.index(buttons[1]) - 1
 
     def select(name):
         rows = {dialog.table.item(r, 0).text().replace("  (in uso)", ""): r for r in range(dialog.table.rowCount())}
@@ -937,11 +938,13 @@ def test_a_local_branch_is_deleted_from_the_window_of_the_branches(app, tmp_path
     assert dialog.delete_button.isEnabled()
     dialog.delete_local()  # «No»: it stays, and the versions that would be lost are said
     assert "att/solo-qui" in p.repository.local_heads() and "andranno perse" in asked[0]
-    monkeypatch.setattr(ui.QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or ui.QMessageBox.Yes)
+    replies = [ui.QMessageBox.Yes, ui.QMessageBox.No]  # delete it here; «also from the repository?» no
+    monkeypatch.setattr(ui.QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or replies.pop(0))
     select("att/inviato")
     dialog.delete_local()
-    assert "att/inviato" not in p.repository.local_heads() and "andranno perse" not in asked[-1]
-    assert "att/inviato" in remote_branches(url)  # only on this PC
+    assert "att/inviato" not in p.repository.local_heads() and "andranno perse" not in asked[-2]
+    assert "anche dal repository" in asked[-1] and "att/inviato" in remote_branches(url)  # only on this PC
+    monkeypatch.setattr(ui.QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or ui.QMessageBox.Yes)
     select("att/inviato")  # still listed, from the repository: nothing local to delete
     assert not dialog.delete_button.isEnabled() and "repository" in dialog.delete_button.toolTip()
     select("att/solo-qui")
@@ -1090,4 +1093,132 @@ def test_no_message_when_no_version_is_recorded(app, tmp_path):
     dialog.worker.wait(20000)
     app.processEvents()
     assert dialog.receive.state == Receive.FAST_FORWARD and dialog.message_row.isHidden()
+
+
+# --- removing a branch from the repository ---------------------------------------------------------------------------
+
+def test_a_branch_is_removed_from_the_repository(app, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from dulwich import porcelain
+    from arcadia_tool.storage.project import ProjectError
+    from arcadia_tool.storage.repository import remote_branches
+    from arcadia_tool.ui import branches as ui
+
+    url = str(tmp_path / "server.git")
+    porcelain.init(url, bare=True).close()
+    p, teams, domain = start(tmp_path)
+    rfi = p.model.get(teams[0].uuid)  # a Design Authority with members, on every branch
+    rfi.set("design_authority", True)
+    rfi.set("members", [{"name": "Anna", "account": "a" * 32}])
+    p.update(rfi)
+    p.save()
+    p.publish("DA", AUTHOR)
+    p.repository.set_remote_url(url)
+    p.set_local_settings(branch="master")
+    p.push()
+    for name, element in (("att/inviato", "Radio"), ("att/solo-remoto", "Solo remoto")):
+        p.switch_branch(name, p.repository.head() if name == "att/inviato" else p.repository.local_heads()["master"])
+        p = reopen(p)
+        p.set_local_settings(branch=name)
+        p.new_element("domain", name=element)
+        p.save()
+        p.publish(element, AUTHOR)
+        p.push()
+    p.switch_branch("master")
+    p = reopen(p)
+    p.set_local_settings(branch="master")
+    p.delete_local_branch("att/solo-remoto")  # its versions are only in the repository now
+    anna = SimpleNamespace(id="a" * 32, full_name="Anna", email="a@x.it", username="anna")
+    mario = SimpleNamespace(id="b" * 32, full_name="Mario", email="m@x.it", username="mario")
+    # The main branch: only the Design Authority; the branch in use: nobody.
+    assert "in uso" in p.remote_delete_denied(anna, "master")
+    p.switch_branch("att/inviato")
+    p = reopen(p)
+    p.set_local_settings(branch="att/inviato")
+    assert "Design Authority" in p.remote_delete_denied(mario, "master")
+    with pytest.raises(ProjectError):
+        p.delete_remote_branch("master", mario)
+    p.update_settings(main_branch="att/solo-remoto")  # the main branch of the settings is protected as well
+    assert "Design Authority" in p.remote_delete_denied(mario, "att/solo-remoto")
+    assert p.remote_delete_denied(anna, "att/solo-remoto") is None
+    p.update_settings(main_branch="")
+    assert p.remote_delete_denied(mario, "att/solo-remoto") is None  # another branch: anyone
+    # From the window: the versions that nobody would have any more are said.
+    dialog = ui.BranchesDialog(p, {}, mario)
+    rows = {dialog.table.item(r, 0).text().replace("  (in uso)", ""): r for r in range(dialog.table.rowCount())}
+    dialog.table.selectRow(rows["master"])
+    assert not dialog.delete_remote_button.isEnabled() and "Design Authority" in dialog.delete_remote_button.toolTip()
+    dialog.table.selectRow(rows["att/solo-remoto"])
+    assert dialog.delete_remote_button.isEnabled()
+    asked = []
+    monkeypatch.setattr(ui.QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or ui.QMessageBox.Yes)
+    dialog.delete_remote()
+    assert "nessuno le avrà più" in asked[0]
+    assert "att/solo-remoto" not in remote_branches(url) and "att/solo-remoto" not in p.repository.remote_heads()
+    assert "master" in remote_branches(url) and "att/inviato" in remote_branches(url)
+    assert all(b.name != "att/solo-remoto" for b in p.branches())
+    # The Design Authority removes the main branch (here from another branch in use).
+    p.delete_remote_branch("master", anna)
+    assert "master" not in remote_branches(url) and "master" in p.repository.local_heads()  # the copy here stays
+
+
+def test_deleting_one_copy_asks_about_the_other(app, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from dulwich import porcelain
+    from arcadia_tool.storage.repository import remote_branches
+    from arcadia_tool.ui import branches as ui
+
+    url = str(tmp_path / "server.git")
+    porcelain.init(url, bare=True).close()
+    p, teams, domain = start(tmp_path)
+    p.repository.set_remote_url(url)
+    p.set_local_settings(branch="master")
+    p.push()
+    for name in ("att/uno", "att/due", "att/tre"):
+        p.switch_branch(name, p.repository.local_heads()["master"])
+        p = reopen(p)
+        p.set_local_settings(branch=name)
+        p.new_element("domain", name=name)
+        p.save()
+        p.publish(name, AUTHOR)
+        p.push()
+    p.switch_branch("master")
+    p = reopen(p)
+    p.set_local_settings(branch="master")
+    dialog = ui.BranchesDialog(p, {}, SimpleNamespace(id="a" * 32, full_name="Anna", email="a@x.it", username="a"))
+
+    def select(name):
+        rows = {dialog.table.item(r, 0).text().replace("  (in uso)", ""): r for r in range(dialog.table.rowCount())}
+        dialog.table.selectRow(rows[name])
+
+    def answers(*replies):
+        asked, queue = [], list(replies)
+        monkeypatch.setattr(ui.QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or queue.pop(0))
+        return asked
+
+    yes, no = ui.QMessageBox.Yes, ui.QMessageBox.No
+    # The local copy, then the remote one too.
+    asked = answers(yes, yes)
+    select("att/uno")
+    dialog.delete_local()
+    assert len(asked) == 2 and "Eliminarlo anche dal repository?" in asked[1]
+    assert "att/uno" not in p.repository.local_heads() and "att/uno" not in remote_branches(url)
+    # The remote copy, then not the local one: it stays.
+    asked = answers(yes, no)
+    select("att/due")
+    dialog.delete_remote()
+    assert "Eliminare anche la copia di questo PC?" in asked[1]
+    assert "att/due" not in remote_branches(url) and "att/due" in p.repository.local_heads()
+    # The local copy, and «No» to the other one: the repository keeps it (the warning says its versions are there only).
+    asked = answers(yes, no)
+    select("att/tre")
+    dialog.delete_local()
+    assert "nessuno le avrà più" in asked[1] and "att/tre" in remote_branches(url)
+    # No other copy: no second question.
+    asked = answers(yes)
+    select("att/due")
+    dialog.delete_local()
+    assert len(asked) == 1 and "att/due" not in p.repository.local_heads()
 
