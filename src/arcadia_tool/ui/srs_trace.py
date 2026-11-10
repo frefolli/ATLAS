@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QHeaderV
                                QTreeWidgetItemIterator, QVBoxLayout)
 
 from arcadia_tool.model.coverage import derivable
+from arcadia_tool.model.schema import ADR_ALLOCATION
 from arcadia_tool.ui.busy import save_project
 from arcadia_tool.ui.element_editor import load_pixmap
 from arcadia_tool.ui.srs_reader import CATEGORIES, CATEGORY_COLORS, NO_CATEGORY, chapter_of, document_order
@@ -308,7 +309,7 @@ class _TraceDialog(QDialog):
         self.only_derived.toggled.connect(self._filter)
         self.only_derived.setVisible(self.WITH_DERIVED)
         self.count = QLabel(objectName="muted")
-        top = QHBoxLayout()
+        top = self.filters_row = QHBoxLayout()  # subclasses may add filters of their own (see extra_filter)
         top.addWidget(self.search, 1)
         top.addWidget(self.sections_only)
         top.addWidget(self.only_derived)
@@ -576,7 +577,8 @@ class _TraceDialog(QDialog):
         only_derived = self.only_derived.isChecked()
         wanted = {c for c, box in self.category_boxes.items() if box.isChecked()}
         by_category = wanted != set(self.category_boxes)
-        filtered = bool(text or only_traced or sections_only or only_derived or by_category)
+        extra = self.extra_filter()
+        filtered = bool(text or only_traced or sections_only or only_derived or by_category or extra)
         model = self.project.model
         self.tree.setUpdatesEnabled(False)
         visible = set()
@@ -592,6 +594,7 @@ class _TraceDialog(QDialog):
                     match = match and not wanted.isdisjoint(e.get("category") or (NO_CATEGORY,))
                 match = match and (not only_traced or bool(self.state.get(e.uuid)))
                 match = match and (not text or text in _haystack(e))
+                match = match and (extra is None or extra(e))
             if match:
                 p = item
                 while p is not None and id(p) not in visible:
@@ -607,6 +610,10 @@ class _TraceDialog(QDialog):
                 item.setExpanded(True)
             it += 1
         self.tree.setUpdatesEnabled(True)
+
+    def extra_filter(self):
+        """A filter of a subclass of its own, as a function(element) → shown, or None (nothing more filtered)."""
+        return None
 
     def accept(self):
         model = self.project.model
@@ -851,11 +858,15 @@ class TraceItemsDialog(_TraceDialog):
 
     def __init__(self, project, owner, field, parent=None):
         self.FIELD = field
-        label = owner.schema.field(field).label
+        label = owner.schema.field(field).label_for(owner)
         self.TITLE = label.lower()
-        self.HINT = (f"Spunta le sezioni (es. 3.4.1) e le clausole (es. 3.4.1.3) di «{label}»: quante servono, un "
-                     "clic sulla spunta la toglie. Doppio clic su una riga per leggerne il testo completo.")
+        self.HINT = self.hint(label)
         super().__init__(project, owner, parent)
+
+    def hint(self, label):
+        """What the window says on top (set before it is built)."""
+        return (f"Spunta le sezioni (es. 3.4.1) e le clausole (es. 3.4.1.3) di «{label}»: quante servono, un clic "
+                "sulla spunta la toglie. Doppio clic su una riga per leggerne il testo completo.")
 
     def initial_state(self, e):
         return PARENT if e.uuid in (self.owner.get(self.FIELD) or []) else None
@@ -896,26 +907,73 @@ class TraceSectionsDialog(TraceItemsDialog):
     """Only the sections (three numbers, e.g. 3.4.1), with ticks: e.g. those allocated to a new domain."""
     CHOOSABLE = ("Sezione",)
 
-    def __init__(self, project, owner, field, parent=None):
-        super().__init__(project, owner, field, parent)
-        label = owner.schema.field(field).label
-        self.HINT = (f"Spunta le sezioni (tre numeri, es. 3.4.1) di «{label}»: quante servono, un clic sulla spunta "
-                     "la toglie. Doppio clic su una riga per leggerne il testo completo.")
+    def hint(self, label):
+        return (f"Spunta le sezioni (tre numeri, es. 3.4.1) di «{label}»: quante servono, un clic sulla spunta la "
+                "toglie. Doppio clic su una riga per leggerne il testo completo.")
 
     def count_text(self):
         n = len(self.chosen(PARENT))
         return "Nessuna sezione scelta" if not n else "1 sezione scelta" if n == 1 else f"{n} sezioni scelte"
 
 
-class TraceReallocItemsDialog(TraceItemsDialog):
+class _TeamFilter:
+    """A tick next to «Solo sezioni» showing only the items of the domains of the team proposing the ADR (or only
+    those it does not hold: SHOWS_HELD False), ticked at first; those already chosen stay shown, to be unticked."""
+    TEAM_FILTER, SHOWS_HELD = "Propri domini", True
+    TEAM_TIP = "Mostra solo le sezioni e le clausole dei domini del team proponente"
+
+    def _add_team_filter(self, project):
+        from arcadia_tool.model.adr import team_domains
+
+        team = self.owner.get("proposer")
+        self.own_domains = team_domains(project.model, team) if team else set()
+        self.own_box = QCheckBox(self.TEAM_FILTER)
+        if team:
+            self.own_box.setChecked(True)
+            self.own_box.setToolTip(f"{self.TEAM_TIP} ({project.model.label_of(team)})")
+        else:
+            self.own_box.setEnabled(False)
+            self.own_box.setToolTip("Indica prima nella scheda il team proponente")
+        self.own_box.toggled.connect(self._filter)
+        self.own_box.toggled.connect(self._update_counts)
+        row = self.filters_row
+        row.insertWidget(row.indexOf(self.sections_only) + 1, self.own_box)
+        if team and not self.chosen(PARENT):  # nothing chosen yet: the first chapter with items to show
+            first = next((i for i in range(self.tabs.count())
+                          if any(self._shown_by_team(e) for e in self.by_chapter.get(self.tabs.tabData(i), [])
+                                 if e.uuid in self.state)), None)
+            if first is not None and first != self.tabs.currentIndex():
+                self.tabs.setCurrentIndex(first)  # shows the chapter (see _show_chapter)
+        self._filter()
+
+    def _held(self, e):
+        """The item is of the team (see model.adr.held: of a section of which one of its domains is principal)."""
+        from arcadia_tool.model.adr import held
+
+        return e.kind == "requirement" and held(self.project.model, e, self.own_domains)
+
+    def _shown_by_team(self, e):
+        return e.kind == "requirement" and self._held(e) == self.SHOWS_HELD
+
+    def extra_filter(self):
+        box = getattr(self, "own_box", None)  # None while the window is built
+        if box is None or not box.isChecked():
+            return None
+        return lambda e: self.state.get(e.uuid) == PARENT or self._shown_by_team(e)
+
+
+class TraceReallocItemsDialog(_TeamFilter, TraceItemsDialog):
     """ADR of a reallocation (X-1): the SRS clauses to reallocate (or a section), one or more, provided they belong
     to the same section: those of another section are refused, with the advice to open a separate ADR."""
 
     def __init__(self, project, owner, field, parent=None):
         super().__init__(project, owner, field, parent)
-        self.HINT = ("Spunta le clausole (es. 3.4.1.3) da riallocare, o la sezione (es. 3.4.1): una o più, purché "
-                     "della stessa sezione; per voci di sezioni diverse apri ADR separate. Doppio clic su una riga "
-                     "per leggerne il testo completo.")
+        self._add_team_filter(project)
+
+    def hint(self, label):
+        return ("Spunta le clausole (es. 3.4.1.3) da riallocare, o la sezione (es. 3.4.1): una o più, purché della "
+                "stessa sezione; per voci di sezioni diverse apri ADR separate. Doppio clic su una riga per leggerne "
+                "il testo completo.")
 
     def click(self, item, choice):
         from arcadia_tool.model.adr import same_section, section_of
@@ -935,18 +993,41 @@ class TraceReallocItemsDialog(TraceItemsDialog):
                     f"già scelte appartengono {named(section)}.\n\nUna ADR di riallocazione riguarda voci di una sola "
                     "sezione: per riallocare voci di sezioni diverse apri ADR separate, una per sezione.")
                 return
+            if not self.confirm_other_team(model.get(uuid)):
+                return
         super().click(item, choice)
+
+    def confirm_other_team(self, element):
+        """A clause (or section) whose principal domain is of a team other than the one proposing the ADR: the user
+        is asked whether the choice is right. True: it is chosen."""
+        from arcadia_tool.model.adr import principal_of, section_of
+
+        model = self.project.model
+        proposer = self.owner.get("proposer")
+        domain = model.get(principal_of(model, element) or "")
+        team = model.get(domain.get("team") or "") if domain is not None else None
+        if not proposer or team is None or team.uuid == proposer:
+            return True
+        section = section_of(model, element)
+        where = (f"nella sezione {section.get('id')}, " if section is not None and section is not element else "")
+        own = model.get(proposer)
+        answer = QMessageBox.question(
+            self, "Sezioni o clausole da riallocare",
+            f"«{model.label_of(element.uuid)}» è {where}del dominio {domain.get('id') or model.label(domain)}, "
+            f"assegnato al team {model.label(team)}: non al team che propone l'ADR"
+            f"{f' ({model.label(own)})' if own is not None else ''}.\n\nLa scelta è corretta?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
 
 
 class TraceExclusionItemsDialog(TraceItemsDialog):
     """ADR of an exclusion (X-1): the SRS sections and clauses the domain leaves out, one or more, each within a
     section of which the domain is principal."""
 
-    def __init__(self, project, owner, field, parent=None):
-        super().__init__(project, owner, field, parent)
-        self.HINT = ("Spunta le sezioni (es. 3.4.1.2) e le clausole (es. 3.4.1.3) che il dominio esclude: una o più, "
-                     "purché contenute in una sezione di cui il dominio è principale. Doppio clic su una riga per "
-                     "leggerne il testo completo.")
+    def hint(self, label):
+        return ("Spunta le sezioni (es. 3.4.1.2) e le clausole (es. 3.4.1.3) che il dominio esclude: una o più, "
+                "purché contenute in una sezione di cui il dominio è principale. Doppio clic su una riga per "
+                "leggerne il testo completo.")
 
     def click(self, item, choice):
         from arcadia_tool.model.adr import principal_container
@@ -968,8 +1049,48 @@ class TraceExclusionItemsDialog(TraceItemsDialog):
         super().click(item, choice)
 
 
+class TraceAllocationItemsDialog(TraceReallocItemsDialog):
+    """ADR of a request of allocation (X-1): the clauses (four numbers or more, e.g. 3.4.1.5) of a section of another
+    team that the team proposing it asks for, one or more of the same section. «Altri team» shows those the team does
+    not hold; no question on choosing them: they are of another team by the nature of the request."""
+    CHOOSABLE = ("Titolo", "Requisito")
+    TEAM_FILTER, SHOWS_HELD = "Altri team", False
+    TEAM_TIP = "Mostra solo le clausole delle sezioni che il team proponente non detiene"
+
+    def hint(self, label):
+        return ("Spunta le clausole (es. 3.4.1.5) di una sezione di un altro team da allocare a un dominio del tuo "
+                "team: una o più, purché della stessa sezione. Doppio clic su una riga per leggerne il testo "
+                "completo.")
+
+    def confirm_other_team(self, element):
+        return True
+
+
+class TraceClausesDialog(_TeamFilter, TraceItemsDialog):
+    """ADR of clauses shared or mapped to no domain (X-1): only clauses (four numbers or more, e.g. 3.8.4.1), not the
+    sections (three numbers, e.g. 3.8.2); «Propri domini», ticked at first, shows only those of the domains of the
+    team (principal or contributor, see model.adr.item_domains), unticked all of them."""
+    CHOOSABLE = ("Titolo", "Requisito")
+    TEAM_TIP = "Mostra solo le clausole dei domini del team proponente (principale o contributore)"
+
+    def __init__(self, project, owner, field, parent=None):
+        super().__init__(project, owner, field, parent)
+        self._add_team_filter(project)
+
+    def hint(self, label):
+        return (f"Spunta le clausole (es. 3.8.4.1) di «{label}»: solo clausole, non le sezioni (es. 3.8.2); un clic "
+                "sulla spunta la toglie. «Propri domini» mostra solo quelle dei domini del tuo team: togli la spunta "
+                "per vederle tutte. Doppio clic su una riga per leggerne il testo completo.")
+
+    def _held(self, e):
+        from arcadia_tool.model.adr import item_domains
+
+        return e.kind == "requirement" and bool(self.own_domains & item_domains(self.project.model, e))
+
+
 # Windows for a list field of SRS items with a rule of its own.
-ITEMS_DIALOGS = {"realloc_item": TraceReallocItemsDialog, "excluded_item": TraceExclusionItemsDialog}
+ITEMS_DIALOGS = {"realloc_item": TraceReallocItemsDialog, "excluded_item": TraceExclusionItemsDialog,
+                 "shared_items": TraceClausesDialog, "unmapped_items": TraceClausesDialog}
 
 
 def choose_items(project, element, field, current, parent=None, sections_only=False):
@@ -978,6 +1099,8 @@ def choose_items(project, element, field, current, parent=None, sections_only=Fa
     probe = element.copy()  # the window works on a copy: the sheet applies the choice with its «Salva»
     probe.set(field, list(current))
     dialog_class = ITEMS_DIALOGS.get(field) or (TraceSectionsDialog if sections_only else TraceItemsDialog)
+    if field == "realloc_item" and element.get("adr_type") == ADR_ALLOCATION:
+        dialog_class = TraceAllocationItemsDialog  # the same field, the clauses another team holds
     dialog = dialog_class(project, probe, field, parent)
     return dialog.selected if dialog.exec() else None
 

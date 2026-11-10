@@ -113,7 +113,7 @@ def test_a_record_with_one_primary_function_of_earlier_versions_gets_a_list(tmp_
     again.close()
 
 
-def test_referent_chosen_among_members_and_copied_to_the_domain(optional_fields, app, tmp_path):
+def test_referent_chosen_among_members_and_proposed_to_the_domain(optional_fields, app, tmp_path):
     p = Project.create(tmp_path / "p", "Prova")
     team = p.new_element("team", name="Odometria", members=["Anna Bianchi", "Mario Rossi"])
     domain = p.new_element("domain", name="Localizzazione")
@@ -133,17 +133,25 @@ def test_referent_chosen_among_members_and_copied_to_the_domain(optional_fields,
     editor.edit(p, domain, editing=True)
     identification = [f.name for f in domain.schema.fields if f.section == "Identificazione"]
     assert identification == ["team"]
-    shown = editor.widgets["referent"]
-    assert shown.isReadOnly() and shown.text() == ""
+    shown = editor.widgets["referent"]  # chosen among the members of the team assigned
+    assert shown.value() is None and shown.options(None) == []  # no team yet: nobody to choose
     editor.draft.set("team", team.uuid)  # chosen in its window
     editor._draft_changed()
-    assert editor.widgets["referent"].text() == "Mario Rossi"  # chosen automatically
+    shown = editor.widgets["referent"]
+    assert shown.value() == "Mario Rossi"  # the referent of the team, proposed
+    assert [name for name, _label in shown.options(shown.value())] == ["Anna Bianchi", "Mario Rossi", "Luca Verdi"]
+    shown.set_value("Anna Bianchi")  # another member of the team
     editor.save_changes()
-    assert domain.get("team") == team.uuid and domain.get("referent") == "Mario Rossi"
+    assert domain.get("team") == team.uuid and domain.get("referent") == "Anna Bianchi"
 
-    team.set("referent", "Anna Bianchi")  # changed later in the team sheet
+    team.set("referent", "Luca Verdi")  # changed later in the team sheet: the domain keeps its own
     p.update(team)
     assert domain.get("referent") == "Anna Bianchi"
+    other = p.new_element("team", name="Radio", members=["Sara Neri"], referent="Sara Neri")
+    previous = domain.copy()
+    domain.set("team", other.uuid)  # another team: Anna is not one of its members
+    p.update(domain, previous)
+    assert domain.get("referent") == "Sara Neri"
     p.close()
 
 

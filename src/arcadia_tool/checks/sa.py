@@ -309,12 +309,18 @@ def sa1_team_count(ctx):
             yield issue(d, f"Dominio elencato da più team: {ctx.labels(teams)}.", teams)
 
 
-@check("SA1-04", "Team assegnatario senza referente", "A", "A3")
+@check("SA1-04", "Dominio senza referente", "A", "A3")
 def sa1_no_referent(ctx):
+    from arcadia_tool.model.teams import member_names, person_key
+
     for d in ctx.of("domain"):
         team = ctx.get(d.get("team"))
-        if team is not None and not team.get("referent"):
-            yield issue(d, f"Il team assegnatario {ctx.label(team)} non ha un referente.", [team])
+        if team is None:
+            continue
+        if not d.get("referent"):
+            yield issue(d, f"Il dominio non ha un referente: sceglilo tra i membri di {ctx.label(team)}.", [team])
+        elif person_key(d.get("referent")) not in {person_key(n) for n in member_names(team)}:
+            yield issue(d, f"Il referente {d.get('referent')} non è tra i membri di {ctx.label(team)}.", [team])
 
 
 @check("SA1-05", "Dominio senza sezioni di cui è principale", "I", "A4, SA-1")

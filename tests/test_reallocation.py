@@ -73,6 +73,75 @@ def test_a_section_passes_with_its_clauses_but_not_with_the_exceptions(tmp_path)
     assert e["clause"].get("primary_domain") == e["df4"].uuid  # the earlier decision stands
 
 
+def test_every_clause_chosen_passes_also_one_inside_another(tmp_path):
+    p, e = build(tmp_path)
+    sub = p.new_element("requirement", id="3.8.1.4.1", item_type="Requisito", parent=e["clause"].uuid, text="Sotto")
+    decision = adr(p, [e["clause"], sub, e["other"], e["item"]], e["df4"])
+    moved, _kept, _functions = reallocation_preview(p.model, decision)
+    assert [m.get("id") for m, _ in moved] == ["3.8.1.4", "3.8.1.4.1", "3.8.1.5"]  # the list item follows its clause
+    approve_reallocation(p, decision)
+    assert all(c.get("primary_domain") == e["df4"].uuid for c in (e["clause"], sub, e["other"]))
+    assert not e["item"].get("primary_domain")
+    from arcadia_tool.ui.srs_trace import received_items
+    assert [c.get("id") for c in received_items(p.model, e["df4"])] == ["3.8.1.4", "3.8.1.4.1", "3.8.1.5"]
+
+
+def test_the_clauses_chosen_with_their_section_follow_it(tmp_path):
+    p, e = build(tmp_path)
+    decision = adr(p, [e["section"], e["clause"], e["other"]], e["df4"])
+    approve_reallocation(p, decision)
+    assert e["section"].get("primary_domain") == e["df4"].uuid
+    assert not e["clause"].get("primary_domain") and not e["other"].get("primary_domain")
+    assert principal_of(p.model, e["other"]) == e["df4"].uuid
+
+
+def test_open_adrs_read_the_principal_domain_after_a_section_moves(tmp_path):
+    from arcadia_tool.model.adr import item_primary, shared_primary, unmapped_section_domains
+    from arcadia_tool.model.schema import ADR_SHARED, ADR_UNMAPPED
+
+    p, e = build(tmp_path)
+    realloc = adr(p, [e["clause"]], e["df7"])
+    sharing = p.new_element("adr", adr_type=ADR_SHARED, status="Proposta", shared_items=[e["other"].uuid])
+    unmapped = p.new_element("adr", adr_type=ADR_UNMAPPED, status="Proposta", unmapped_items=[e["other"].uuid])
+    assert item_primary(p.model, realloc) == shared_primary(p.model, sharing) == e["df1"].uuid
+    approve_reallocation(p, adr(p, [e["section"]], e["df4"]))  # the whole section to another domain
+    assert item_primary(p.model, realloc) == shared_primary(p.model, sharing) == e["df4"].uuid
+    assert unmapped_section_domains(p.model, unmapped) == [e["df4"].uuid]
+
+
+def test_a_clause_of_a_domain_of_another_team_asks_if_the_choice_is_right(app, tmp_path, monkeypatch):
+    from arcadia_tool.ui import srs_trace
+
+    p, e = build(tmp_path)
+    own, other = p.new_element("team", name="RFI"), p.new_element("team", name="FBK")
+    e["df1"].set("team", other.uuid)  # the section 3.8.1 is of DF01, of the other team
+    e["df4"].set("team", own.uuid)
+    mine = p.new_element("requirement", id="3.9.1", item_type="Sezione", primary_domain=e["df4"].uuid)
+    asked = []
+    answer = [QMessageBox.No]
+    monkeypatch.setattr(srs_trace.QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or answer[0])
+
+    def row(item):
+        entry = srs_trace.QTreeWidgetItem([item.get("id")])
+        entry.setData(0, srs_trace.UUID_ROLE, item.uuid)
+        return entry
+    decision = adr(p, [], proposer=own.uuid)
+    dialog = srs_trace.TraceReallocItemsDialog(p, decision.copy(), "realloc_item")
+    dialog.click(row(e["clause"]), srs_trace.PARENT)  # answered no: not chosen
+    assert dialog.selected == [] and len(asked) == 1
+    assert "nella sezione 3.8.1" in asked[0] and "DF01" in asked[0] and "FBK:" in asked[0] and "RFI)" in asked[0]
+    answer[0] = QMessageBox.Yes
+    dialog.click(row(e["clause"]), srs_trace.PARENT)  # answered yes: chosen
+    assert dialog.selected == [e["clause"].uuid] and len(asked) == 2
+    dialog.click(row(e["clause"]), srs_trace.PARENT)  # untick: nothing asked
+    assert dialog.selected == [] and len(asked) == 2
+    dialog.click(row(mine), srs_trace.PARENT)  # of the team proposing: nothing asked
+    assert dialog.selected == [mine.uuid] and len(asked) == 2
+    unproposed = srs_trace.TraceReallocItemsDialog(p, adr(p, []).copy(), "realloc_item")
+    unproposed.click(row(e["other"]), srs_trace.PARENT)  # no team proposing it: nothing to compare
+    assert unproposed.selected == [e["other"].uuid] and len(asked) == 2
+
+
 def test_the_proposed_contributors_are_written(tmp_path):
     p, e = build(tmp_path)
     decision = adr(p, [e["clause"]], e["df4"], contributors_proposed=[e["df7"].uuid, e["df4"].uuid])

@@ -704,7 +704,9 @@ class ModelTree(QFrame):
             field = "shared_items" if key == SHARED_CLAUSES else "unmapped_items"
             current = self.current_element()
             preselect = [current.uuid] if current is not None and current.kind == "requirement" else []
-            probe = Element("adr", values={"adr_type": adr_type, "title": f"Nuova ADR · {adr_type}"})
+            team = proposer_defaults(model, self.user_of() if self.user_of else None).get("proposer")
+            probe = Element("adr", values={"adr_type": adr_type, "title": f"Nuova ADR · {adr_type}",
+                                           **({"proposer": team} if team else {})})  # «Propri domini» of the team
             chosen = srs_trace.choose_items(self.project, probe, field, preselect, self)
             if not chosen:
                 return None

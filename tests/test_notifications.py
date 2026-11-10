@@ -215,19 +215,20 @@ def test_the_design_authority_is_told_every_adr_not_opened_by_it(app, tmp_path):
     titles = {x.title.split(" · ")[0] for x in n.collect(p, anna)}
     assert titles == {"ADR-044", "ADR-045"}  # not those opened by the DA (its team, or one of its members)
     assert "ADR-046" in {x.title.split(" · ")[0] for x in n.collect(p, mario)}  # the destination team, yes
-    assert n.unread_by_scope(p, anna) == {n.TEAM: 0, n.DA: 2, n.MESSAGES: 0}
+    assert n.unread_by_scope(p, anna) == {n.PERSONAL: 0, n.TEAM: 0, n.DA: 2, n.REFERENT: 0, n.MESSAGES: 0}
     n.mark_read(p, anna, next(x for x in n.collect(p, anna) if x.subject == other.uuid))
     assert member.uuid and by_da.uuid
     # The panel: a tab for the DA (only for its members), with its count.
     dialog = ui.NotificationsDialog(p, anna)
     labels = [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())]
-    assert labels == ["Tutte (1)", "Il mio team", "Design Authority (1)", "Messaggi"]
-    dialog.tabs.setCurrentIndex(1)
+    assert labels == ["Tutte (1)", "Per me", "Il mio team", "Design Authority (1)", "Messaggi"]
+    dialog.tabs.setCurrentIndex(2)  # «Il mio team»
     assert dialog.tree.topLevelItemCount() == 0
-    dialog.tabs.setCurrentIndex(2)
+    dialog.tabs.setCurrentIndex(3)
     assert dialog.tree.topLevelItemCount() == 2  # ADR-044 unread, ADR-045 read
     of_mario = ui.NotificationsDialog(p, mario).tabs  # not of the DA: no tab for it
-    assert [of_mario.tabText(i) for i in range(of_mario.count())] == ["Tutte (2)", "Il mio team (2)", "Messaggi"]
+    assert [of_mario.tabText(i) for i in range(of_mario.count())] == ["Tutte (2)", "Per me (1)", "Il mio team (2)",
+                                                                     "Messaggi"]
     # The status bar of a member of the DA: those for the DA too.
     from arcadia_tool.accounts import Account
     from arcadia_tool.ui.main_window import MainWindow
@@ -336,3 +337,67 @@ def test_the_design_authority_removes_the_readings_of_the_earlier_versions(app, 
     window._set_project(None)
     window.close()
 
+
+
+def test_an_adr_opened_by_the_da_reaches_every_member_of_the_teams_it_impacts(tmp_path):
+    from arcadia_tool.model.schema import ADR_DOMAIN_SCOPE, ADR_OTHER
+
+    p, teams, domains, adr = project(tmp_path)
+    mario, luca, anna = user(MARIO, "Mario Rossi"), user(LUCA, "Luca Guglielmo"), user(ANNA, "Anna Bianchi")
+    p.delete_element(adr.uuid)
+    p.save()
+    # The DA (T1) redefines the scope of DF01 (of T3): Luca is told, also «Per me»; Mario (T2) is not.
+    scope = p.new_element("adr", id="ADR-060", title="Perimetro DF01", adr_type=ADR_DOMAIN_SCOPE, status="Proposta",
+                          proposer=teams["T1"].uuid, proposer_member="Anna Bianchi", domain=domains["DF01"].uuid)
+    p.save()
+    told = n.collect(p, luca)
+    assert [x.ident for x in told] == ["ADR-060"] and told[0].scopes == {n.TEAM, n.PERSONAL}
+    assert told[0].detail == "Riguarda DF01 (dominio interessato)"  # its domain, named in the ADR
+    assert n.collect(p, mario) == [] and n.collect(p, anna) == []  # another team; the DA opened it
+    # A decision of the DA about no domain: for every team.
+    p.new_element("adr", id="ADR-061", title="Regola comune", adr_type=ADR_OTHER, status="Proposta",
+                  proposer=teams["T1"].uuid)
+    p.save()
+    for who in (mario, luca):
+        found = {x.ident: x for x in n.collect(p, who)}
+        assert "ADR-061" in found and found["ADR-061"].scopes == {n.TEAM, n.PERSONAL}
+        assert found["ADR-061"].detail == "Riguarda ADR della Design Authority per tutti i team"
+    del scope
+    p.close()
+
+
+def test_the_decision_of_the_da_reaches_whom_it_concerns_directly(tmp_path):
+    from arcadia_tool.model.schema import ADR_DOMAIN_SCOPE
+
+    p, teams, domains, adr = project(tmp_path)
+    mario, luca, anna = user(MARIO, "Mario Rossi"), user(LUCA, "Luca Guglielmo"), user(ANNA, "Anna Bianchi")
+    p.delete_element(adr.uuid)
+    old = p.new_element("adr", id="ADR-070", title="Già decisa", adr_type=ADR_DOMAIN_SCOPE, status="Decisa",
+                        proposer=teams["T2"].uuid, proposer_member="Mario Rossi", domain=domains["DF04"].uuid,
+                        da_decision="Accolta")
+    mine = p.new_element("adr", id="ADR-071", title="Perimetro DF01", adr_type=ADR_DOMAIN_SCOPE, status="Proposta",
+                         proposer=teams["T2"].uuid, proposer_member="Mario Rossi", domain=domains["DF01"].uuid)
+    p.save()
+    assert n.collect(p, mario) == []  # his own ADR; the decisions already there: taken as seen
+    n.collect(p, luca)
+    for x in n.collect(p, luca):
+        n.mark_read(p, luca, x)
+    mine.set("da_decision", "Commenti DA")  # the DA asks for changes
+    mine.set("da_notes", "Precisare il perimetro")
+    p.update(mine)
+    told = [x for x in n.collect(p, mario) if x.event == n.DECISION]
+    assert [(x.ident, x.unread) for x in told] == [("ADR-071", True)]
+    assert told[0].scopes == {n.TEAM, n.PERSONAL} and told[0].detail == "Decisione della DA: Commenti DA · Proposta"
+    # Luca's team (DF01) is told by the notification of the ADR itself, which says the decision first.
+    changed = next(x for x in n.collect(p, luca) if x.ident == "ADR-071")
+    assert changed.event == n.CHANGED and changed.detail.startswith("Decisione della DA: Commenti DA · Campi")
+    assert not [x for x in n.collect(p, luca) if x.event == n.DECISION]
+    assert not [x for x in n.collect(p, anna) if x.event == n.DECISION]  # the DA decided it
+    n.mark_read(p, mario, told[0])
+    assert not [x for x in n.collect(p, mario) if x.unread]
+    mine.set("da_decision", "Accolta")  # decided: told again
+    p.update(mine)
+    again = [x for x in n.collect(p, mario) if x.event == n.DECISION and x.unread]
+    assert [x.detail for x in again] == ["Decisione della DA: Accolta · Proposta"]
+    assert old.uuid not in {x.subject for x in n.collect(p, mario) if x.unread}
+    p.close()

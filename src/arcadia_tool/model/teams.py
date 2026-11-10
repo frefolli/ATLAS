@@ -78,7 +78,11 @@ def _name_of(user):
 def member_of(team, user):
     """The row of the team for the user (an account, or just a name and surname), or None: by the ID of the
     account; a member whose ID is not written yet (e.g. of the first versions), by name and surname."""
-    rows = member_rows(team)
+    return row_of(member_rows(team), user)
+
+
+def row_of(rows, user):
+    """The row (of the members of a team, of the referents of a domain) of the user, or None (see member_of)."""
     account = normalize_account_id(getattr(user, "id", ""))
     if account:
         found = next((r for r in rows if account in account_ids(r)), None)
@@ -88,6 +92,35 @@ def member_of(team, user):
     if not key:
         return None
     return next((r for r in rows if not account_ids(r) and person_key(r.get("name")) == key), None)
+
+
+def default_referent(model, domain, previous=None):
+    """A domain whose team is assigned (or changed), or without a referent: its referent, if not a member of that
+    team, becomes the referent of the team (then chosen in the sheet among its members); no team, no referent."""
+    team = model.get(domain.get("team")) if domain.get("team") else None
+    if previous is not None and previous.get("team") == domain.get("team") and domain.get("referent"):
+        return
+    names = {person_key(n) for n in member_names(team)} if team is not None else set()
+    if domain.get("referent") and person_key(domain.get("referent")) in names:
+        return
+    domain.set("referent", (team.get("referent") or None) if team is not None else None)
+
+
+def referent_domains(model, user):
+    """The uuids of the functional domains the user is the referent of (the member of the team assigned chosen in the
+    sheet of the domain: recognized as a member of that team, by the ID of the account or by name)."""
+    if user is None:
+        return set()
+    found = set()
+    for d in model.of_kind("domain"):
+        name = d.get("referent")
+        if not name:
+            continue
+        team = model.get(d.get("team")) if d.get("team") else None
+        rows = [r for r in member_rows(team) if person_key(r.get("name")) == person_key(name)] if team else []
+        if row_of(rows or [{"name": name}], user) is not None:
+            found.add(d.uuid)
+    return found
 
 
 def is_member(team, user):
@@ -122,8 +155,9 @@ def main_denied(model, user, main):
 DA_ONLY_KINDS = {"team": "creare, modificare ed eliminare i team",
                  "requirement": "importare, modificare ed eliminare le voci SRS"}
 # Fields of other sheets changed only by them: who works on a domain, the decision on an ADR. (what they do)
-DA_ONLY_FIELDS = {"domain": ("team",), "adr": ("da_decision", "da_notes")}
-DA_ONLY_WHAT = {"domain": "assegnare i domini ai team", "adr": "decidere sulle ADR (esito e osservazioni)"}
+DA_ONLY_FIELDS = {"domain": ("team", "referent"), "adr": ("da_decision", "da_notes")}
+DA_ONLY_WHAT = {"domain": "assegnare i domini ai team e sceglierne il referente",
+                "adr": "decidere sulle ADR (esito e osservazioni)"}
 
 
 def edit_denied(model, user, kind, field=None):

@@ -3,18 +3,19 @@ the element it is opened from (the domain, the section, the function in question
 from datetime import date
 
 from arcadia_tool.model.element import Element
-from arcadia_tool.model.schema import (ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_DOMAIN_SCOPE, ADR_FUNCTION,
+from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_DOMAIN_SCOPE, ADR_FUNCTION,
                                        ADR_EXCLUSION, ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN,
                                        ADR_OWNER,
                                        ADR_PRODUCT_OPTION,
-                                       ADR_SECTION, ADR_SHARED, ADR_SPLIT_DOMAIN, ADR_UNMAPPED, KINDS_BY_NAME)
+                                       ADR_SECTION, ADR_SHARED, ADR_SPLIT_DOMAIN, ADR_UNMAPPED, KINDS_BY_NAME,
+                                       REALLOC_TYPES)
 from arcadia_tool.model.teams import person_key
 
 PROPOSED, IN_REVIEW, REVIEWED, DECIDED = "Proposta", "In revisione DA", "Revisionato DA", "Decisa"
 OPEN = (PROPOSED, IN_REVIEW, REVIEWED, None)  # not decided yet
 
 IDENTIFICATION = ("id", "title", "adr_type", "status", "superseded_by", "proposer", "proposer_member",
-                  "decision_date")
+                  "decision_date", "deleted_domain_label")
 
 
 def srs_items_of(model, domains):
@@ -119,6 +120,89 @@ def section_of(model, item):
 def same_section(model, items):
     """The SRS items of one ADR of reallocation: all of the same section (else: one ADR per section)."""
     return len({getattr(section_of(model, e), "uuid", None) for e in items}) <= 1
+
+
+# The fields of an ADR naming SRS sections or clauses it is about, opened by a team on its own sections: not those
+# of the ADR on the domains (sections allocated, acquired, ceded), which are about sections of other domains.
+TEAM_ITEM_FIELDS = ("srs_items", "realloc_item", "excluded_item", "shared_items", "unmapped_items", "impl_item")
+
+
+def adr_srs_items(model, adr):
+    """The SRS sections and clauses the ADR is about (see TEAM_ITEM_FIELDS), in the order written."""
+    found = []
+    for f in adr.schema.fields:
+        if f.name in TEAM_ITEM_FIELDS and f.applies(adr):
+            value = adr.get(f.name) or []
+            for uuid in [value] if isinstance(value, str) else value:
+                item = model.get(uuid)
+                if item is not None and item not in found:
+                    found.append(item)
+    return found
+
+
+def sections_not_held(model, adr):
+    """The sections (three numbers, e.g. 3.4.1) of the SRS items of the ADR that the team proposing it does not hold:
+    none of its functional domains is their principal domain (nor of the clause itself, passed to it by a
+    reallocation). [(section, its principal domain or None)], each once; empty if no team proposes the ADR."""
+    team = adr.get("proposer")
+    if not team or adr.get("adr_type") == ADR_ALLOCATION:  # a request of allocation: of another team by its nature
+        return []
+    own = team_domains(model, team)
+    found, seen = [], set()
+    for item in adr_srs_items(model, adr):
+        section = section_of(model, item)
+        if section is None or section.uuid in seen or held(model, item, own):
+            continue
+        seen.add(section.uuid)
+        found.append((section, principal_of(model, section)))
+    return found
+
+
+def allocation_warnings(model, adr):
+    """What does not hold in a request of allocation (texts): the domain requested is not of the team proposing it, a
+    clause requested is already held by the team (see held), or is not a clause (a section, a list item)."""
+    if adr.get("adr_type") != ADR_ALLOCATION:
+        return []
+    team, warnings = adr.get("proposer"), []
+    own = team_domains(model, team) if team else set()
+    requested = model.get(adr.get("primary_proposed") or "")
+    if team and requested is not None and requested.uuid not in own:
+        warnings.append(f"Il dominio richiedente {model.label(requested)} non è un dominio del team proponente.")
+    for item in realloc_items(model, adr):
+        if item.get("item_type") not in ("Titolo", "Requisito"):
+            warnings.append(f"{item.get('id')} non è una clausola: si richiedono solo clausole (es. 3.4.1.5).")
+        elif team and held(model, item, own):
+            warnings.append(f"{item.get('id')} è già in un dominio del team proponente: non serve richiederla.")
+    return warnings
+
+
+def item_domains(model, item):
+    """The domains an SRS item belongs to now: its principal domain and its contributors (its own, or of the nearest
+    section or clause containing it that has them), but those it is excluded from (by itself or by a container)."""
+    found = set()
+    principal = principal_of(model, item)
+    if principal:
+        found.add(principal)
+    part = allocated_part(model, item)
+    found.update(part.get("contributing_domains") or [] if part is not None else [])
+    excluded, seen, current = set(), set(), item
+    while current is not None and current.uuid not in seen:
+        seen.add(current.uuid)
+        excluded.update(current.get("excluded_domains") or [])
+        current = model.get(current.get("parent")) if current.get("parent") else None
+    return found - excluded
+
+
+def team_domains(model, team_uuid):
+    """The uuids of the functional domains assigned to the team."""
+    return {d.uuid for d in model.of_kind("domain") if d.get("team") == team_uuid}
+
+
+def held(model, item, own):
+    """The SRS item is held by the domains (uuids): one of them is the principal domain of its section, or of the item
+    itself (e.g. a clause passed to it by a reallocation). An item out of any section: by its own principal domain."""
+    section = section_of(model, item)
+    return (section is not None and principal_of(model, section) in own) or principal_of(model, item) in own
 
 
 def function_domain(model, adr):
@@ -359,7 +443,7 @@ def adr_defaults(model, adr_type, element=None):
         values["domain"] = element.uuid
     elif kind == "domain" and adr_type == ADR_MERGE_DOMAINS:
         values["merged_domains"] = [element.uuid]  # the others: added in the sheet
-    elif kind == "requirement" and adr_type == ADR_SECTION:
+    elif kind == "requirement" and adr_type in REALLOC_TYPES:
         values["realloc_item"] = [element.uuid]  # its domains now: read from it (see item_primary)
     elif kind == "requirement" and adr_type == ADR_EXCLUSION:
         values["excluded_item"] = [element.uuid]
@@ -459,7 +543,7 @@ COMPUTED["related_adrs"] = related_adrs_ids  # the table of the ADR of a domain 
 def can_approve(adr):
     """An ADR the Design Authority can approve with an action of the tool: a new domain, a reallocation, a sharing of
     clauses or clauses mapped to no domain, still proposed (or under its review), not rejected."""
-    return adr.kind == "adr" and adr.get("adr_type") in (ADR_NEW_DOMAIN, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED) and \
+    return adr.kind == "adr" and adr.get("adr_type") in (ADR_NEW_DOMAIN, ADR_DELETE_DOMAIN, *REALLOC_TYPES, ADR_SHARED, ADR_UNMAPPED) and \
         adr.get("status") in OPEN and adr.get("da_decision") != "Respinta"
 
 
@@ -535,20 +619,24 @@ def approve_new_domain(project, adr, today=None):
 # --- the approval of a reallocation ---------------------------------------------------------------------------
 
 def realloc_targets(model, adr):
-    """The SRS items an approved reallocation writes on: those of the ADR, but those contained in another one of them
-    with no domains of their own (they follow it, e.g. the list items of a clause moved)."""
+    """The SRS items an approved reallocation writes on: those of the ADR, but those that follow another one of them
+    with no domains of their own: the list items of a clause moved, the clauses of a section moved. A clause chosen
+    with the clause containing it (e.g. 3.11.6.3 and 3.11.6.3.1) is written too: it was chosen, and the domain sheets
+    list it among the clauses received."""
     items = realloc_items(model, adr)
     chosen = {e.uuid for e in items}
 
-    def contained(item):
+    def follows(item):
         seen, parent = {item.uuid}, item.get("parent")
         while parent and parent not in seen:
+            container = model.get(parent)
             if parent in chosen:
-                return True
+                return item.get("item_type") == "Voce" or (container is not None
+                                                           and container.get("item_type") in ("Capitolo", "Sezione"))
             seen.add(parent)
-            parent = model.get(parent).get("parent") if model.get(parent) is not None else None
+            parent = container.get("parent") if container is not None else None
         return False
-    return [e for e in items if not contained(e) or e.get("primary_domain") or e.get("contributing_domains")]
+    return [e for e in items if not follows(e) or e.get("primary_domain") or e.get("contributing_domains")]
 
 
 def reallocation_problems(model, adr):
@@ -615,20 +703,20 @@ def approve_reallocation(project, adr, today=None):
 
 def decided_reallocations(model, item):
     """The reallocations decided by the Design Authority (not rejected) that name the SRS item."""
-    return [a for a in model.of_kind("adr") if a.get("adr_type") == ADR_SECTION and a.get("status") == DECIDED
+    return [a for a in model.of_kind("adr") if a.get("adr_type") in REALLOC_TYPES and a.get("status") == DECIDED
             and a.get("da_decision") != "Respinta" and item in realloc_items(model, a)]
 
 
 def open_reallocations(model, item):
     """The reallocations of the SRS item still to decide."""
-    return [a for a in model.of_kind("adr") if a.get("adr_type") == ADR_SECTION and a.get("status") in OPEN
+    return [a for a in model.of_kind("adr") if a.get("adr_type") in REALLOC_TYPES and a.get("status") in OPEN
             and a.get("da_decision") != "Respinta" and item in realloc_items(model, a)]
 
 
 def reallocation_pending(model, adr):
     """The SRS items of a reallocation decided and not applied to the model (e.g. decided before ATLAS applied them,
     or setting the status by hand), unless a decided reallocation gave them the domain they have now."""
-    if adr.kind != "adr" or adr.get("adr_type") != ADR_SECTION or adr.get("status") != DECIDED \
+    if adr.kind != "adr" or adr.get("adr_type") not in REALLOC_TYPES or adr.get("status") != DECIDED \
             or adr.get("realloc_applied") or adr.get("da_decision") == "Respinta" \
             or reallocation_problems(model, adr):
         return []

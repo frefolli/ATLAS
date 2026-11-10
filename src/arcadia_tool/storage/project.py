@@ -808,8 +808,12 @@ class Project:
             element.set("decision_date", decision_date_of(element))
         if is_automatic(element.kind) and not element.get("id"):
             element.set("id", compute_id(element, self.model))
+        if element.kind == "domain":
+            self._default_referent(element, previous)
         changed = {}
         for other in keep_in_step(self.model, element, previous):
+            if other.kind == "domain":  # e.g. assigned in the sheet of a team: its referent proposed
+                self._default_referent(other, None)
             self._touch(other.uuid)
             changed[other.uuid] = other
         for source in [element, *list(changed.values())]:
@@ -817,6 +821,12 @@ class Project:
                 if other.uuid != element.uuid:
                     changed[other.uuid] = other
         return list(changed.values())
+
+    def _default_referent(self, domain, previous):
+        """See model.teams.default_referent."""
+        from arcadia_tool.model.teams import default_referent
+
+        default_referent(self.model, domain, previous)
 
     def _sync_derived(self, element):
         """Fields copied from a referenced element (the referent of a domain from its team), both ways. Returns the
@@ -1304,6 +1314,30 @@ class Project:
             elif main_sha and not b.main:
                 b.unrelated = True  # no version in common: the counts would mean nothing
             result.append(b)
+        return result
+
+    def propagation_start(self, name):
+        """The version a branch is integrated into from, when the Design Authority propagates to it: its last one in
+        the repository, unless this PC has versions of it not sent (then its last one here)."""
+        local, remote = self.repository.local_heads().get(name), self.repository.remote_heads().get(name)
+        if remote and (not local or self.repository.is_ancestor(local, remote)):
+            return remote
+        return local or remote
+
+    def propagation_targets(self, source=None):
+        """The branches the versions of the branch in use (or `source`) can be propagated to: [(name, versions of the
+        source missing in it, or None if they have no version in common)], every branch but the source."""
+        source = source or self.current_branch()
+        sha = self.repository.local_heads().get(source) or self.repository.remote_heads().get(source)
+        result = []
+        for b in self.branches():
+            if b.name == source:
+                continue
+            start = self.propagation_start(b.name)
+            if sha is None or start is None or self.repository.merge_base(start, sha) is None:
+                result.append((b.name, None))
+            else:
+                result.append((b.name, len(self.repository.versions_between(start, sha))))
         return result
 
     def branch_versions(self, sha, limit=None):

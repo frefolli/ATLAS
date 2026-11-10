@@ -16,7 +16,7 @@ import openpyxl
 
 from arcadia_tool.documents.adr import hint
 from arcadia_tool.model.adr import PROPOSED, common_fields, same_section, section_of, type_fields
-from arcadia_tool.model.schema import (ADR_SECTION, ADR_TYPE_LABELS, BOOL, DA_DECISION, ENUM, KINDS_BY_NAME,
+from arcadia_tool.model.schema import (ADR_TYPE_LABELS, BOOL, DA_DECISION, ENUM, KINDS_BY_NAME, REALLOC_TYPES,
                                        MULTIENUM, REF, REFS, TABLE, TEXT)
 from arcadia_tool.model.teams import member_rows, person_key
 
@@ -664,7 +664,7 @@ def plan_adr(model, sheet, resolver=None, taken=()):
             p.choices.append("Proponente (membro del team): non indicato e il team non ha un referente, il campo "
                              "resta vuoto")
     items = [model.get(u) for u in values.get("realloc_item") or []]
-    if p.adr_type == ADR_SECTION and not same_section(model, items):  # the rule of the reallocation (A4)
+    if p.adr_type in REALLOC_TYPES and not same_section(model, items):  # the rule of the reallocation (A4)
         sections = sorted({(section_of(model, e) or e).get("id") for e in items})
         plan.warn(f"Le voci da riallocare sono di sezioni diverse ({', '.join(sections)}): un'ADR di riallocazione "
                   "riguarda una sola sezione, la Design Authority può chiederne la divisione")

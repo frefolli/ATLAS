@@ -38,11 +38,16 @@ class NotificationsDialog(QDialog):
                       "modificate o eliminate) e i messaggi delle loro discussioni. Una notifica si legge aprendola; "
                       "«Segna come non letta» la ripropone per riesaminarla. Lo stato di lettura resta su questo PC. "
                       "I membri della Design Authority ricevono tutte le ADR non aperte dalla DA, nella loro "
-                      "scheda.", objectName="muted")
+                      "scheda; i referenti di un dominio (indicati nella sua scheda) le ADR che lo impattano e i "
+                      "messaggi sulle sue clausole, nella scheda «Referente di dominio». «Per me» raccoglie ciò che "
+                      "è diretto a te: le ADR sui domini di cui sei referente e i messaggi delle discussioni delle tue "
+                      "ADR, dei tuoi domini e di quelle in cui hai scritto.", objectName="muted")
         # The tabs: why the notifications reach the user (the Design Authority only for its members).
         self.tabs = QTabBar()
         self.tabs.setDrawBase(False)
-        self.scopes = [ALL, n.TEAM] + ([n.DA] if n._Who(project.model, user).is_da else []) + [n.MESSAGES]
+        who = n._Who(project.model, user)
+        self.scopes = [ALL, n.PERSONAL, n.TEAM, *([n.DA] if who.is_da else []),
+                       *([n.REFERENT] if who.referent_of else []), n.MESSAGES]
         for scope in self.scopes:
             self.tabs.addTab(scope)
         self.tabs.currentChanged.connect(lambda _i: self.fill())
