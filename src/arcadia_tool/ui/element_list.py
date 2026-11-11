@@ -103,6 +103,13 @@ class ElementListPage(QWidget):
         row.addSpacing(12)
         row.addWidget(self.count)
         header_layout.addLayout(row)
+        self.filters = None
+        if kind == "adr":  # conditions on the columns, in AND and OR, under the search
+            from arcadia_tool.ui.filter_builder import FilterBuilder
+
+            self.filters = FilterBuilder([(c, self._header(c)) for c in self.columns], self._column_values)
+            self.filters.changed.connect(lambda: self._filter(self.search.text()))
+            header_layout.addWidget(self.filters)
 
         self.table = QTableWidget(0, len(self.columns) + 1)
         labels = [self._header(c) for c in self.columns] + [""]
@@ -320,6 +327,9 @@ class ElementListPage(QWidget):
         self.table.horizontalHeader().resizeSection(len(self.columns), max(actions_width + 8, 120))
         self.body.setCurrentWidget(self.table if elements else self.empty)
         self.search.setVisible(bool(elements))  # nothing to search in an empty list
+        if self.filters is not None:
+            self.filters.setVisible(bool(elements))
+            self.filters.refresh_values()
         if self.outcome_tabs is not None:
             self.outcome_tabs.setVisible(bool(elements))
             found = [outcome(e) for e in elements]
@@ -340,18 +350,29 @@ class ElementListPage(QWidget):
         restore()
         QTimer.singleShot(0, restore)
 
+    def _column_values(self, column):
+        """The values of a column in the list, to choose from in a condition."""
+        from arcadia_tool.ui.filter_builder import distinct_values
+
+        c = self.columns.index(column)
+        return distinct_values(self.table.item(r, c).text() for r in range(self.table.rowCount()))
+
     def _filter(self, text):
+        from arcadia_tool.model.filters import evaluate
+
         words = text.lower().split()
         which = ADR_LISTS[self.outcome_tabs.currentIndex()][1] if self.outcome_tabs is not None else None
+        conditions = self.filters.conditions if self.filters is not None else []
         shown = 0
         for r in range(self.table.rowCount()):
             haystack = " ".join(self.table.item(r, c).text() for c in range(len(self.columns))).lower()
             hidden = (bool(words) and not all(w in haystack for w in words)) or \
-                (which is not None and self.table.item(r, 0).data(OUTCOME_ROLE) != which)
+                (which is not None and self.table.item(r, 0).data(OUTCOME_ROLE) != which) or \
+                not evaluate(conditions, lambda column, r=r: self.table.item(r, self.columns.index(column)).text())
             self.table.setRowHidden(r, hidden)
             shown += not hidden
         total = self.table.rowCount()
-        self.count.setText(f"{shown} di {total}" if words or which else
+        self.count.setText(f"{shown} di {total}" if words or which or conditions else
                            f"1 {self.one}" if total == 1 else f"{total} {self.many}")
 
     def export_open(self, path=None):

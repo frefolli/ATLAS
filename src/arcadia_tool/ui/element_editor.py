@@ -24,7 +24,7 @@ from arcadia_tool.model.adr import (approval_problems, approve_new_domain, appro
                                     reallocation_preview, reallocation_problems, sections_taken)
 from arcadia_tool.model.element import is_empty
 from arcadia_tool.model.required import save_refusal
-from arcadia_tool.model.schema import (ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
+from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
                                        IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.storage.project import local_change, local_changes
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
@@ -616,10 +616,12 @@ class ElementEditor(QScrollArea):
         model.adr.approve_new_domain), after a confirmation that says what changes. A reallocation: see
         _approve_reallocation."""
         element, model = self.element, self.project.model
-        if element.get("adr_type") == ADR_SECTION:
+        if element.get("adr_type") in (ADR_SECTION, ADR_ALLOCATION):
             return self._approve_reallocation()
         if element.get("adr_type") in (ADR_SHARED, ADR_UNMAPPED):
             return self._approve_clauses()
+        if element.get("adr_type") == ADR_DELETE_DOMAIN:
+            return self._approve_domain_deletion()
         problems = approval_problems(model, element)
         if problems:
             QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
@@ -687,6 +689,34 @@ class ElementEditor(QScrollArea):
         QMessageBox.information(self, "Approva ADR", "ADR approvata: " + (
             "clausole condivise." if sharing else "clausole non mappate per decisione."))
 
+    def _approve_domain_deletion(self):
+        """The domain is removed from the model, after the Design Authority has said what to do with each element
+        that would be left orphan (see model.domain_deletion and ui.domain_deletion)."""
+        from arcadia_tool.model.domain_deletion import approve_domain_deletion, deleted_domain, deletion_problems
+        from arcadia_tool.ui.domain_deletion import DomainDeletionDialog
+
+        element, model = self.element, self.project.model
+        problems = deletion_problems(model, element)
+        if problems:
+            QMessageBox.warning(self, "Approva ADR", "Non è possibile approvare l'ADR:\n" + "\n".join(problems))
+            return
+        domain = deleted_domain(model, element)
+        name = model.label(domain)
+        dialog = DomainDeletionDialog(self.project, domain, self)
+        if not dialog.exec():
+            return
+        changed, deleted = approve_domain_deletion(self.project, element, dialog.choices)
+        self.draft = element.copy()
+        for e in [*changed, element]:
+            self.element_changed.emit(e)
+        self.elements_created.emit()  # the domain (and the orphans deleted) gone: the lists and the tree follow
+        self.saved.emit()  # the project is saved
+        self._build()
+        others = len(deleted) - 1
+        extra = ("; eliminato anche 1 elemento orfano" if others == 1 else
+                 f"; eliminati anche {others} elementi orfani" if others else "")
+        QMessageBox.information(self, "Approva ADR", f"ADR approvata: il dominio {name} è stato eliminato{extra}.")
+
     def _approve_reallocation(self):
         """The items of the ADR pass to the proposed domain (see model.adr.approve_reallocation), after a confirmation
         that says what changes and what does not."""
@@ -743,6 +773,8 @@ class ElementEditor(QScrollArea):
             from arcadia_tool.ui.team_members import own_id_error
             own_id_error(self)
             return False
+        if not self._sections_of_the_team_confirmed():
+            return False
         if self.dirty:
             moved = self._single_design_authority()
             if moved is None:
@@ -771,6 +803,39 @@ class ElementEditor(QScrollArea):
             return None
         untouched = self.unsaved_new and not self.dirty and not local_changes(self, self.project)
         return save_refusal(self.project.model, self.draft, untouched)
+
+    def _sections_of_the_team_confirmed(self):
+        """An ADR saved new, or with its SRS items or its team proposing changed, about sections (e.g. 3.4.1) or their
+        clauses that no functional domain of the team proposing it holds: the user is asked whether to save it all
+        the same (see model.adr.sections_not_held). True: the sheet is saved."""
+        from arcadia_tool.model.adr import TEAM_ITEM_FIELDS, sections_not_held
+
+        draft, model = self.draft, self.project.model
+        if draft is None or draft.kind != "adr" or not (self.dirty or self.unsaved_new):
+            return True
+        names = ("proposer", "adr_type", *TEAM_ITEM_FIELDS)
+        if not self.unsaved_new and all(draft.values.get(n) == self.element.values.get(n) for n in names):
+            return True
+        missing = sections_not_held(model, draft)
+        if not missing:
+            return True
+
+        def held_by(domain):
+            if domain is None:
+                return "nessun dominio principale"
+            team = model.get(domain.get("team") or "")
+            return f"{domain.get('id') or model.label(domain)}" + (f", team {model.label(team)}" if team is not None
+                                                                   else ", nessun team")
+        lines = [f"• {s.get('id')} ({held_by(model.get(d or ''))})" for s, d in missing[:12]]
+        if len(missing) > 12:
+            lines.append(f"• e altre {len(missing) - 12}")
+        team = model.get(draft.get("proposer"))
+        answer = QMessageBox.question(
+            self, "Sezioni di un altro team",
+            f"Il team che apre l'ADR ({model.label(team) if team is not None else '?'}) non detiene nei propri domini "
+            "funzionali queste sezioni, a cui appartengono le voci SRS dell'ADR:\n\n" + "\n".join(lines)
+            + "\n\nSalvare comunque l'ADR?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
 
     def _single_design_authority(self):
         """A team saved as Design Authority while another one is: the DA moves to this team if the user agrees.
@@ -923,6 +988,13 @@ class ElementEditor(QScrollArea):
         findings = self.findings_for(element.uuid) if self.findings_for else []
         if findings:
             outer.addWidget(self._findings_card(findings))
+        if element.kind == "adr":
+            not_held = self._sections_not_held_card(element)
+            if not_held is not None:
+                outer.addWidget(not_held)
+            orphaned = self._orphans_card(element)
+            if orphaned is not None:
+                outer.addWidget(orphaned)
 
         status_field = schema.field("status")
         # Sections of the kind's own (e.g. the SA-3 register) come first, with their fields in schema order.
@@ -953,7 +1025,7 @@ class ElementEditor(QScrollArea):
                     self.getters[f.name] = getter
                 if f.analysis and not self.field_denied(f.name):
                     widget.setProperty("keepEnabled", True)  # editable also on a read-only SRS item
-                label = QLabel(f.label, objectName="formLabel")
+                label = QLabel(f.label_for(element), objectName="formLabel")
                 if f.by_tool:  # written by the tool: not changed by hand
                     widget.setEnabled(False)
                     widget.setToolTip("Assegnato dal tool")
@@ -1074,10 +1146,12 @@ class ElementEditor(QScrollArea):
             buttons = (self.modify_button,)
             pending = reallocation_pending(self.project.model, element)
             if (can_approve(element) or pending) and self.approver is not None and self.approver():
-                reallocation = element.get("adr_type") == ADR_SECTION
+                reallocation = element.get("adr_type") in (ADR_SECTION, ADR_ALLOCATION)
                 kind = element.get("adr_type")
                 self.approve_button = QPushButton(icon("mdi6.check-decagram-outline", "white"),
                                                   "Applica la riallocazione" if pending else
+                                                  "Approva e alloca le clausole" if kind == ADR_ALLOCATION else
+                                                  "Approva ed elimina il dominio" if kind == ADR_DELETE_DOMAIN else
                                                   "Approva e sposta le voci" if reallocation else
                                                   "Approva e condividi le clausole" if kind == ADR_SHARED else
                                                   "Approva la non mappatura" if kind == ADR_UNMAPPED else
@@ -1177,6 +1251,80 @@ class ElementEditor(QScrollArea):
             lines.append(f"<p style='color:{MUTED}'>… e altre {len(findings) - len(shown)} segnalazioni: vedi il "
                          "pannello Verifiche.</p>")
         text = QLabel("".join(lines))
+        text.setWordWrap(True)
+        text.setTextFormat(Qt.RichText)
+        text.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        text.linkActivated.connect(self.open_requested)
+        text.setProperty("keepEnabled", True)
+        layout.addWidget(text)
+        return frame
+
+    def _sections_not_held_card(self, element):
+        """An ADR about sections (e.g. 3.4.1), or their clauses, that no functional domain of the team proposing it
+        holds: said on top of its sheet, to everyone (see model.adr.sections_not_held); None if there are none."""
+        from arcadia_tool.model.adr import allocation_warnings, sections_not_held
+
+        model = self.project.model
+        missing = sections_not_held(model, element)
+        if not missing:
+            # A request of allocation: about clauses of another team by its nature, what does not hold in it.
+            warnings = allocation_warnings(model, element)
+            return self._warning_card("Richiesta di allocazione da verificare", "".join(
+                f"<p style='margin:2px 0'>• {escape(w)}</p>" for w in warnings)) if warnings else None
+
+        def link(target):  # a section by its number; a domain, a team by their label (e.g. «T2 FBK»)
+            name = target.get("id") if target.kind == "requirement" else None
+            return f"<a href='{target.uuid}'>{escape(name or model.label(target))}</a>"
+        rows = []
+        for section, uuid in missing:
+            domain = model.get(uuid or "")
+            team = model.get(domain.get("team") or "") if domain is not None else None
+            held = (f"del dominio {link(domain)}, team {link(team) if team is not None else 'non assegnato'}"
+                    if domain is not None else "senza dominio principale")
+            rows.append(f"• sezione {link(section)} {held}")
+        proposer = model.get(element.get("proposer"))
+        color = SEVERITY_COLORS["A"]  # an «avviso», as those of the checks
+        return self._warning_card("Sezioni di un altro team", (
+            f"<p style='margin:2px 0'><b style='color:{color}'>Il team che ha aperto l'ADR"
+            f"{f' ({link(proposer)})' if proposer is not None else ''} non detiene nei propri domini "
+            "funzionali le sezioni delle voci SRS indicate:</b></p><p style='margin:2px 0'>"
+            + "<br>".join(rows) + "</p>"))
+
+    def _orphans_card(self, element):
+        """An ADR deleting a domain, not decided yet: the elements that would be left orphan, by kind, with links to
+        them (the Design Authority says what to do with each when it approves it); None if not such an ADR."""
+        from arcadia_tool.model.adr import OPEN
+        from arcadia_tool.model.domain_deletion import deleted_domain, orphans
+
+        model = self.project.model
+        if element.get("adr_type") != ADR_DELETE_DOMAIN or element.get("status") not in OPEN:
+            return None
+        domain = deleted_domain(model, element)
+        if domain is None:
+            return None
+        groups = orphans(model, domain.uuid)
+        if not groups:
+            body = "<p style='margin:2px 0'>Eliminando il dominio nessun elemento del modello resta orfano.</p>"
+        else:
+            parts = [f"<p style='margin:2px 0'>Eliminando il dominio {escape(model.label(domain))} restano senza "
+                     "dominio questi elementi: all'approvazione la Design Authority sceglie per ognuno se passa a un "
+                     "altro dominio, resta senza o viene eliminato.</p>"]
+            for group, elements in groups:
+                links = ", ".join(f"<a href='{e.uuid}'>{escape(e.get('id') or model.label(e))}</a>"
+                                  for e in elements[:40])
+                more = f" e altri {len(elements) - 40}" if len(elements) > 40 else ""
+                parts.append(f"<p style='margin:6px 0 2px 0'><b>{escape(group.title)} ({len(elements)})</b><br>"
+                             f"{links}{more}</p>")
+            body = "".join(parts)
+        return self._warning_card("Elementi che resteranno orfani", body, "domainOrphans")
+
+    def _warning_card(self, title, html, name="sectionsNotHeld"):
+        """A card as the others, light yellow: something to put right in the sheet (links open the elements)."""
+        frame, layout = card(title)
+        frame.setObjectName(name)
+        frame.setStyleSheet(f"QFrame#{name} {{ background: #FFFAEB; border: 1px solid #FEC84B; "
+                            "border-radius: 6px; }")
+        text = QLabel(html)
         text.setWordWrap(True)
         text.setTextFormat(Qt.RichText)
         text.setTextInteractionFlags(Qt.TextBrowserInteraction)
@@ -1970,6 +2118,9 @@ class ElementEditor(QScrollArea):
 
     def _draft_changed(self):
         """A choice made in a window (voce madre, funzione…) changed the draft: show it."""
+        if self.draft is not None and self.draft.kind == "domain":  # a team chosen: its referent proposed
+            from arcadia_tool.model.teams import default_referent
+            default_referent(self.project.model, self.draft, self.element)
         self._set_dirty(True)
         self._build()
 

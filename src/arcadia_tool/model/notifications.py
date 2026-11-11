@@ -1,6 +1,8 @@
 """The notifications of a member of a team: the ADR proposed by another team that concern a domain of their team as
 a destination (created, changed in any field, deleted); for the members of the Design Authority, every ADR not opened
-by the DA itself (they decide on all of them); and the messages of the discussions that concern them.
+by the DA itself (they decide on all of them); for the referents of a functional domain, every ADR that impacts it
+(see adr.impacted_domains) and the messages about the clauses of the domain; and the messages of the discussions
+that concern them.
 
 Nothing is written in the project to notify: a notification is worked out from the model, compared with what the
 user has already seen on this PC (the version of each ADR seen, kept in .arcadia/local.json, per account). It
@@ -19,19 +21,28 @@ from dataclasses import dataclass, field
 
 from arcadia_tool.model import discussions
 from arcadia_tool.model.adr import OPEN
-from arcadia_tool.model.schema import (ADR_DELETE_DOMAIN, ADR_DOMAIN_SCOPE, ADR_EXCLUSION, ADR_FUNCTION,
+from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DOMAIN_SCOPE, ADR_EXCLUSION, ADR_FUNCTION,
                                        ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN, ADR_OWNER,
                                        ADR_PRODUCT_OPTION, ADR_SECTION, ADR_SHARED, ADR_SPLIT_DOMAIN, KINDS_BY_NAME)
-from arcadia_tool.model.teams import design_authority, member_rows, memberships, normalize_account_id, person_key
+from arcadia_tool.model.teams import (design_authority, member_rows, memberships, normalize_account_id, person_key,
+                                      referent_domains)
 
 NEW, CHANGED, DELETED, MESSAGE = "Nuova", "Modificata", "Eliminata", "Messaggio"
+DECISION = "Decisione DA"  # the decision of the Design Authority on an ADR, told to whom it concerns directly
 READ = "Letta"  # the state of a notification opened at least once (see Notification.state)
-TEAM, DA, MESSAGES = "team", "da", "messages"  # why a notification reaches the user
-SCOPE_LABELS = {TEAM: "Il mio team", DA: "Design Authority", MESSAGES: "Messaggi"}
+TEAM, DA, REFERENT, MESSAGES = "team", "da", "referent", "messages"  # why a notification reaches the user
+# Directed to the user in person: the ADR that impact a domain they are the referent of, the messages of the
+# discussions of the ADR they proposed or of their domains, of those where they wrote, of the requests for
+# clarification on the clauses of their domains.
+PERSONAL = "personal"
+SCOPE_LABELS = {PERSONAL: "Per me", TEAM: "Il mio team", DA: "Design Authority", REFERENT: "Referente di dominio",
+                MESSAGES: "Messaggi"}
 # The fields of each type naming the domains (or the teams) that receive what the ADR proposes: (field, role).
 DESTINATIONS = {
     ADR_SECTION: (("primary_proposed", "dominio principale proposto"),
                   ("contributors_proposed", "contributore proposto")),
+    ADR_ALLOCATION: (("primary_proposed", "dominio richiedente"),
+                     ("contributors_proposed", "contributore proposto")),
     ADR_FUNCTION: (("to_domain", "dominio proposto"),),
     ADR_EXCLUSION: (("traced_by", "dominio che traccia al posto dell'escluso"),),
     ADR_SHARED: (("shared_with", "dominio con cui condividere"),
@@ -128,6 +139,50 @@ class _Who:
         self.da = da.uuid if da is not None else None
         self.is_da = self.da in self.teams
         self.da_people = {person_key(r.get("name")) for r in member_rows(da)} if da is not None else set()
+        self.referent_of = referent_domains(model, user)  # the domains the user is a referent of
+        self.me = person_key(getattr(user, "full_name", "") or "")
+
+    def from_da(self, adr):
+        """An ADR opened by the Design Authority reaches every member of the teams whose domains it impacts (of all
+        the teams, if it impacts none, e.g. a decision across the method): [(domain or None, role)]; [] for the
+        members of the DA, who opened it."""
+        if not self.teams or self.is_da or not self.opened_by_da(adr) or adr.get("proposer") in self.teams:
+            return []
+        from arcadia_tool.model.adr import impacted_domains
+        domains = impacted_domains(self.model, adr)
+        if not domains:
+            return [(None, "ADR della Design Authority per tutti i team")]
+        return [(d, "dominio impattato da un'ADR della Design Authority") for d in domains
+                if d.get("team") in self.teams]
+
+    def directly(self, adr):
+        """Whom the decision of the DA on the ADR concerns directly, for the user: (True, personal) if their team
+        proposed it or has a domain it impacts, or they are the referent of one; personal: they proposed it, or are
+        the referent. (False, False) for the members of the DA, who decided."""
+        if self.is_da:
+            return False, False
+        from arcadia_tool.model.adr import impacted_domains
+        mine = bool(self.me and person_key(adr.get("proposer_member") or "") == self.me)
+        referent = bool(self.as_referent(adr)) if not mine else False
+        team = adr.get("proposer") in self.teams or any(d.get("team") in self.teams
+                                                        for d in impacted_domains(self.model, adr))
+        return (team or mine or referent), (mine or referent)
+
+    def as_referent(self, adr):
+        """The domains of which the user is a referent that the ADR impacts ([(domain, role)]); [] if they proposed
+        it themselves."""
+        if not self.referent_of or (self.me and person_key(adr.get("proposer_member") or "") == self.me):
+            return []
+        from arcadia_tool.model.adr import impacted_domains
+        return [(d, "dominio di cui sei referente") for d in impacted_domains(self.model, adr)
+                if d.uuid in self.referent_of]
+
+    def referent_of_clause(self, element):
+        """A clause (or a section) of a domain the user is a referent of."""
+        if not self.referent_of or element is None or element.kind != "requirement":
+            return False
+        from arcadia_tool.model.adr import item_domains
+        return bool(self.referent_of & item_domains(self.model, element))
 
     def opened_by_da(self, adr):
         return bool(self.da) and (adr.get("proposer") == self.da or
@@ -185,7 +240,12 @@ def _account(user):
 def _state(project, user, local=None):
     data = ((local or project.local_settings()).get("notifications") or {}).get(_account(user)) or {}
     return {"adr": dict(data.get("adr") or {}), "unread": list(data.get("unread") or []),
-            "noticed": dict(data.get("noticed") or {}), "opened": list(data.get("opened") or [])}
+            "noticed": dict(data.get("noticed") or {}), "opened": list(data.get("opened") or []),
+            # {ADR uuid: the decision of the DA seen}; None: never worked out on this PC (the decisions there are
+            # then taken as seen, not to tell at once every decision of the past)
+            "decisions": dict(data["decisions"]) if isinstance(data.get("decisions"), dict) else None,
+            # the decisions there when they were first worked out: not told (nor listed), unless they change
+            "decisions_base": dict(data.get("decisions_base") or {})}
 
 
 def _save_state(project, user, state):
@@ -195,8 +255,7 @@ def _save_state(project, user, state):
 
 
 def _role_text(model, roles):
-    return "; ".join(f"{(e.get('id') or model.label(e)) if e is not None else ''} ({role})".strip()
-                     for e, role in roles)
+    return "; ".join(f"{e.get('id') or model.label(e)} ({role})" if e is not None else role for e, role in roles)
 
 
 def _da_text(model, adr):
@@ -237,7 +296,7 @@ def collect(project, user):
 def _collect(project, user, local):
     model = project.model
     who = _Who(model, user)
-    if not who.teams:
+    if not who.teams and not who.referent_of:
         return []
     state = _state(project, user, local)
     seen, forced, noticed = state["adr"], set(state["unread"]), state["noticed"]
@@ -250,9 +309,12 @@ def _collect(project, user, local):
     result, present = [], set()
     for adr in model.of_kind("adr"):
         present.add(adr.uuid)
-        roles = who.roles(adr)
+        by_da = who.from_da(adr)
+        roles = who.roles(adr) or by_da
         da = who.as_da(adr)
-        scopes = frozenset(s for s, on in ((TEAM, roles), (DA, da)) if on)
+        referent = who.as_referent(adr)
+        scopes = frozenset(s for s, on in ((TEAM, roles), (DA, da), (REFERENT, referent),
+                                           (PERSONAL, referent or by_da)) if on)
         snap = seen.get(adr.uuid)
         if not scopes and not (snap and snap.get("relevant")):
             continue
@@ -260,7 +322,8 @@ def _collect(project, user, local):
         version = fingerprint(adr)
         changed = snap is not None and snap.get("hash") != version
         when = snap.get("seen_at", "") if snap is not None and not changed else noticed_at(f"{key}:{version}")
-        about = "Riguarda " + _role_text(model, roles) if roles else _da_text(model, adr) if da else ""
+        about = ("Riguarda " + _role_text(model, roles) if roles else _da_text(model, adr) if da else
+                 "Impatta " + _role_text(model, referent) if referent else "")
         if snap is None:
             if adr.get("status") not in OPEN:
                 continue  # received already decided: nothing to look at
@@ -270,6 +333,8 @@ def _collect(project, user, local):
         if changed:
             fields = _changed_fields(adr, snap.get("values") or {})
             detail = ("Campi modificati: " + ", ".join(fields)) if fields else "Modificata"
+            if adr.get("da_decision") != (snap.get("values") or {}).get("da_decision") and adr.get("da_decision"):
+                detail = f"Decisione della DA: {adr.get('da_decision')} · {detail}"
             if not scopes:
                 detail += " · non riguarda più i domini del tuo team"
         else:
@@ -290,8 +355,34 @@ def _collect(project, user, local):
                                        noticed_at(f"{key}:deleted"), not snap.get("deleted_seen") or key in forced,
                                        scopes=frozenset(snap.get("scopes") or (TEAM,)),
                                        opened="hash" in snap and key not in forced, ident=ident, name=name))
-    if noticed != first_noticed:
-        _save_state(project, user, {**state, "noticed": noticed})
+    decisions = state["decisions"]
+    first_time = decisions is None
+    decisions = dict(decisions or {})
+    base = dict(state["decisions_base"])
+    told = {x.subject for x in result}  # those already told by the notification of the ADR itself
+    for adr in model.of_kind("adr"):
+        decision = adr.get("da_decision")
+        if not decision:
+            continue
+        if first_time:  # the decisions already there when this PC first works them out: seen
+            decisions[adr.uuid] = base[adr.uuid] = decision
+            continue
+        if base.get(adr.uuid) == decision:  # as it was then: nothing to tell
+            continue
+        concerned, personal = who.directly(adr)
+        if not concerned or adr.uuid in told:
+            continue
+        key = f"dec:{adr.uuid}"
+        new = decisions.get(adr.uuid) != decision
+        result.append(Notification(key, DECISION, adr.uuid, _title(adr),
+                                   f"Decisione della DA: {decision}" + (f" · {adr.get('status')}"
+                                                                        if adr.get("status") else ""),
+                                   noticed_at(f"{key}:{decision}"), new or key in forced,
+                                   scopes=frozenset({TEAM, PERSONAL} if personal else {TEAM}),
+                                   opened=not new and key not in forced,
+                                   ident=adr.get("id") or "", name=adr.get("title") or ""))
+    if noticed != first_noticed or first_time:
+        _save_state(project, user, {**state, "noticed": noticed, "decisions": decisions, "decisions_base": base})
     result += _messages(project, who, local, set(state["opened"]))
     result.sort(key=lambda n: n.when or "", reverse=True)
     return sorted(result, key=lambda n: (not n.unread, n.event == MESSAGE))
@@ -315,11 +406,17 @@ def _messages(project, who, local, opened=frozenset()):
         if subject is None:
             continue
         if subject.kind == "adr":
-            concerned = subject.get("proposer") in who.teams or who.roles(subject) or who.as_da(subject)
-        else:
-            concerned = subject.get("recipient") in who.teams
+            mine = bool(who.me and person_key(subject.get("proposer_member") or "") == who.me)
+            personal = mine or bool(who.as_referent(subject)) or bool(who.from_da(subject))
+            concerned = (subject.get("proposer") in who.teams or who.roles(subject) or who.as_da(subject)
+                         or personal)
+        else:  # a request for clarification: to their teams, or about a clause of a domain they are a referent of
+            personal = who.referent_of_clause(model.get(subject.get("clause") or ""))
+            concerned = subject.get("recipient") in who.teams or personal
+        personal = personal or uuid in wrote
         if not concerned and uuid not in wrote:
             continue
+        scopes = frozenset({MESSAGES, PERSONAL} if personal else {MESSAGES})
         seen = set(read.get(uuid) or [])
         title = _title(subject) if subject.kind == "adr" else " · ".join(
             t for t in (subject.get("id"), "richiesta di chiarimento") if t)
@@ -334,7 +431,7 @@ def _messages(project, who, local, opened=frozenset()):
             result.append(Notification(f"msg:{m.uuid}", MESSAGE, uuid, title,
                                        f"Messaggio di {m.get('author') or 'un membro'}: {start}",
                                        m.get("posted") or "", m.uuid not in seen, m.uuid,
-                                       scopes=frozenset({MESSAGES}), opened=m.uuid in seen,
+                                       scopes=scopes, opened=m.uuid in seen,
                                        ident=ident, name=name, kind=kind))
     return result
 
@@ -345,7 +442,7 @@ def unread_count(project, user):
 
 def unread_by_scope(project, user):
     """{TEAM: n, DA: n, MESSAGES: n}: the unread notifications for each reason."""
-    counts = {TEAM: 0, DA: 0, MESSAGES: 0}
+    counts = {PERSONAL: 0, TEAM: 0, DA: 0, REFERENT: 0, MESSAGES: 0}
     for n in collect(project, user):
         if n.unread:
             for scope in n.scopes:
@@ -365,12 +462,17 @@ def mark_read(project, user, notification):
     state = _state(project, user)
     state["unread"] = [k for k in state["unread"] if k != notification.key]
     adr = project.model.get(notification.subject)
+    if notification.event == DECISION:  # the decision now is the one seen
+        state["decisions"] = {**(state["decisions"] or {}), notification.subject: adr.get("da_decision")
+                              if adr is not None else None}
+        _save_state(project, user, state)
+        return None
     if adr is None:  # deleted: seen
         state["adr"].setdefault(notification.subject, {})["deleted_seen"] = True
         _save_state(project, user, state)
         return None
     who = _Who(project.model, user)
-    snap = _snapshot(adr, bool(who.roles(adr) or who.as_da(adr)))
+    snap = _snapshot(adr, bool(who.roles(adr) or who.as_da(adr) or who.as_referent(adr) or who.from_da(adr)))
     snap["scopes"] = sorted(notification.scopes)
     state["adr"][adr.uuid] = snap
     _save_state(project, user, state)

@@ -246,6 +246,10 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence.Save, self, activated=self.save_tab)
         self.publish_action = self._action("Pubblica…", "mdi6.cloud-upload-outline", self.publish,
                                            QKeySequence("Ctrl+Shift+P"), "Pubblica una nuova versione del modello")
+        # Design Authority only (hidden to the others, see _refresh_state).
+        self.propagate_action = self._action("Propaga…", "mdi6.source-merge", self.propagate_changes, None,
+                                             "Design Authority: integra le versioni del ramo in uso nei rami scelti, "
+                                             "uno alla volta, con la finestra di integrazione")
         self.compare_action = self._action("Confronta…", "mdi6.compare-horizontal", self.compare, None,
                                            "Confronta due versioni del modello")
         self.overview_action = self._action("Vista d'insieme", "mdi6.layers-triple-outline", self.open_overview, None,
@@ -318,8 +322,8 @@ class MainWindow(QMainWindow):
         self.profile_action = bar.addWidget(self.profile_combo)
         bar.addAction(self.check_settings_action)
         bar.addSeparator()
-        for a in (self.history_action, self.branches_action, self.publish_action, self.receive_action,
-                  self.compare_action, self.overview_action):
+        for a in (self.history_action, self.overview_action, self.branches_action, self.receive_action,
+                  self.compare_action, self.publish_action, self.propagate_action):
             bar.addAction(a)
         bar.addSeparator()
         bar.addAction(self.notifications_action)
@@ -357,7 +361,8 @@ class MainWindow(QMainWindow):
         project_menu.addSeparator()
         project_menu.addAction(self.settings_action)
         versions_menu = self.menuBar().addMenu("&Versioni")
-        for a in (self.publish_action, self.send_action, self.receive_action, self.compare_action,
+        for a in (self.publish_action, self.propagate_action, self.send_action, self.receive_action,
+                  self.compare_action,
                   self.overview_action, self.history_action, self.branches_action):
             # «Versioni Modello» before «Rami», as in the bar
             versions_menu.addAction(a)
@@ -405,6 +410,8 @@ class MainWindow(QMainWindow):
             self._set_project(None)
             show_access_denied(self, denied, account)
         self._refresh_state()
+        if self.reader is not None:  # «Requisiti del mio team»: of the teams of the new user
+            self.reader.user_changed()
         for editor in self.editors.values():  # who may change the teams depends on the user
             if editor.element is not None and not editor.editing:
                 editor._build()
@@ -624,15 +631,17 @@ class MainWindow(QMainWindow):
     def _show_notifications_count(self):
         """How many notifications are unread: the red dot on the bell, and the count in the status bar (with those
         for the Design Authority, for its members), updated as they are read."""
-        from arcadia_tool.model.notifications import DA, MESSAGES, TEAM, unread_by_scope, unread_count
+        from arcadia_tool.model.notifications import DA, MESSAGES, REFERENT, TEAM, unread_by_scope, unread_count
         has = self.project is not None and self.user is not None
         count = unread_count(self.project, self.user) if has else 0
         self.notifications_action.setText(f"Notifiche ({count})" if count else "Notifiche")
         self.notifications_action.setIcon(bell_icon(count > 0))
-        tip = "Le ADR di altri team che riguardano i domini del tuo team e i messaggi delle loro discussioni"
-        by = unread_by_scope(self.project, self.user) if count else {TEAM: 0, DA: 0, MESSAGES: 0}
+        tip = ("Le ADR di altri team che riguardano i domini del tuo team, quelle che impattano i domini di cui sei "
+               "referente e i messaggi delle loro discussioni")
+        by = unread_by_scope(self.project, self.user) if count else {TEAM: 0, DA: 0, REFERENT: 0, MESSAGES: 0}
         if count:
             tip = (f"Non lette: {by[TEAM]} per il tuo team" + (f", {by[DA]} come Design Authority" if by[DA] else "")
+                   + (f", {by[REFERENT]} come referente di dominio" if by[REFERENT] else "")
                    + f", {by[MESSAGES]} messaggi")
         self.notifications_action.setToolTip(tip)
         if not has:
@@ -678,6 +687,8 @@ class MainWindow(QMainWindow):
                   self.receive_action, self.branches_action, self.sheets_action, self.sheets_settings_action,
                   self.notifications_action):
             a.setEnabled(has_project)
+        self.propagate_action.setVisible(has_project and self.user_is_da)  # not shown to the other teams
+        self.propagate_action.setEnabled(has_project and self.user_is_da)
         self._show_notifications_count()
         user = self.user.full_name if self.user else "nessuno"
         da = design_authority(self.project.model) if has_project else None
@@ -1800,6 +1811,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Versioni inviate al ramo «{self.project.push_branch()}»", 5000)
         elif dialog.receive_requested:  # the remote has versions of the others: received first
             self.receive_versions()
+        return bool(dialog.sent)
 
     def _move_unsent_to_branch(self, denied):
         """A team member with versions not sent on the main branch: moved to a new branch (to send), if they want.
@@ -1990,9 +2002,10 @@ class MainWindow(QMainWindow):
         if dialog.request is not None:
             self.branch_request(dialog.request)
 
-    def integrate_branch(self, name, sha):
+    def integrate_branch(self, name, sha, propagating=False):
         """Rami › Integra nel ramo in uso: the versions of the branch `name` (up to `sha`) merged into the branch in
-        use by ATLAS, as Ricevi does; the project is then opened again, and the integration offered to send."""
+        use by ATLAS, as Ricevi does; the project is then opened again, and the integration offered to send.
+        propagating: a step of «Propaga…», which sends and goes on by itself (nothing offered here)."""
         if not self.project or not self._resolve_unsaved_pages():
             return None
         denied = self.project.main_denied(self.user)
@@ -2019,6 +2032,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Integra ramo", "Alcuni identificativi erano usati in entrambi i rami e "
                                     f"sono stati rinumerati:\n\n{lines}")
         self.statusBar().showMessage(f"Ramo «{name}» integrato in «{into}»", 8000)
+        if propagating:
+            return dialog
         # A selective integration leaves the rest of the branch still to integrate: it is not to delete.
         dialog.branch_deleted = not dialog.selective and self._offer_to_delete_branch(name)
         pending = self.project.unsent_versions() or self.project.branches_to_delete()
@@ -2028,6 +2043,80 @@ class MainWindow(QMainWindow):
                 == QMessageBox.Yes:
             self.send_versions()
         return dialog
+
+    def propagate_changes(self):
+        """«Propaga…» (Design Authority only): the versions of the branch in use integrated into the branches chosen,
+        one at a time, each with the window of «Integra» (all, or the elements chosen), then sent if wanted; at the
+        end the project is back on the branch it started from, with a summary of what happened to each branch."""
+        from arcadia_tool.ui.propagate import PropagateDialog
+
+        if not self.project or not self.user_is_da:
+            return None
+        if not self._ready_to_leave_branch():
+            return None
+        source = self.project.current_branch()
+        if self.project.remote() and self.project.unsent_versions():
+            if QMessageBox.question(
+                    self, "Propaga", f"Il ramo «{source}» ha versioni pubblicate e non ancora inviate al repository: "
+                    "vanno inviate prima di propagarle.\n\nInviarle ora?") != QMessageBox.Yes:
+                return None
+            self.send_versions()
+            if self.project.unsent_versions():
+                return None
+        sha = self.project.repository.local_heads().get(source)
+        if not sha:
+            QMessageBox.warning(self, "Propaga", f"Il ramo «{source}» non ha ancora versioni da propagare.")
+            return None
+        dialog = PropagateDialog(self.project, git_credentials(self.user, self.project.remote()), self)
+        if not dialog.exec() or not dialog.chosen:
+            return None
+        targets, send = dialog.chosen, dialog.send.isChecked()
+        outcomes = []
+        for i, name in enumerate(targets):
+            outcome = self._propagate_to(name, source, sha, send)
+            outcomes.append((name, outcome))
+            if self.project is None:
+                break
+            rest = targets[i + 1:]
+            if outcome.startswith("non integrato") and rest and QMessageBox.question(
+                    self, "Propaga", f"Il ramo «{name}» non è stato integrato.\n\nContinuare con "
+                    f"{'il ramo' if len(rest) == 1 else 'i rami'} {', '.join(f'«{r}»' for r in rest)}?") \
+                    != QMessageBox.Yes:
+                outcomes += [(r, "non integrato: propagazione interrotta") for r in rest]
+                break
+        if self.project is not None and self.project.current_branch() != source:
+            self._switch_quietly(source)
+        lines = "\n".join(f"• {name}: {outcome}" for name, outcome in outcomes)
+        QMessageBox.information(self, "Propaga", f"Propagazione del ramo «{source}» (versione {sha[:8]}):\n\n{lines}")
+        return outcomes
+
+    def _propagate_to(self, name, source, sha, send):
+        """One step of «Propaga…»: the project moves to the branch `name` (at its last version, see
+        Project.propagation_start), the versions of `source` up to `sha` are integrated with the window of «Integra»,
+        and sent if wanted. Returns what happened, said in the summary."""
+        try:
+            self._switch_quietly(name, self.project.propagation_start(name))
+        except Exception as exc:
+            return f"non integrato: cambio di ramo non riuscito ({exc})"
+        if self.project is None:
+            return "non integrato: il progetto non si è riaperto"
+        dialog = self.integrate_branch(source, sha, propagating=True)
+        if dialog is None or not dialog.applied or self.project is None:
+            return "non integrato (annullato)"
+        what = "integrato in parte (elementi scelti)" if getattr(dialog, "selective", False) else "integrato"
+        if not self.project.remote() or not self.project.unsent_versions():
+            return what
+        if not send:
+            return f"{what}, da inviare al repository"
+        return f"{what} e inviato" if self.send_versions() else f"{what}, invio non riuscito: da inviare"
+
+    def _switch_quietly(self, name, sha=None):
+        """The project moves to the branch `name` (at `sha`, or its last version) and is opened again, without
+        asking to receive: e.g. the steps of «Propaga…», which start from the versions downloaded just before."""
+        path = self.project.path
+        self.project.switch_branch(name, sha)
+        self._set_project(None)  # its files changed
+        self.open_project(str(path), confirmed=True, ask_update=False)
 
     def _offer_to_delete_branch(self, name):
         """After «Integra»: the branch integrated, deleted if the user wants (here at once; on the repository with

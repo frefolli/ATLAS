@@ -40,6 +40,8 @@ def coherent():
                members=["Dario"], referent="Dario", independent_verifier="Elena")
     g.df06.set("team", g.t1.uuid)
     g.df02.set("team", g.t2.uuid)
+    g.df06.set("referent", "Anna")  # a member of its team
+    g.df02.set("referent", "Dario")
 
     g.sec314 = add("requirement", id="3.14.4", item_type="Sezione", primary_domain=g.df06.uuid,
                    contributing_domains=[g.df02.uuid])
@@ -246,7 +248,7 @@ MUTATIONS = {
     "SA1-01": lambda g: g.df06.set("mission", None),
     "SA1-02": lambda g: g.t1.set("domains", []),
     "SA1-03": lambda g: (g.df06.set("team", None), g.t1.set("domains", [])),
-    "SA1-04": lambda g: g.t1.set("referent", None),
+    "SA1-04": lambda g: g.df06.set("referent", None),
     "SA1-05": lambda g: g.sec361.set("primary_domain", None),
     "SA1-06": lambda g: g.add("requirement", id="3.14.5", item_type="Sezione", primary_domain=g.df06.uuid),
     "SA1-07": lambda g: g.lc06.set("name", g.df02.get("name")),

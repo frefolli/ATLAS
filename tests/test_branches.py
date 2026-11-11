@@ -372,7 +372,9 @@ def test_the_branches_shown_can_be_all_local_or_remote(app, server):
 
     window = main_window.MainWindow()
     actions = [a.text() for a in window.findChildren(QToolBar)[0].actions()]
-    assert actions.index("Rami…") == actions.index("Pubblica…") - 1  # right before «Pubblica»
+    order = ["Versioni Modello", "Vista d'insieme", "Rami…", "Ricevi dal repository…", "Confronta…",
+             "Pubblica…"]
+    assert [a for a in actions if a in order] == order  # the order of the bar
     window.close()
 
 

@@ -6,6 +6,125 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.12.0] - 2026-11-11
+
+### Aggiunto
+- **Referente del dominio e notifiche.** Nella scheda di un dominio funzionale il «Referente» non è più copiato dal
+  team: si sceglie, con «Scegli…», tra i membri del team assegnatario. Come il team assegnatario, lo sceglie solo la
+  Design Authority: per gli altri team il campo è in sola lettura. Quando si assegna o si cambia il team, viene
+  proposto il referente del team. La verifica SA1-04 segnala un dominio senza referente o con un referente che non è
+  membro del suo team. Il referente riceve notifiche dedicate, nella nuova scheda «Referente di dominio» del pannello
+  Notifiche e nel conteggio della barra di stato, per:
+  - le ADR che impattano il dominio, quale che sia il team che le propone, tranne quelle che ha proposto lui;
+  - i messaggi delle discussioni di quelle ADR;
+  - i messaggi delle richieste di chiarimento su clausole del dominio.
+- **Notifiche «Per me».** Nel pannello Notifiche, subito dopo «Tutte», la scheda «Per me» raccoglie ciò che è
+  diretto all'utente:
+  - le ADR che impattano un dominio di cui è referente;
+  - i messaggi delle discussioni delle ADR che ha proposto, di quelle sui suoi domini e di quelle in cui ha scritto;
+  - i messaggi delle richieste di chiarimento sulle clausole dei suoi domini.
+- **ADR aperte dalla Design Authority.** Arrivano a tutti i membri dei team i cui domini l'ADR impatta, anche come
+  dominio di origine, nelle schede «Il mio team» e «Per me». Un'ADR della DA che non impatta nessun dominio, per
+  esempio una decisione trasversale, arriva a tutti i team. Fa eccezione un'ADR scritta da un membro della DA per
+  conto di un altro team: per quel team resta un'ADR propria.
+- **Notifica della decisione DA.** Quando cambia la «Decisione DA» di un'ADR (Commenti DA, Accolta, Accolta con
+  modifiche, Respinta), arriva una notifica «Decisione DA» ai diretti interessati:
+  - i membri del team che l'ha proposta, compreso chi l'ha scritta, che non ricevevano notifiche sulle proprie ADR;
+  - i membri dei team dei domini che l'ADR impatta;
+  - i referenti di quei domini.
+
+  Per chi la propone e per i referenti compare anche in «Per me». Chi riceve già le notifiche di quell'ADR vede
+  la decisione in testa alla notifica di modifica. Le decisioni presenti prima di questa versione non vengono
+  notificate.
+- **Voci SRS: requisiti per team o per domini.** Sotto le categorie, il filtro «Requisiti» offre quattro scelte:
+  - «Tutti i requisiti»;
+  - «Requisiti del mio team»: quelli allocati ai domini dei team dell'utente collegato;
+  - «Dei team…»: si spuntano uno o più team;
+  - «Dei domini funzionali…»: si spuntano uno o più domini.
+
+  Un requisito appartiene a un dominio se ne è il principale o un contributore, anche per eredità dalla sezione, e
+  non ne è escluso.
+  Le clausole del team dell'utente collegato che si trovano in sezioni di altri team, per esempio ricevute per
+  riallocazione, hanno la riga con lo sfondo giallo chiaro. L'evidenziazione si toglie con la casella «Evidenzia
+  requisiti team», accanto a «Mostra titoli e sezioni».
+- **ADR: filtri per colonna con AND e OR.** Sotto la ricerca del catalogo delle decisioni architetturali si
+  aggiungono condizioni in sequenza. Ogni riga ha quattro scelte:
+  - la colonna;
+  - l'operatore: contiene, non contiene, è uguale a, è diverso da, è vuoto, non è vuoto;
+  - il valore, proposto dalla colonna o scritto a mano;
+  - AND oppure OR, che lega la riga alla successiva, oppure vuoto sull'ultima.
+
+  Scegliendo AND o OR sull'ultima riga se ne aggiunge una nuova. AND ha la precedenza su OR, così si compongono
+  espressioni miste. Due condizioni senza AND od OR tra loro vengono segnalate e il filtro non si applica. I filtri
+  si combinano con la ricerca e con le schede Tutte, In revisione e le altre.
+- **Approvazione dell'eliminazione di un dominio.** Le ADR «Eliminazione di dominio» hanno ora il pulsante della DA
+  «Approva ed elimina il dominio».
+  - **Prima dell'approvazione:** la scheda mostra a tutti, nel riquadro «Elementi che resteranno orfani», ciò che
+    resterebbe senza dominio, con collegamenti agli elementi: sezioni e clausole di cui è principale, funzioni di
+    sistema, requisiti derivati, functional chain di cui è responsabile.
+  - **All'approvazione:** una finestra elenca gli orfani per gruppo. Per ognuno, o per un intero gruppo, la DA
+    sceglie se passa a un altro dominio, resta senza dominio o viene eliminato. Si possono eliminare solo funzioni e
+    requisiti derivati che nessun altro elemento usa.
+  - **Riferimenti secondari:** il dominio viene tolto anche dove è solo citato, cioè tra i contributori, gli
+    esclusi e i domini del team.
+  - **Dopo l'approvazione:** il dominio viene eliminato dal modello e l'ADR risulta decisa, con il nome del dominio
+    eliminato nel campo «Dominio eliminato».
+- **«Propaga…» (solo Design Authority).** Un nuovo pulsante accanto a «Pubblica…», visibile solo ai membri della DA,
+  integra le versioni del ramo in uso (di solito il ramo principale, dopo avervi integrato il lavoro di un team) nei
+  rami scelti.
+  - **Scelta dei rami:** la finestra scarica i rami dal repository e li elenca con il numero di versioni mancanti.
+    Sono spuntati quelli indietro; quelli già aggiornati o senza versioni in comune non si possono scegliere.
+  - **Un ramo alla volta:** ATLAS passa al ramo, alla sua ultima versione nel repository, e apre la finestra di
+    integrazione già esistente, che permette di integrare tutto o solo gli elementi scelti e di risolvere i
+    conflitti. Poi, se richiesto, invia il ramo al repository.
+  - **Rami non integrati:** se un'integrazione viene annullata, ATLAS chiede se continuare con i rami successivi.
+  - **Al termine:** si torna sul ramo di partenza e un riepilogo indica l'esito per ogni ramo.
+- **ADR «Richiesta di allocazione di clausola».** Un team chiede che una o più clausole di una sezione di un altro
+  team siano allocate a un proprio dominio. I campi sono quelli della riallocazione con etichette proprie:
+  - «Clausole richieste»;
+  - dominio principale e contributori attuali;
+  - «Dominio richiedente (principale proposto)» e contributori proposti;
+  - «Motivazione della richiesta».
+
+  La finestra di scelta offre solo clausole della stessa sezione, con il filtro «Altri team» spuntato. La scheda
+  segnala in giallo un dominio richiedente che non è del team proponente, una clausola che il team detiene già e una
+  voce che non è una clausola. La Design Authority la approva con «Approva e alloca le clausole», come una
+  riallocazione. Nuovo modello `Template_X-1.14_ADR_Richiesta_di_allocazione_di_clausola.xlsx`; i modelli LA e
+  generali passano da X-1.14…16 a X-1.15…17.
+- **Riallocazione di voci di un altro team.** Nella scelta delle sezioni o clausole da riallocare, spuntare una voce il
+  cui dominio principale è assegnato a un team diverso da quello che propone l'ADR chiede conferma: «La scelta è
+  corretta?». Con «No» la voce non viene scelta.
+- **Filtro «Propri domini».** Nella stessa finestra, accanto a «Solo sezioni», la casella «Propri domini», spuntata
+  all'apertura, mostra solo le sezioni e le clausole dei domini del team proponente. Comprende anche le clausole
+  ricevute per riallocazione. Le voci già scelte restano visibili per poterle togliere. Senza un team proponente
+  la casella è disattivata.
+- **ADR su sezioni di un altro team.** Al salvataggio di un'ADR nuova, o di una a cui sono cambiate le voci SRS o il team
+  proponente, ATLAS verifica che il team proponente detenga nei propri domini funzionali le sezioni (es. 3.4.1) delle
+  voci indicate, sezioni o clausole. Un dominio del team deve esserne il dominio principale; basta anche che lo sia della
+  clausola stessa, ricevuta per riallocazione. Altrimenti elenca le sezioni con il loro dominio e team e chiede se
+  salvare comunque l'ADR. Vale per le ADR di riallocazione, esclusione, condivisione, non mappatura, scelta lasciata
+  all'implementazione e per le «Voci SRS interessate»; non per quelle sui domini (sezioni allocate, acquisite, cedute).
+  La scheda di un'ADR in questa situazione lo mostra anche a chi la legge, Design Authority compresa, con
+  l'avviso «Sezioni di un altro team» sotto l'intestazione. L'avviso elenca le sezioni con il loro dominio e team, con
+  collegamenti alle schede.
+
+### Modificato
+- **Barra degli strumenti.** Il nuovo ordine è: Versioni Modello, Vista d'insieme, Rami, Ricevi, Confronta, Pubblica
+  e, per la DA, Propaga.
+- **Clausole condivise e non mappate: solo clausole.** Nella finestra di scelta delle ADR di condivisione e di
+  non mappatura si possono spuntare solo le clausole (es. 3.8.4.1), non le sezioni (es. 3.8.2). La spunta «Propri
+  domini», attiva all'apertura, mostra solo le clausole dei domini del team proponente, come principale o come
+  contributore; togliendola si vedono tutte.
+
+### Corretto
+- **Istruzioni delle finestre di scelta delle voci.** Le finestre della riallocazione, dell'esclusione e delle
+  sezioni mostravano le istruzioni generiche invece delle proprie.
+- **ADR di riallocazione con clausole annidate.** Se tra le voci da riallocare c'erano una clausola e una sua
+  sotto-clausola (es. 3.11.6.3 e 3.11.6.3.1), l'approvazione scriveva il nuovo dominio solo sulla prima. La seconda
+  lo ereditava ma non compariva tra le «Clausole ricevute per ADR» né nella conferma. Ora ogni clausola scelta passa
+  al nuovo dominio; seguono la voce che le contiene solo i punti di elenco di una clausola e le clausole di una
+  sezione scelta insieme alla sezione.
+
 ## [0.11.0] - 2026-11-10
 
 ### Aggiunto
@@ -968,7 +1087,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.11.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.12.0...main
+[0.12.0]: https://github.com/salvodesi/ATLAS/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/salvodesi/ATLAS/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/salvodesi/ATLAS/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/salvodesi/ATLAS/compare/v0.9.5...v0.10.0

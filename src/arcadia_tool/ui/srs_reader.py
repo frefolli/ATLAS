@@ -8,15 +8,17 @@ from html import escape
 
 from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut, QTextDocument
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QListView, QMenu, QMessageBox, QProgressDialog, QPushButton, QStyle, QStyledItemDelegate,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel,
+                               QLineEdit, QListView, QMenu, QMessageBox, QProgressDialog, QPushButton, QStyle, QStyledItemDelegate,
                                QTabBar, QToolTip, QVBoxLayout, QWidget)
 
 from arcadia_tool.importers.srs_pdf import chapter_of_item
 from arcadia_tool.model.analysis import is_mine, mark_denied, marks_by_requirement, toggle, who_text
+from arcadia_tool.model.adr import item_domains
 from arcadia_tool.model.coverage import derivable
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.ui.element_editor import image_size, load_pixmap
+from arcadia_tool.ui.multi_pick import MultiPick
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
 from arcadia_tool.ui.theme import ACCENT, ACCENT_SOFT, BORDER, MUTED, TEXT, icon
 
@@ -32,6 +34,12 @@ INDENT = {"Voce": 28}
 SLOW_LAYOUT_ITEMS = 300
 FIGURE_SCALE = 1.6  # figures are rendered at 2x; shown slightly larger than on paper
 HIGHLIGHT = "#FFE58F"
+# The row of a clause of the team of the user within a section of another team (e.g. received by a reallocation).
+TEAM_CLAUSE_BG, TEAM_CLAUSE_HOVER = "#FFF7D6", "#FFF0B8"
+# Whose clauses are shown (see SrsReader.scope_domains).
+ALL_CLAUSES, MY_TEAM, BY_TEAMS, BY_DOMAINS = "all", "mine", "teams", "domains"
+SCOPES = (("Tutti i requisiti", ALL_CLAUSES), ("Requisiti del mio team", MY_TEAM), ("Dei team…", BY_TEAMS),
+          ("Dei domini funzionali…", BY_DOMAINS))
 
 
 def document_order(model):
@@ -134,6 +142,7 @@ class ItemDelegate(QStyledItemDelegate):
     """
 
     action_clicked = Signal(str, str)  # uuid of the item, action (see ROW_ACTIONS)
+    team_clauses = frozenset()  # uuids of the rows with the background of the clauses of the team (see SrsReader)
 
     def __init__(self, view, project=None):
         super().__init__(view)
@@ -438,9 +447,13 @@ class ItemDelegate(QStyledItemDelegate):
         element = index.data(ELEMENT_ROLE)
         rect = option.rect
         painter.save()
+        team_clause = element is not None and element.uuid in self.team_clauses
         if option.state & QStyle.State_Selected:
             painter.fillRect(rect, QColor(ACCENT_SOFT))
             painter.fillRect(rect.x(), rect.y(), 3, rect.height(), QColor(ACCENT))
+        elif team_clause:
+            painter.fillRect(rect, QColor(TEAM_CLAUSE_HOVER if option.state & QStyle.State_MouseOver
+                                          else TEAM_CLAUSE_BG))
         elif option.state & QStyle.State_MouseOver:
             painter.fillRect(rect, QColor("#F6F8FB"))
         left, top, placed, chips, actions, _ = self._layout(element, rect)
@@ -574,7 +587,32 @@ class SrsReader(QWidget):
         self.show_headings.setChecked(True)
         self.show_headings.toggled.connect(self.refresh)
         filters.addWidget(self.show_headings)
+        # The rows of the clauses of the team of the user in sections of other teams: light yellow, unless unticked.
+        self.highlight_team = QCheckBox("Evidenzia requisiti team")
+        self.highlight_team.setChecked(True)
+        self.highlight_team.setToolTip("Sfondo giallo chiaro per le clausole del tuo team dentro sezioni di altri "
+                                       "team (es. ricevute per riallocazione)")
+        self.highlight_team.toggled.connect(self._highlight_toggled)
+        filters.addWidget(self.highlight_team)
         filters.addStretch()
+        # Whose requirements, under the categories: all, of the team of the user (allocated to its domains), of one or
+        # more teams, of one or more functional domains.
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel("Requisiti:", objectName="muted"))
+        self.scope = QComboBox()
+        self.scope.setSizeAdjustPolicy(QComboBox.AdjustToContents)  # its texts never cut
+        for label, key in SCOPES:
+            self.scope.addItem(label, key)
+        self.scope.currentIndexChanged.connect(self._scope_changed)
+        scope_row.addWidget(self.scope)
+        self.scope_pick = MultiPick()
+        self.scope_pick.changed.connect(self.refresh)
+        self.scope_pick.setVisible(False)
+        scope_row.addWidget(self.scope_pick)
+        self.scope_note = QLabel(objectName="muted")  # the teams of the user, or why there are none
+        self.scope_note.setVisible(False)
+        scope_row.addWidget(self.scope_note)
+        scope_row.addStretch()
 
         self.count = QLabel(objectName="muted")
         self.delete_button = QPushButton(icon("mdi6.trash-can-outline"), "Elimina selezionate")
@@ -604,6 +642,7 @@ class SrsReader(QWidget):
         self.delegate.domain_badges = self._domain_badges
         self.delegate.link_badges = self._link_badges
         self.delegate.analysis = self._analysis
+        self.delegate.team_clauses = set()  # see _team_clauses
         self.delegate.action_clicked.connect(self.run_action)
         self.view.setItemDelegate(self.delegate)
         self._links = {}
@@ -626,7 +665,8 @@ class SrsReader(QWidget):
                       "requisiti derivati (viola); «Mappa a Funzione» le mappa "
                       "alle funzioni di sistema, «Deriva…» crea uno o più requisiti derivati, «Condividi» ed «Escludi» "
                       "creano l'ADR per condividerle tra domini o non mapparle, «Non analizzato» segna che l'hai presa "
-                      "in carico (col mouse sopra: chi l'ha analizzata). Doppio clic apre la voce. "
+                      "in carico (col mouse sopra: chi l'ha analizzata). In giallo le clausole del tuo team dentro "
+                      "sezioni di altri team. Doppio clic apre la voce. "
                       "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
                       "modalità modifica, Canc elimina le voci selezionate.",
                       objectName="muted")
@@ -639,6 +679,7 @@ class SrsReader(QWidget):
         header_layout.addWidget(self.tabs)
         header_layout.addLayout(top_row)
         header_layout.addLayout(filters)
+        header_layout.addLayout(scope_row)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -680,6 +721,7 @@ class SrsReader(QWidget):
         self.chapter = self.tabs.tabData(index)
         self.tabs.blockSignals(False)
         self._update_category_counts()
+        self._fill_scope_choices()  # teams or domains created or deleted meanwhile
         self.refresh()
 
     def _update_category_counts(self):
@@ -696,6 +738,88 @@ class SrsReader(QWidget):
         self.chapter = self.tabs.tabData(index)
         self._update_category_counts()
         self.refresh()
+
+    def _scope_changed(self, _index=None):
+        """«Tutte le clausole», «Dei team», «Dei domini»: the teams or the domains to choose, ticked."""
+        self.scope_pick.set_choices([])  # another list: nothing ticked
+        self._fill_scope_choices()
+        self.refresh()
+
+    def _fill_scope_choices(self):
+        """The teams or the domains of the model now (those ticked stay ticked); the teams of the user."""
+        model, key = self.project.model, self.scope.currentData()
+        self.scope_pick.setVisible(key in (BY_TEAMS, BY_DOMAINS))
+        self.scope_note.setVisible(key == MY_TEAM)
+        if key == MY_TEAM:
+            teams = self._my_teams()
+            self.scope_note.setText(
+                "i domini di " + ", ".join(model.label(t) for t in teams) if teams else
+                "nessun requisito: non sei membro di nessun team del progetto" if self.user_of() else
+                "nessun requisito: nessun utente collegato")
+        if key == BY_TEAMS:
+            teams = sorted(model.of_kind("team"), key=lambda t: natural_key(t.get("id") or t.get("name") or ""))
+            self.scope_pick.empty = "Scegli i team…"
+            self.scope_pick.set_choices([(t.uuid, model.label(t)) for t in teams])
+        elif key == BY_DOMAINS:
+            domains = sorted(model.of_kind("domain"), key=lambda d: natural_key(d.get("id") or d.get("name") or ""))
+            self.scope_pick.empty = "Scegli i domini…"
+            self.scope_pick.set_choices([(d.uuid, model.label(d)) for d in domains])
+
+    def scope_domains(self):
+        """The domains whose clauses are shown, or None (all the clauses): those chosen, or those of the teams
+        chosen (none chosen yet: no clause)."""
+        key = self.scope.currentData()
+        if key == ALL_CLAUSES:
+            return None
+        if key == MY_TEAM:
+            chosen = {t.uuid for t in self._my_teams()}
+            return {d.uuid for d in self.project.model.of_kind("domain") if d.get("team") in chosen}
+        chosen = set(self.scope_pick.values)
+        if key == BY_DOMAINS:
+            return chosen
+        return {d.uuid for d in self.project.model.of_kind("domain") if d.get("team") in chosen}
+
+    def user_changed(self):
+        """Another user logged in: «Requisiti del mio team» shows the requirements of their teams; the clauses of
+        their teams in sections of other teams are highlighted."""
+        if self.scope.currentData() == MY_TEAM:
+            self._fill_scope_choices()
+        self.refresh()
+
+    def _highlight_toggled(self, on):
+        """Only the background of the rows changes: no new layout."""
+        delegate = self.view.itemDelegate()
+        delegate.team_clauses = self._team_clauses(self.model.elements) if on else set()
+        self.view.viewport().update()
+
+    def _team_clauses(self, elements):
+        """The clauses (of `elements`) of the teams of the user within a section none of their domains has (a mixed
+        case, e.g. clauses received by a reallocation): their rows are highlighted."""
+        from arcadia_tool.model.adr import section_of
+
+        teams = {t.uuid for t in self._my_teams()}
+        own = {d.uuid for d in self.project.model.of_kind("domain") if d.get("team") in teams}
+        if not own:
+            return set()
+        model, found, sections = self.project.model, set(), {}
+        for e in elements:
+            if e.get("item_type") in HEADINGS or own.isdisjoint(item_domains(model, e)):
+                continue
+            section = section_of(model, e)
+            if section is None or section is e:
+                continue
+            if section.uuid not in sections:
+                sections[section.uuid] = own.isdisjoint(item_domains(model, section))
+            if sections[section.uuid]:
+                found.add(e.uuid)
+        return found
+
+    def _my_teams(self):
+        """The teams of the user logged in."""
+        from arcadia_tool.model.teams import memberships
+
+        user = self.user_of()
+        return [t for t, _row in memberships(self.project.model, user)] if user is not None else []
 
     def selected_categories(self):
         return {c for c, box in self.category_boxes.items() if box.isChecked()}
@@ -725,12 +849,15 @@ class SrsReader(QWidget):
         self._pending_refresh = False
         wanted = self.selected_categories()
         text = self.search.text().strip().lower()
-        filtered = bool(text) or wanted != set(self.category_boxes)
+        domains = self.scope_domains()
+        filtered = bool(text) or wanted != set(self.category_boxes) or domains is not None
         items, needed_headings = set(), set()
         for e, chapter, heading, categories, haystack in self.rows:
             if heading or (self.chapter is not None and chapter != self.chapter):
                 continue
             if categories.isdisjoint(wanted) or (text and text not in haystack):
+                continue
+            if domains is not None and domains.isdisjoint(item_domains(self.project.model, e)):
                 continue
             items.add(e.uuid)
             if filtered:
@@ -751,6 +878,7 @@ class SrsReader(QWidget):
         # Heights are cached per item and width: only items never measured cost time (first opening).
         delegate = self.view.itemDelegate()
         delegate.highlight = text
+        delegate.team_clauses = self._team_clauses(shown) if self.highlight_team.isChecked() else set()
         slow = sum(1 for e in shown if not delegate.cached(e.uuid)) > SLOW_LAYOUT_ITEMS
         loading = None
         if slow:
@@ -813,13 +941,16 @@ class SrsReader(QWidget):
             index = next((i for i in range(self.tabs.count()) if self.tabs.tabData(i) == chapter), 0)
             self.tabs.setCurrentIndex(index)
         if all(e.uuid != uuid for e in self.model.elements):
-            for widget in (self.search, self.show_headings, *self.category_boxes.values()):
+            for widget in (self.search, self.show_headings, self.scope, *self.category_boxes.values()):
                 widget.blockSignals(True)
             self.search.clear()
             self.show_headings.setChecked(True)
+            self.scope.setCurrentIndex(0)  # all the requirements
+            self.scope_pick.setVisible(False)
+            self.scope_note.setVisible(False)
             for box in self.category_boxes.values():
                 box.setChecked(True)
-            for widget in (self.search, self.show_headings, *self.category_boxes.values()):
+            for widget in (self.search, self.show_headings, self.scope, *self.category_boxes.values()):
                 widget.blockSignals(False)
             self.refresh()
         self.reveal(uuid)

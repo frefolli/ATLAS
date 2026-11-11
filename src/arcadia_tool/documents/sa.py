@@ -129,7 +129,7 @@ def write_sa1(w, doc, domain):
     if domain is None:
         w.field("ID e nome", hint="es. DF06 Protezione dei movimenti e comando dei freni")
         w.field(kind.field("team").label, hint="es. T5 · Odometria")
-        w.field(kind.field("referent").label, hint="Calcolato da ATLAS: il referente del team assegnatario")
+        w.field(kind.field("referent").label, hint="Un membro del team assegnatario (all'inizio il referente del team)")
         w.field("Stato del dominio", hint=" / ".join(SHEET_STATES), options=SHEET_STATES)
         w.heading("Descrizione")
         w.field(kind.field("mission").label, hint="Una frase: cosa garantisce il dominio", tall=True)
@@ -158,8 +158,7 @@ def write_sa1(w, doc, domain):
     produced, used = _domain_data(model, domain)
     w.field("ID e nome", " ".join(t for t in (domain.get("id"), domain.get("name")) if t))
     w.field(kind.field("team").label, label(model, domain.get("team")))
-    team = model.get(domain.get("team")) if domain.get("team") else None
-    w.field(kind.field("referent").label, (team.get("referent") or "") if team is not None else "")
+    w.field(kind.field("referent").label, domain.get("referent") or "")
     w.field("Stato del dominio", domain.get("status") or "")
     w.heading("Descrizione")
     w.field(kind.field("mission").label, plain(domain.get("mission")))

@@ -259,7 +259,9 @@ def test_the_deletion_of_a_domain_has_only_the_domain_the_motivation_and_the_obs
     adr = p.new_element("adr", title="Eliminare DF01", **adr_defaults(p.model, ADR_DELETE_DOMAIN, d1))
     editor = ElementEditor()
     editor.edit(p, adr, editing=True)
-    assert [c.upper() for c in captions(editor)] == ["IDENTIFICAZIONE", "DESCRIZIONE", "DECISIONE DELLA DA"]
+    # The elements left orphan by the deletion (none here) on top, then the sections of the sheet.
+    assert [c.upper() for c in captions(editor)] == ["ELEMENTI CHE RESTERANNO ORFANI", "IDENTIFICAZIONE",
+                                                     "DESCRIZIONE", "DECISIONE DELLA DA"]
     names = list(editor.widgets)
     assert names.index("deleted_domain") == names.index("adr_type") + 1  # right under the type of decision
     descr = [n for n in names if n in ("deleted_domain", "rationale", "da_notes", "context", "options",
