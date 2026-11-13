@@ -263,6 +263,11 @@ KINDS = (
         # chosen with ticks from the sheet of the domain.
         Field("excluded_domains", "Esclusa dai domini (A4)", REFS, ref_kinds=("domain",), analysis=True,
               hidden=True),
+        # The other SRS items it refers to, includes or replaces (see model.srs_links): chosen with «Collega…» of
+        # its row in the catalogue, shown in its sheet.
+        Field("links", "Collegamenti", TABLE, columns=(
+            Column("type", "Tipo", ENUM, options=("Richiama", "Include", "Dipende da")),
+            Column("target", "Voce SRS", REF, ref_kinds=("requirement",))), analysis=True, hidden=True),
         Field("srs_refs", "Riferimenti SRS (righe di tabella)", STRLIST),
         Field("figure", "Figura / formula", IMAGE),
         Field("baseline", "Baseline"),
@@ -286,7 +291,8 @@ KINDS = (
         Field("b5_question", "Domanda B5 decisiva", ENUM, B5_QUESTIONS, significant=True, section=TRACE_SECTION),
         Field("outcome", "Esito", ENUM, (
             "Non tracciata", "Ipotesi d'ambiente / dato atteso", "Tracciata al dizionario",
-            "Scomposta in requisiti derivati", "Collegata alla voce nominale", "Tracciata a funzione"),
+            "Scomposta in requisiti derivati", "Collegata alla voce nominale", "Tracciata a funzione",
+            "Coperta dalla clausola inclusa"),
             significant=True, section=TRACE_SECTION),
         Field("notes", "Note", TEXT, section=TRACE_SECTION),
         Field("adrs", "ADR", REFS, ref_kinds=("adr",), section=TRACE_SECTION),
@@ -301,8 +307,8 @@ KINDS = (
         Field("obligation", "Obbligo (una frase)", TEXT),
         # Mapped on one system function (SA-2) and allocated to one logical function (LA-2), each chosen with its
         # window from the sheet's card (the system function also from the sheet of the function).
-        Field("system_function", "Funzione di sistema", REF, ref_kinds=("system_function",), significant=True,
-              hidden=True),
+        Field("system_function", "Funzioni di sistema", REFS, ref_kinds=("system_function",), significant=True,
+              hidden=True),  # one or more (one only, a text, up to 0.12.0: see model.links.derived_functions)
         Field("function", "Funzione logica", REF, ref_kinds=("logical_function",), significant=True, hidden=True),
         Field("domain", "Dominio", REF, ref_kinds=("domain",), significant=True),
         Field("b6_scheme", "Motivazione della derivazione", ENUM, B6_SCHEMES),
@@ -495,6 +501,8 @@ KINDS = (
               significant=True),
         # The ADR can be many: chosen in a window with search and ticks, not in a drop-down list.
         Field("superseded_by", "Superata da", REF, ref_kinds=("adr",), picker=True, section="Identificazione"),
+        # Other ADR this one refers to, chosen with ticks among all the ADR (every type, under «Superata da»).
+        Field("linked_adrs", "ADR collegate", REFS, ref_kinds=("adr",), section="Identificazione"),
         Field("proposer", "Proponente (team)", REF, ref_kinds=("team",), section="Identificazione"),
         Field("proposer_member", "Proponente (membro del team)", members_of="proposer", section="Identificazione"),
         # The domain or the system function whose sheet the ADR was created from (among its ADR, see related_adrs).

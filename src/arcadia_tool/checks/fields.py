@@ -9,7 +9,7 @@ CHECK_FIELDS = {
     "GEN-01": "id", "GEN-02": "id", "GEN-03": "id", "GEN-04": "name",
     "A4-01": "primary_domain", "A4-02": "contributing_domains", "A4-03": "contributing_domains",
     "A4-04": "primary_domain", "A4-05": "primary_domain", "A4-06": "category", "A4-07": "category",
-    "A4-08": "category", "A4-09": "replaces", "A4-10": "realloc_item",
+    "A4-08": "category", "A4-09": "replaces", "A4-10": "realloc_item", "A4-11": "", "A4-12": "",
     "SA1-01": "mission", "SA1-02": "team", "SA1-03": "team", "SA1-04": "team", "SA1-05": SRS_CARD,
     "SA1-06": SRS_CARD, "SA1-07": "name", "SA1-08": "planned_components", "SA1-09": SRS_CARD,
     "SA1-10": "exclusion_reason",

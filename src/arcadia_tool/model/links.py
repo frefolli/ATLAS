@@ -173,10 +173,131 @@ def _domain_of_function(model, function):
     return None
 
 
+def derived_functions(derived):
+    """The system functions (uuids) a derived requirement is mapped on: one or more (one only, as a text, up to
+    0.12.0)."""
+    value = derived.get("system_function")
+    return [value] if isinstance(value, str) and value else [v for v in value or [] if v]
+
+
+def derived_domains(model, derived):
+    """The domains of a derived requirement: those of its system functions (one or more, without repetitions), else
+    the one written in it (not mapped yet)."""
+    found = []
+    for uuid in derived_functions(derived):
+        function = model.get(uuid)
+        if function is not None and function.get("domain") and function.get("domain") not in found:
+            found.append(function.get("domain"))
+    return found or ([derived.get("domain")] if derived.get("domain") else [])
+
+
+DECOMPOSED = "Scomposta in requisiti derivati"  # the outcome of an SA-3 record traced through its derived requirements
+
+
+def record_derived(model, record):
+    """The derived requirements of the SRS item of a record (derived from it, or from its list items)."""
+    item = record.get("requirement")
+    if not item:
+        return []
+    inside = model.descendants([item])
+    return [d for d in model.of_kind("derived_requirement") if d.get("parent") in inside]
+
+
+def record_functions(model, record):
+    """The primary and secondary functions of an SA-3 record. Decomposed into derived requirements, they come from
+    them: primary, the system functions common to all of them (none if one is not mapped); secondary, the other
+    functions of the derived requirements. Covered by the clauses it includes: the functions traced to them, primary.
+    Otherwise those written in the record. (primaries, secondaries)"""
+    from arcadia_tool.model.srs_links import COVERED_BY_INCLUDED, included
+
+    if record.get("outcome") == COVERED_BY_INCLUDED:
+        traced = traced_functions_by_item(model, inherit=False)
+        found = [u for target in included(model, record.get("requirement") or "") for u in traced.get(target, [])]
+        return list(dict.fromkeys(found)), []
+    if record.get("outcome") != DECOMPOSED:
+        return list(record.get("primary_functions") or []), list(record.get("secondary_functions") or [])
+    sets = [derived_functions(d) for d in record_derived(model, record)]
+    every = list(dict.fromkeys(u for functions in sets for u in functions))
+    common = [u for u in every if sets and all(u in functions for functions in sets)]
+    return common, [u for u in every if u not in common]
+
+
+def record_summary(model, record):
+    """What the functions of a decomposed record (or one covered by the clauses it includes) are, said in a line
+    (e.g. «3 derivati su 4 mappati»), or ""."""
+    from arcadia_tool.model.srs_links import COVERED_BY_INCLUDED, included
+
+    if record.get("outcome") == COVERED_BY_INCLUDED:
+        targets = [model.get(u) for u in included(model, record.get("requirement") or "")]
+        ids = ", ".join(t.get("id") or "?" for t in targets if t is not None)
+        return (f"Dalle clausole incluse: {ids}" if ids else
+                "La voce non include nessuna clausola: aggiungi un collegamento «Include» con «Collega…»")
+    if record.get("outcome") != DECOMPOSED:
+        return ""
+    derived = record_derived(model, record)
+    if not derived:
+        return "Nessun requisito derivato della voce"
+    mapped = sum(1 for d in derived if derived_functions(d))
+    common, _others = record_functions(model, record)
+    if mapped < len(derived):
+        return f"{mapped} derivati su {len(derived)} mappati: nessuna funzione primaria finché non lo sono tutti"
+    if not common:
+        return f"I {len(derived)} derivati non hanno una funzione in comune: nessuna funzione primaria"
+    return f"Dai {len(derived)} derivati della voce" if len(derived) > 1 else "Dal requisito derivato della voce"
+
+
+def traced_functions(model, item_uuid):
+    """The system functions traced to an SRS item (a clause): allocated to it or to its list items (SA-2), written in
+    its SA-3 records (primary or secondary, or from the derived requirements of a decomposed one), mapped by its
+    derived requirements (SA-4). Each once, by ID."""
+    return traced_functions_by_item(model).get(item_uuid, [])
+
+
+def traced_functions_by_item(model, inherit=True):
+    """traced_functions of every SRS item, worked out in one pass: {item uuid: [system function uuids]}. inherit: also
+    those of the clauses it includes (see model.srs_links)."""
+    from arcadia_tool.model.element import natural_key
+    from arcadia_tool.model.srs_links import COVERED_BY_INCLUDED, INCLUDES, included
+
+    found = {}
+
+    def up(uuid, functions):  # the item and those containing it (an allocation to a list item: to its clause)
+        seen = set()
+        while uuid and uuid not in seen:
+            seen.add(uuid)
+            found.setdefault(uuid, set()).update(functions)
+            item = model.get(uuid)
+            uuid = item.get("parent") if item is not None and item.kind == "requirement" else None
+    for sf in model.of_kind("system_function"):
+        for uuid in sf.get("sections") or []:
+            up(uuid, [sf.uuid])
+    for derived in model.of_kind("derived_requirement"):
+        if derived.get("parent"):
+            up(derived.get("parent"), derived_functions(derived))
+    for record in model.of_kind("trace_record"):
+        if record.get("requirement") and record.get("outcome") != COVERED_BY_INCLUDED:  # those: from the includes
+            found.setdefault(record.get("requirement"), set()).update(
+                u for functions in record_functions(model, record) for u in functions)
+    if inherit:  # the functions of the clauses included, as they are traced (each once)
+        from arcadia_tool.model.srs_links import links_of
+        base = {u: set(fs) for u, fs in found.items()}
+        for item in model.of_kind("requirement"):
+            if any(t == INCLUDES for t, _u in links_of(item)):
+                for target in included(model, item.uuid):
+                    found.setdefault(item.uuid, set()).update(base.get(target, set()))
+    result = {}
+    for uuid, uuids in found.items():
+        functions = [f for f in (model.get(u) for u in uuids) if f is not None and f.kind == "system_function"]
+        result[uuid] = [f.uuid for f in sorted(functions, key=lambda f: natural_key(f.get("id") or f.get("name")
+                                                                                   or ""))]
+    return result
+
+
 def _domain_of_derived(model, derived, previous, changed):
-    """«Dominio» of a derived requirement: the one of its system function (SA-2), else of its logical function
-    (when that is known)."""
-    system = model.get(derived.get("system_function")) if derived.get("system_function") else None
+    """«Dominio» of a derived requirement: the one of its (first) system function (SA-2), else of its logical
+    function (when that is known)."""
+    functions = derived_functions(derived)
+    system = model.get(functions[0]) if functions else None
     domain = (system.get("domain") if system is not None else None) or \
         _domain_of_function(model, model.get(derived.get("function")))
     if domain:
@@ -198,7 +319,7 @@ def _derived_of_logical_function(model, function, previous, changed, seen=None):
 
 def _derived_of_system_function(model, function, previous, changed):
     for derived in model.of_kind("derived_requirement"):  # mapped on it (SA-2): its domain
-        if derived.get("system_function") == function.uuid:
+        if function.uuid in derived_functions(derived):
             _domain_of_derived(model, derived, None, changed)
     for lf in model.of_kind("logical_function"):
         if lf.get("refines") == function.uuid:

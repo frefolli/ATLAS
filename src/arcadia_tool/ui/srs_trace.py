@@ -87,8 +87,11 @@ def derived_field(function):
 def derived_of(model, function):
     """Derived requirements (SA-4) of a function: allocated to a logical function (LA-2), mapped on a system function
     (SA-2)."""
-    field = derived_field(function)
-    return [d for d in model.of_kind("derived_requirement") if d.get(field) == function.uuid]
+    from arcadia_tool.model.links import derived_functions
+
+    if derived_field(function) == "system_function":  # one or more system functions
+        return [d for d in model.of_kind("derived_requirement") if function.uuid in derived_functions(d)]
+    return [d for d in model.of_kind("derived_requirement") if d.get("function") == function.uuid]
 
 
 def _haystack(e):
@@ -859,9 +862,13 @@ class TraceItemsDialog(_TraceDialog):
     def __init__(self, project, owner, field, parent=None):
         self.FIELD = field
         label = owner.schema.field(field).label_for(owner)
-        self.TITLE = label.lower()
+        self.TITLE = self.title(label)
         self.HINT = self.hint(label)
         super().__init__(project, owner, parent)
+
+    def title(self, label):
+        """What the window is about, after the name of the sheet (set before it is built)."""
+        return label.lower()
 
     def hint(self, label):
         """What the window says on top (set before it is built)."""
@@ -1086,6 +1093,42 @@ class TraceClausesDialog(_TeamFilter, TraceItemsDialog):
         from arcadia_tool.model.adr import item_domains
 
         return e.kind == "requirement" and bool(self.own_domains & item_domains(self.project.model, e))
+
+
+class TraceFilterItemsDialog(TraceItemsDialog):
+    """SRS sections and clauses ticked for a filter (e.g. the parent items in the catalogue of the derived
+    requirements): the traceability window (chapters, search, categories, ticks), on a probe holding the choice."""
+
+    def __init__(self, project, title, what, current, parent=None):
+        from arcadia_tool.model.element import Element
+
+        probe = Element("adr", values={"title": title, "srs_items": list(current)})
+        self._what = what
+        super().__init__(project, probe, "srs_items", parent)
+
+    def title(self, label):
+        return self._what
+
+    def hint(self, label):
+        return (f"Spunta {self._what}: quante servono, un clic sulla spunta la toglie. Doppio clic su una riga per "
+                "leggerne il testo completo.")
+
+
+def pick_srs_items(project, title, what, current, parent=None):
+    """SRS items ticked in the traceability window (see TraceFilterItemsDialog): the new list, or None if
+    cancelled."""
+    dialog = TraceFilterItemsDialog(project, title, what, current, parent)
+    return dialog.selected if dialog.exec() else None
+
+
+def pick_elements(project, title, hint, elements, current, parent=None, group_of=None):
+    """Model elements ticked in the window with search and ticks (e.g. the system functions, grouped by domain):
+    the new list (those already chosen first, in their order), or None if cancelled."""
+    dialog = TickPickerDialog(project, title, hint, elements, selected=set(current), single=False,
+                              group_of=group_of, parent=parent)
+    if not dialog.exec():
+        return None
+    return [u for u in current if u in dialog.selected] + [u for u in dialog.selected if u not in current]
 
 
 # Windows for a list field of SRS items with a rule of its own.
@@ -1437,18 +1480,20 @@ class TraceDerivedDialog(_TraceDialog):
                 item.setToolTip(column, "")
 
     def initial_state(self, e):
-        return ALLOCATED if e.get("system_function") == self.owner.uuid else None
+        from arcadia_tool.model.links import derived_functions
+        return ALLOCATED if self.owner.uuid in derived_functions(e) else None
 
     def stored_owner(self, e):
-        return e.get("system_function") if e.kind == "derived_requirement" else None
+        return None  # mapped on more functions: ticking it here takes it from none of the others
 
     def owner_after_apply(self, e, state):
+        from arcadia_tool.model.links import derived_functions
         if e.kind != "derived_requirement":
             return None
         if state == ALLOCATED:
             return self.owner.uuid
-        stored = e.get("system_function")
-        return stored if stored != self.owner.uuid else None
+        others = [u for u in derived_functions(e) if u != self.owner.uuid]
+        return others[0] if others else None
 
     def count_text(self):
         n = len(self.chosen(ALLOCATED))
@@ -1457,10 +1502,13 @@ class TraceDerivedDialog(_TraceDialog):
 
     def accept(self):
         """Those of another domain take the domain of the function: asked first."""
+        from arcadia_tool.model.links import derived_functions
+
         model = self.project.model
         domain = self.owner.get("domain")
+        # The domain follows the first function: those mapped on no function yet take this one.
         moved = [model.get(u) for u in self.chosen(ALLOCATED)
-                 if model.get(u).get("system_function") != self.owner.uuid and domain
+                 if not derived_functions(model.get(u)) and domain
                  and model.get(u).get("domain") not in (None, domain)]
         if moved and QMessageBox.question(
                 self, "Requisiti derivati di un altro dominio",
@@ -1472,14 +1520,18 @@ class TraceDerivedDialog(_TraceDialog):
 
     def apply(self):
         """Each derived requirement shown: mapped on the function if ticked, no longer if it was and is not."""
+        from arcadia_tool.model.links import derived_functions
+
         model, changed = self.project.model, {}
         for uuid, state in self.state.items():
             derived = model.get(uuid)
             if derived is None:
                 continue
-            value = self.owner.uuid if state == ALLOCATED else (
-                None if derived.get("system_function") == self.owner.uuid else derived.get("system_function"))
-            if value != derived.get("system_function"):
+            current = derived_functions(derived)
+            others = [u for u in current if u != self.owner.uuid]
+            value = (current if self.owner.uuid in current else current + [self.owner.uuid]) \
+                if state == ALLOCATED else others
+            if value != current:
                 previous = derived.copy()
                 derived.set("system_function", value)
                 changed[derived.uuid] = derived

@@ -160,9 +160,10 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.tree)
         splitter.addWidget(self.work_area)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([340, 1100])
+        splitter.setSizes([420, 1100])
         # At its left the bar of icons: the tabs of the panel, and the panel closed to the left and opened again.
-        self.activity = ActivityBar(self.tree, self.tree.tabs, splitter, TAB_ICONS, settings())
+        self.activity = ActivityBar(self.tree, self.tree.tabs, splitter, TAB_ICONS, settings(), width=420,
+                                    old_widths=(340,))  # 340 up to 0.12: wider now
         workspace = QWidget()
         row = QHBoxLayout(workspace)
         row.setContentsMargins(0, 0, 0, 0)
@@ -190,6 +191,7 @@ class MainWindow(QMainWindow):
         self.tree.functions_import_requested.connect(self.import_functions)
         self.tree.adrs_import_requested.connect(self.import_adrs)
         self.tree.list_requested.connect(self.open_element_list)
+        self.tree.links_requested.connect(self.edit_srs_links)
         self.tree.clause_catalog_requested.connect(self.open_clause_catalog)
         self.tree.breakdown_requested.connect(self.open_breakdown)
         self.tree.view_created.connect(lambda _uuid: self._diagram_saved("Vista creata"))
@@ -1476,6 +1478,20 @@ class MainWindow(QMainWindow):
             self.item_window.editor.discussion_changed.connect(self._discussion_changed)
         self.item_window.show_element(self.project, element)
 
+    def edit_srs_links(self, uuid):
+        """«Collega…» of an SRS item in the model tree: its links, as from its row in the catalogue."""
+        from arcadia_tool.ui.srs_links import edit_links
+
+        item = self.project.model.get(uuid) if self.project else None
+        if item is None:
+            return None
+        changed = edit_links(self.project, item, self)
+        if changed:
+            if self.reader is not None:
+                self.reader.links_changed()
+            self._reader_changed(changed)
+        return changed
+
     def _reader_changed(self, elements):
         """Allocations made from the rows of the SRS catalogue: the open sheets (the domain, the function, the SA-3
         record…) show them."""
@@ -1679,6 +1695,10 @@ class MainWindow(QMainWindow):
             self.list_pages[element.kind].reload()
         if element.kind == "derived_requirement" and "system_function" in self.list_pages:
             self.list_pages["system_function"].reload()  # the derived requirements of each function
+        for kind in ("derived_requirement", "trace_record"):  # their names, the domain of a function or an item
+            if kind in self.list_pages and element.kind in ("system_function", "logical_function", "domain",
+                                                            "requirement"):
+                self.list_pages[kind].reload()
         if self.diagram_pages:
             self._refresh_diagrams()  # e.g. a name or an exchange changed in a sheet
         self._refresh_state()

@@ -137,7 +137,7 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     rect = reader.view.visualRect(index)
     *_, actions, _ = reader.delegate._layout(e["clause"], rect)
     buttons = {name: box for name, _, box in actions[1]}
-    assert [name for name, _, _box in actions[1]] == ["functions", "derive", "share", "exclude", "analyzed"]
+    assert [name for name, _, _box in actions[1]] == ["functions", "derive", "share", "exclude", "analyzed", "links"]
     opened = []
     reader.open_element.connect(opened.append)
     _click(reader.view, buttons["functions"].center())  # «Mappa a Funzione» of the clause row
@@ -254,7 +254,8 @@ def test_derive_from_a_clause_mapped_on_a_function(app, tmp_path, monkeypatch, k
     menu.actions()[0].trigger()
     derived = p.model.of_kind("derived_requirement")
     field = "system_function" if kind == "system_function" else "function"
-    assert len(derived) == 1 and derived[0].get(field) == function.uuid and derived[0].get("parent") == e["clause"].uuid
+    expected = [function.uuid] if field == "system_function" else function.uuid  # the system functions: a list
+    assert len(derived) == 1 and derived[0].get(field) == expected and derived[0].get("parent") == e["clause"].uuid
     assert records_of(p, e["clause"])[0].get("outcome") == "Scomposta in requisiti derivati"
     name = "derivedMapped" if kind == "system_function" else "derivedAllocated"
     box = editor.findChild(QListWidget, name)  # the sheet rebuilt: the box of the derived requirements shows it

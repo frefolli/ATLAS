@@ -42,11 +42,13 @@ BADGE_ROLE = Qt.UserRole + 22  # a section of the SRS (three numbers): «DF02 ·
 
 
 def section_badge(model, element):
-    """The badge of a section of the SRS (item type «Sezione», e.g. 3.3.1): the ID and name of its principal domain,
-    or None (not a section, or no domain assigned)."""
-    if element.kind != "requirement" or element.get("item_type") != "Sezione" or not element.get("primary_domain"):
+    """The badge of an SRS item below the chapters (a section, e.g. 3.3.1, a clause, a list item): the ID and name of
+    its principal domain, its own or that of the section or clause containing it; None (a chapter, or no domain)."""
+    if element.kind != "requirement" or element.get("item_type") in (None, "Capitolo"):
         return None
-    domain = model.get(element.get("primary_domain"))
+    from arcadia_tool.model.adr import principal_of
+
+    domain = model.get(principal_of(model, element) or "")
     if domain is None:
         return None
     return " · ".join(t for t in (domain.get("id"), domain.get("name")) if t) or model.label(domain)
@@ -179,6 +181,7 @@ class ModelTree(QFrame):
     list_requested = Signal(str)  # a kind whose elements are shown as a table in a tab (e.g. X-2)
     breakdown_requested = Signal(str)  # the functional breakdown of the SA of this kind (SA-1 or SA-2)
     clause_catalog_requested = Signal(str)  # a double click on «Clausole condivise» or «Clausole non mappate»
+    links_requested = Signal(str)  # «Collega…» of an SRS item: its links to the other ones
     view_created = Signal(str)  # «Nuova vista»: the uuid of the view, created and to be saved with the project
 
     def __init__(self, srs_edit_mode=None):
@@ -208,8 +211,8 @@ class ModelTree(QFrame):
         self.tree.setItemDelegateForColumn(0, BadgeDelegate(self.tree))  # the domain of the SRS sections
         self.tree.customContextMenuRequested.connect(self._context_menu)
         self._selecting = False  # select(): opens the element shown, also an SRS item, in its sheet
+        # A click only selects; a double click opens the sheet (see _double_clicked).
         self.tree.currentItemChanged.connect(self._current_changed)
-        self.tree.itemClicked.connect(self._clicked)  # also on the item that is already the current one
         self.tree.itemDoubleClicked.connect(self._double_clicked)
         self.tree.setExpandsOnDoubleClick(False)
         model_page = QWidget()
@@ -227,8 +230,7 @@ class ModelTree(QFrame):
         self.new_view_button.clicked.connect(lambda _checked=False: self.create_view())
         self.views = _navigator()
         self.views.customContextMenuRequested.connect(self._views_menu)
-        self.views.currentItemChanged.connect(self._view_changed)
-        self.views.itemClicked.connect(lambda item, _column: self._view_changed(item, None))  # also once selected
+        self.views.itemDoubleClicked.connect(lambda item, _column: self._view_changed(item, None))
         views_page = QWidget()
         views_layout = QVBoxLayout(views_page)
         views_layout.setContentsMargins(0, 0, 0, 0)
@@ -492,20 +494,35 @@ class ModelTree(QFrame):
 
     def _show_badge(self, item, element):
         badge = section_badge(self.project.model, element)
-        item.setData(0, BADGE_ROLE, badge)
+        # Only the ID of the domain (DF09): room for the labels down to the last level; its name in the tooltip.
+        from arcadia_tool.model.adr import principal_of
+
+        model = self.project.model
+        domain = model.get(principal_of(model, element) or "") if badge else None
+        item.setData(0, BADGE_ROLE, (domain.get("id") if domain is not None else None) or badge)
         if badge:
-            item.setToolTip(0, f"{element.get('text') or self.project.model.choice_label(element)}\n"
-                               f"Dominio principale: {badge}")
+            how = "" if element.get("primary_domain") else " (dalla sezione o clausola che la contiene)"
+            item.setToolTip(0, f"{element.get('text') or model.choice_label(element)}\n"
+                               f"Dominio principale: {badge}{how}")
 
     def refresh_label(self, element):
         item = self._items.get(element.uuid)
         if item is not None:
             item.setText(0, self.project.model.choice_label(element))
             self._show_badge(item, element)
-        if element.kind == "domain":  # its ID or name changed: the badges of its sections
-            for section in self.project.model.of_kind("requirement"):
-                if section.get("primary_domain") == element.uuid and section.uuid in self._items:
-                    self._show_badge(self._items[section.uuid], section)
+        if element.kind == "domain":  # its ID or name changed: the badges of its items (also inherited)
+            from arcadia_tool.model.adr import principal_of
+            for item in self.project.model.of_kind("requirement"):
+                if item.uuid in self._items and principal_of(self.project.model, item) == element.uuid:
+                    self._show_badge(self._items[item.uuid], item)
+        elif element.kind == "requirement" and item is not None:  # its domain changed: the items inside inherit it
+            todo = [item.child(i) for i in range(item.childCount())]
+            while todo:
+                child = todo.pop()
+                inside = self.project.model.get(child.data(0, UUID_ROLE) or "")
+                if inside is not None and inside.kind == "requirement":
+                    self._show_badge(child, inside)
+                todo += [child.child(i) for i in range(child.childCount())]
         view = self._view_items.get(element.uuid)
         if view is not None:
             view.setText(0, element.get("name") or "(vista senza nome)")
@@ -520,8 +537,11 @@ class ModelTree(QFrame):
     def select(self, uuid):
         if uuid in self._view_items:  # a view: in its tab
             self.tabs.setCurrentIndex(VIEWS_TAB)
+            changed = self.views.currentItem() is not self._view_items[uuid]
             self.views.setCurrentItem(self._view_items[uuid])
             self.views.scrollToItem(self._view_items[uuid])
+            if changed and self.project is not None:  # chosen by the program (e.g. a new view): it opens
+                self.element_selected.emit(self.project.model.get(uuid))
             return
         item = self._items.get(uuid)
         if item is None:
@@ -571,15 +591,20 @@ class ModelTree(QFrame):
     # --- actions -------------------------------------------------------------------------------
 
     def _current_changed(self, current, _previous):
-        uuid = current.data(0, UUID_ROLE) if current else None
-        if uuid and current.data(0, KIND_ROLE) == "requirement" and not self._selecting:
-            self.srs_item_chosen.emit(uuid)
+        """Only a selection chosen by the program (see select: the sheet shown, e.g. a tab chosen) opens the element;
+        a click of the user only selects it, a double click opens it (see _double_clicked)."""
+        if not self._selecting:
             return
+        uuid = current.data(0, UUID_ROLE) if current else None
         self.element_selected.emit(self.project.model.get(uuid) if uuid and self.project else None)
 
-    def _clicked(self, item, _column):
-        if item.data(0, UUID_ROLE) and item.data(0, KIND_ROLE) == "requirement":
-            self.srs_item_chosen.emit(item.data(0, UUID_ROLE))
+    def _open(self, item):
+        """The sheet of the element of the row (an SRS item: in the catalogue of the SRS items)."""
+        uuid = item.data(0, UUID_ROLE)
+        if item.data(0, KIND_ROLE) == "requirement":
+            self.srs_item_chosen.emit(uuid)
+        elif self.project is not None:
+            self.element_selected.emit(self.project.model.get(uuid))
 
     def _view_changed(self, current, _previous):
         """A click in «Viste grafiche»: the view opens (a functional breakdown, or a view of the users)."""
@@ -592,7 +617,9 @@ class ModelTree(QFrame):
 
     def _double_clicked(self, item, _column):
         kind = item.data(0, KIND_ROLE)
-        if kind in CLAUSE_LISTS:
+        if item.data(0, UUID_ROLE):  # an element: its sheet
+            self._open(item)
+        elif kind in CLAUSE_LISTS:
             self.clause_catalog_requested.emit(kind)
         elif kind == "requirement" and not item.data(0, UUID_ROLE):
             self.srs_reader_requested.emit()
@@ -605,18 +632,22 @@ class ModelTree(QFrame):
             self.tree.setUpdatesEnabled(True)
 
     def _context_menu(self, pos):
-        item = self.tree.itemAt(pos)
+        menu = self.context_menu_for(self.tree.itemAt(pos))
+        if menu is not None:
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def context_menu_for(self, item):
+        """The menu of the right click on a row of the tree, or None (nothing to do there)."""
         if not item or not item.data(0, KIND_ROLE) or not self.project:
-            return
+            return None
         kind = item.data(0, KIND_ROLE)
         uuid = item.data(0, UUID_ROLE)
         menu = QMenu(self)
         if kind in CLAUSE_LISTS or item.data(0, CLAUSE_ROLE):
             self._clause_menu(menu, item)
-            menu.exec(self.tree.viewport().mapToGlobal(pos))
-            return
+            return menu
         if kind in (SRS_ROOT, SRS_SPEC):
-            return
+            return None
         locked = kind == "requirement" and not self.srs_edit_mode.enabled
         if kind == "requirement" and not uuid:
             only_da = self.srs_edit_mode.reason()  # who may change the SRS items
@@ -658,6 +689,11 @@ class ModelTree(QFrame):
         new.setToolTip(denied or "")
         if uuid:
             element = self.project.model.get(uuid)
+            if kind == "requirement" and element is not None and element.get("item_type") != "Capitolo":
+                # An analysis datum: also with the SRS items locked.
+                menu.addAction(icon("mdi6.link-variant"), "Collega…",
+                               lambda _=False: self.links_requested.emit(uuid))
+                menu.addSeparator()
             for child_kind, field in CREATION_CONTEXT.items():
                 if kind in KINDS_BY_NAME[child_kind].field(field).ref_kinds:
                     label = f"Nuovo: {KINDS_BY_NAME[child_kind].label} per {element.get('id') or ''}".strip()
@@ -667,7 +703,7 @@ class ModelTree(QFrame):
             delete = menu.addAction(icon("mdi6.trash-can-outline"), "Elimina", lambda _=False: self._delete_selected())
             delete.setEnabled(not locked and not denied)
             delete.setToolTip(denied or "")
-        menu.exec(self.tree.viewport().mapToGlobal(pos))
+        return menu
 
     def _clause_menu(self, menu, item):
         """On «Clausole condivise» or «Clausole non mappate»: declare one (an ADR), the catalogue; on a row: its ADR,
