@@ -295,7 +295,9 @@ class DeriveDialog(QDialog):
             self.table.setCurrentCell(missing[0], NAME_COLUMN)
             self.text.setFocus()
             return
-        values = {derived_field(self.function): self.function.uuid} if self.function is not None else {}
+        field = derived_field(self.function) if self.function is not None else None
+        values = {} if field is None else {field: [self.function.uuid] if field == "system_function"
+                                           else self.function.uuid}  # the system functions: a list
         self.created, self.changed = self.project.derive_requirements(self.item, self.obligations(),
                                                                       self.decompose.isChecked(), **values)
         self.accept()

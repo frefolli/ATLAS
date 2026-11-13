@@ -827,12 +827,14 @@ def test_the_left_panel_has_the_elements_and_the_views_in_two_tabs(app, tmp_path
     assert groups[1].child(0).text(0) == "Comando dei freni" and groups[1].text(1) == "1"
     assert "nessuna vista" in groups[2].child(0).text(0)
     assert groups[3].child(0).text(0) == "Frenatura"
-    # A click on the breakdown asks for it; a click on a view selects it as an element (it opens its page).
+    # A double click on the breakdown asks for it; on a view it opens its page; a click only selects.
     asked, selected = [], []
     tree.breakdown_requested.connect(asked.append)
     tree.element_selected.connect(selected.append)
-    tree.views.setCurrentItem(groups[0].child(0))
     tree.views.setCurrentItem(groups[1].child(0))
+    assert not selected
+    tree.views.itemDoubleClicked.emit(groups[0].child(0), 0)
+    tree.views.itemDoubleClicked.emit(groups[1].child(0), 0)
     assert asked == ["domain"] and selected == [flow]
     # Selecting a view shows its tab; each tab searches its own items.
     tree.tabs.setCurrentIndex(0)

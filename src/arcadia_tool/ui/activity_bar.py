@@ -14,8 +14,8 @@ class ActivityBar(QFrame):
     hidden); icons: one for each tab. side: "left" or "right", where the bar is, next to the panel. key: the group
     of the settings."""
 
-    def __init__(self, panel, tabs, splitter, icons, store=None, side="left", key="panel", width=340,
-                 shortcut="Ctrl+Maiusc+B"):
+    def __init__(self, panel, tabs, splitter, icons, store=None, side="left", key="panel", width=420,
+                 shortcut="Ctrl+Maiusc+B", old_widths=()):
         super().__init__(objectName="activityBar")
         self.panel, self.tabs, self.splitter, self.store, self.key = panel, tabs, splitter, store, key
         self.setFixedWidth(40)
@@ -41,6 +41,8 @@ class ActivityBar(QFrame):
         splitter.splitterMoved.connect(self._moved)
         if store is not None:
             self._width = int(store.value(f"{key}/width", width) or width)
+            if self._width in old_widths:  # the width given by an earlier version, never changed: the new one
+                self._width = width
             if str(store.value(f"{key}/collapsed", "false")).lower() == "true":
                 self.panel.hide()
         self.show_state()

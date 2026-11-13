@@ -17,12 +17,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 from arcadia_tool.checks import CHECKS_BY_CODE, count
 from arcadia_tool.checks.fields import SRS_CARD
 from arcadia_tool.model.coverage import derivable
+from arcadia_tool.model.links import DECOMPOSED, derived_functions, record_functions, record_summary
+from arcadia_tool.model.srs_links import COVERED_BY_INCLUDED
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context, missing_context, rule
 from arcadia_tool.model.teams import DA_FIELD, MEMBERS, da_teams, member_rows
 from arcadia_tool.model.adr import (approval_problems, approve_new_domain, approve_reallocation, can_approve,
                                     decided_reallocations, open_reallocations, reallocation_pending,
                                     reallocation_preview, reallocation_problems, sections_taken)
-from arcadia_tool.model.element import is_empty
+from arcadia_tool.model.element import is_empty, natural_key
 from arcadia_tool.model.required import save_refusal
 from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
                                        IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR, STRLIST, TABLE, TEXT, enum_option)
@@ -988,6 +990,8 @@ class ElementEditor(QScrollArea):
         findings = self.findings_for(element.uuid) if self.findings_for else []
         if findings:
             outer.addWidget(self._findings_card(findings))
+        if element.kind == "requirement" and element.get("item_type") != "Capitolo":
+            outer.addWidget(self._links_card(element))
         if element.kind == "adr":
             not_held = self._sections_not_held_card(element)
             if not_held is not None:
@@ -1290,6 +1294,35 @@ class ElementEditor(QScrollArea):
             "funzionali le sezioni delle voci SRS indicate:</b></p><p style='margin:2px 0'>"
             + "<br>".join(rows) + "</p>"))
 
+    def _links_card(self, element):
+        """An SRS item: the other items it refers to, includes or replaces, and those linking to it (see
+        model.srs_links); changed with «Collega…» of its row in the catalogue. A double click shows an item."""
+        from arcadia_tool.model.srs_links import INVERSE, incoming, links_of
+
+        model = self.project.model
+        frame, layout = card("Collegamenti")
+        rows = [(f"{t} {model.label_of(u) or '(voce inesistente)'}", u) for t, u in links_of(element)]
+        rows += [(f"{INVERSE[t]} {model.label(source)}", source.uuid) for t, source in incoming(model, element.uuid)]
+        shown = QListWidget(objectName="srsLinks")
+        for text, uuid in rows:
+            row = QListWidgetItem(text)
+            row.setData(Qt.UserRole, uuid)
+            shown.addItem(row)
+        if not rows:
+            empty = QListWidgetItem("Nessun collegamento ad altre voci SRS")
+            empty.setForeground(QColor(MUTED))
+            empty.setFlags(Qt.NoItemFlags)
+            shown.addItem(empty)
+        shown.itemDoubleClicked.connect(lambda row: row.data(Qt.UserRole) and self.show_reference(row.data(Qt.UserRole)))
+        shown.setProperty("keepEnabled", True)
+        shown.setFixedHeight(max(1, min(shown.count(), 6)) * (shown.sizeHintForRow(0) or 22) + 8)
+        layout.addWidget(shown)
+        hint = QLabel("Si aggiungono e si tolgono con «Collega…» della clausola nel catalogo delle voci SRS. Doppio "
+                      "clic su una riga per leggerne il testo.", objectName="muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        return frame
+
     def _orphans_card(self, element):
         """An ADR deleting a domain, not decided yet: the elements that would be left orphan, by kind, with links to
         them (the Design Authority says what to do with each when it approves it); None if not such an ADR."""
@@ -1511,8 +1544,8 @@ class ElementEditor(QScrollArea):
         rows = (
             ("parentItem", "Voce madre", element.get("parent"), "Scegli la voce madre…", self._choose_parent,
              bool(model.of_kind("requirement")), "Importa prima le voci SRS (menu File › Importa SRS)"),
-            ("systemFunction", "Funzione di sistema (SA-2)", element.get("system_function"),
-             "Scegli la funzione di sistema…", self._choose_system_function,
+            ("systemFunction", "Funzioni di sistema (SA-2)", derived_functions(element),
+             "Scegli le funzioni di sistema…", self._choose_system_function,
              bool(model.of_kind("system_function")), "Crea prima le funzioni di sistema (SA-2) nel modello"),
             ("logicalFunction", "Funzione logica (LA-2)", element.get("function"), "Scegli la funzione logica…",
              self._choose_function, bool(model.of_kind("logical_function")),
@@ -1522,16 +1555,23 @@ class ElementEditor(QScrollArea):
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         form.setHorizontalSpacing(16)
         for name, label, uuid, button_text, action, enabled, why in rows:
-            target = model.get(uuid) if uuid else None
-            shown = QLineEdit(model.choice_label(target) if target else "", readOnly=True, objectName="readonly")
-            shown.setAccessibleName(name)
-            shown.setPlaceholderText("Non indicata")
-            shown.setToolTip((target.get("text") or target.get("title") or "")[:600] if target else "")
             button = QPushButton(icon("mdi6.link-variant-plus"), button_text)
             button.setEnabled(enabled)
             button.setToolTip("" if enabled else why)
             button.clicked.connect(action)
             line = QHBoxLayout()
+            if isinstance(uuid, list):  # more (the system functions): a list, one per row, a double click opens it
+                shown = self._reference_list([model.get(u) for u in uuid if model.get(u) is not None], name)
+                line.addWidget(shown, 1)
+                line.addWidget(button, 0, Qt.AlignTop)
+                form.addRow(QLabel(label, objectName="formLabel"), line)
+                self.widgets[name] = shown
+                continue
+            target = model.get(uuid) if uuid else None
+            shown = QLineEdit(model.choice_label(target) if target else "", readOnly=True, objectName="readonly")
+            shown.setAccessibleName(name)
+            shown.setPlaceholderText("Non indicata")
+            shown.setToolTip((target.get("text") or target.get("title") or "")[:600] if target else "")
             line.addWidget(shown, 1)
             line.addWidget(button)
             if target is not None:
@@ -1540,6 +1580,30 @@ class ElementEditor(QScrollArea):
             self.widgets[name] = shown
         layout.addLayout(form)
         return frame
+
+    def _reference_list(self, targets, name):
+        """Elements referenced by the sheet, one per row (or «Non indicate»), as high as its rows; a double click
+        opens one. Usable also on a read-only sheet."""
+        model = self.project.model
+        shown = QListWidget(objectName=name)
+        shown.setAccessibleName(name)
+        shown.setIconSize(QSize(14, 14))
+        for target in targets:
+            item = QListWidgetItem(kind_icon(target.kind), model.choice_label(target))
+            item.setData(Qt.UserRole, target.uuid)
+            shown.addItem(item)
+        if not targets:
+            empty = QListWidgetItem("Non indicate")
+            empty.setForeground(QColor(MUTED))
+            empty.setFlags(Qt.NoItemFlags)
+            shown.addItem(empty)
+        shown.setToolTip("Doppio clic su una riga per aprirne la scheda" if targets else "")
+        shown.itemDoubleClicked.connect(
+            lambda item: item.data(Qt.UserRole) and self.open_requested.emit(item.data(Qt.UserRole)))
+        shown.setProperty("keepEnabled", True)
+        rows = max(1, min(shown.count(), 6))
+        shown.setFixedHeight(rows * (shown.sizeHintForRow(0) or 22) + 8)
+        return shown
 
     def show_reference(self, uuid):
         """A double click on an element of a list of the sheet: an SRS item or a derived requirement in a window with
@@ -1581,13 +1645,14 @@ class ElementEditor(QScrollArea):
             self._draft_changed()
 
     def _choose_system_function(self):
-        """The system function the derived requirement is mapped on (one), grouped by domain; its domain becomes
-        the one of the function with «Salva»."""
-        from arcadia_tool.ui.srs_trace import choose_element
+        """The system functions the derived requirement is mapped on (one or more, with ticks), grouped by domain;
+        its domain becomes the one of the first function with «Salva»."""
+        from arcadia_tool.ui.srs_trace import choose_functions
 
         self.flush()
-        chosen = choose_element(self.project, self.draft, "system_function", self)
-        if chosen is not False and chosen != self.draft.get("system_function"):
+        current = derived_functions(self.draft)
+        chosen = choose_functions(self.project, self.draft, "system_function", current, self)
+        if chosen is not None and chosen != current:
             self.draft.set("system_function", chosen)
             self._draft_changed()
 
@@ -1851,6 +1916,22 @@ class ElementEditor(QScrollArea):
         widget.setToolTip(tip)
         widget.setProperty("uuid", uuid)
 
+    def _pick_linked_adrs(self, uuids):
+        """«ADR collegate»: every other ADR, by ID, with its type and status, ticked if linked; unticked, it is no
+        longer linked. The new list, or None if cancelled."""
+        model = self.project.model
+        others = sorted((a for a in model.of_kind("adr") if a.uuid != self.draft.uuid),
+                        key=lambda a: natural_key(a.get("id") or a.get("title") or ""))
+
+        def label(a):
+            name = " · ".join(t for t in (a.get("id"), a.get("title")) if t) or "ADR senza titolo"
+            detail = " · ".join(t for t in (a.get("adr_type"), a.get("status")) if t)
+            return f"{name}  —  {detail}" if detail else name
+        dialog = RefPicker([(a.uuid, label(a)) for a in others], set(uuids), self, title="ADR collegate")
+        if not dialog.exec():
+            return None
+        return dialog.selected()
+
     def _member_widget(self, f, value):
         """A member of the team chosen in another field of the sheet (the member of the team proposing an ADR)."""
         from arcadia_tool.model.teams import member_names
@@ -1969,8 +2050,10 @@ class ElementEditor(QScrollArea):
         if f.type == ENUM and self.element.kind in PICKER_KINDS:
             w = ValuePicker(f.label, lambda _current, field=f: [(o, o) for o in field.options], enum_option(f, value))
             w.changed.connect(self._changed)
-            if any(o.when and o.when[0] == f.name for o in self.element.schema.fields):
-                # It decides which fields the sheet has (the type of an ADR): the page follows it.
+            if any(o.when and o.when[0] == f.name for o in self.element.schema.fields) or \
+                    (self.element.kind == "trace_record" and f.name == "outcome"):
+                # It decides which fields the sheet has (the type of an ADR), or what they show (the outcome of a
+                # record: decomposed, its functions come from the derived requirements): the page follows it.
                 w.changed.connect(lambda name=f.name: self._controller_changed(name))
             return w, w.value
         if f.type in (ENUM, REF):
@@ -2038,6 +2121,21 @@ class ElementEditor(QScrollArea):
                 from arcadia_tool.ui.srs_trace import choose_items
                 picker = lambda uuids, name=f.name, only=f.sections_only: choose_items(
                     self.project, self.draft, name, uuids, self, sections_only=only)
+            if self.element.kind == "trace_record" and f.name in ("primary_functions", "secondary_functions") \
+                    and self.draft.get("outcome") in (DECOMPOSED, COVERED_BY_INCLUDED):
+                # Decomposed into derived requirements, or covered by the clauses it includes: the functions come
+                # from them, not written here.
+                primaries, secondaries = record_functions(model, self.draft)
+                w = RefsWidget(model, f.ref_kinds)
+                w.set_value(primaries if f.name == "primary_functions" else secondaries)
+                w.set_read_only(("Calcolate dai requisiti derivati della voce: primarie quelle comuni a tutti, "
+                                 "secondarie le altre. " if self.draft.get("outcome") == DECOMPOSED else
+                                 "Le funzioni tracciate alle clausole che la voce include. ")
+                                + record_summary(model, self.draft))
+                w.open_item = self.show_reference
+                return w, lambda name=f.name: self.draft.get(name)  # what was written stays, unused
+            elif self.element.kind == "adr" and f.name == "linked_adrs":  # the other ADR, with ticks
+                picker = self._pick_linked_adrs
             elif set(f.ref_kinds) <= {"system_function", "logical_function"}:  # grouped by domain, with ticks
                 from arcadia_tool.ui.srs_trace import choose_functions
                 picker = lambda uuids, name=f.name: choose_functions(self.project, self.draft, name, uuids, self)

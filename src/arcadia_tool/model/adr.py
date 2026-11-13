@@ -14,8 +14,10 @@ from arcadia_tool.model.teams import person_key
 PROPOSED, IN_REVIEW, REVIEWED, DECIDED = "Proposta", "In revisione DA", "Revisionato DA", "Decisa"
 OPEN = (PROPOSED, IN_REVIEW, REVIEWED, None)  # not decided yet
 
+# Not among the other fields of a type (see common_fields): its identification, and the ADR linked (chosen in the
+# tool, not in the templates of the teams).
 IDENTIFICATION = ("id", "title", "adr_type", "status", "superseded_by", "proposer", "proposer_member",
-                  "decision_date", "deleted_domain_label")
+                  "decision_date", "deleted_domain_label", "linked_adrs")
 
 
 def srs_items_of(model, domains):

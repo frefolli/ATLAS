@@ -230,6 +230,39 @@ def a4_reallocation_not_applied(ctx):
                              "applicarla con «Applica la riallocazione» nella scheda dell'ADR.", pending)
 
 
+@check("A4-11", "Clausola che richiama una clausola di un altro dominio o ne dipende", "A", "A4, SA-5")
+def a4_refers_other_domain(ctx):
+    from arcadia_tool.model.adr import principal_of
+    from arcadia_tool.model.srs_links import DEPENDS, REFERS, links_of
+
+    for r in ctx.of("requirement"):
+        mine = None
+        for link_type, uuid in links_of(r):
+            target = ctx.get(uuid)
+            if link_type not in (REFERS, DEPENDS) or target is None:
+                continue
+            mine = mine or principal_of(ctx.model, r)
+            theirs = principal_of(ctx.model, target)
+            if mine and theirs and mine != theirs:
+                verb = "Richiama" if link_type == REFERS else "Dipende da"
+                yield issue(r, f"{verb} {target.get('id')}, del dominio {ctx.label(ctx.get(theirs))}: verifica se "
+                               "serve uno scambio funzionale (SA-5) o una condivisione con quel dominio.",
+                            [target, ctx.get(theirs)])
+
+
+@check("A4-12", "Collegamento a una voce SRS inesistente o inclusione circolare", "E", "A4")
+def a4_broken_links(ctx):
+    from arcadia_tool.model.srs_links import includes_loop, links_of
+
+    for r in ctx.of("requirement"):
+        missing = [u for _t, u in links_of(r) if ctx.get(u) is None]
+        if missing:
+            yield issue(r, f"{len(missing)} collegamenti a voci SRS che non esistono più: toglili con «Collega…».")
+        if includes_loop(ctx.model, r.uuid):
+            yield issue(r, "La clausola include sé stessa attraverso le clausole che include: togli uno dei "
+                           "collegamenti «Include».")
+
+
 @check("A4-05", "Voce Definizione, Informativa o Altro allocata come principale", "A", "B5 domanda 1")
 def a4_non_board_primary(ctx):
     for r in ctx.of("requirement"):
@@ -873,23 +906,29 @@ def _ends(ctx, fe):
 
 @check("SA4-11", "Requisito derivato non mappato su una funzione di sistema", "A", "SA-2 ↔ SA-4")
 def sa4_no_system_function(ctx):
+    from arcadia_tool.model.links import derived_functions
+
     for d in ctx.of("derived_requirement"):
-        if not d.get("system_function"):
+        if not derived_functions(d):
             yield issue(d, "Requisito derivato non mappato su una funzione di sistema (SA-2).")
 
 
 @check("SA4-12", "Funzione logica che non raffina la funzione di sistema del requisito derivato", "A",
        "SA-2 ↔ SA-4 ↔ LA-2")
 def sa4_functions_apart(ctx):
+    from arcadia_tool.model.links import derived_functions
+
     for d in ctx.of("derived_requirement"):
-        sf, lf = ctx.get(d.get("system_function")), ctx.get(d.get("function"))
-        if sf is None or lf is None:
+        sfs = [f for f in (ctx.get(u) for u in derived_functions(d)) if f is not None]
+        lf = ctx.get(d.get("function"))
+        if not sfs or lf is None:
             continue
+        sf = sfs[0]
         refined, seen = lf, set()  # the system function the logical one refines (directly or through its parents)
         while refined is not None and refined.kind == "logical_function" and refined.uuid not in seen:
             seen.add(refined.uuid)
             refined = ctx.get(refined.get("refines")) or ctx.get(refined.get("parent"))
-        if refined is not None and refined.uuid != sf.uuid:
+        if refined is not None and refined.uuid not in {f.uuid for f in sfs}:
             yield issue(d, f"Mappato su {ctx.label(sf)}, ma la sua funzione logica {ctx.label(lf)} raffina "
                            f"{ctx.label(refined)}.", [sf, lf, refined])
 

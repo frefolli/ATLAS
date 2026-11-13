@@ -705,6 +705,10 @@ class Project:
                 if function.values.pop("catalogue_id"):
                     function.values["imported"] = True
                 self.update(function)
+        for derived in self.model.of_kind("derived_requirement"):  # its system function: one, now a list
+            if isinstance(derived.values.get("system_function"), str):
+                derived.set("system_function", [derived.values["system_function"]])
+                self.update(derived)
         for record in self.model.of_kind("trace_record"):  # the primary function: one, now a list
             if "primary_function" in record.values:
                 primary = record.values.pop("primary_function")
@@ -1065,9 +1069,10 @@ class Project:
                              else item.get("primary_domain"))
                     for name in ("contributing_domains", "excluded_domains"):
                         item.set(name, [u for u in item.get(name) or [] if u != element.uuid])
+        from arcadia_tool.model.links import derived_functions
         for derived in self.model.of_kind("derived_requirement"):
-            if derived.get("system_function") == element.uuid:
-                derived.set("system_function", None)
+            if element.uuid in derived_functions(derived):
+                derived.set("system_function", [u for u in derived_functions(derived) if u != element.uuid])
                 self._touch(derived.uuid)
 
     def delete_elements(self, uuids):
