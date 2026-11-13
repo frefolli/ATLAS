@@ -110,7 +110,9 @@ ROW_ACTIONS = {"section": (("domains", "Domini…", "Alloca la sezione ai domini
                           ("exclude", "Escludi", "Propone di non mappare la clausola su nessun dominio: crea l'ADR "
                                                  "già compilata (Clausole non mappate)"),
                           (ANALYZED, "Non analizzato", "Segna che hai preso in carico la clausola; un altro clic "
-                                                      "toglie il tuo segno")),
+                                                      "toglie il tuo segno"),
+                          ("links", "Collega…", "Le altre voci SRS che la clausola richiama, include o da cui "
+                                                "dipende")),
                "item": (("derive", "Deriva…", "Deriva uno o più requisiti dalla voce (punto di elenco, riga di "
                                               "tabella…); la tracciabilità alle funzioni è quella della clausola"),)}
 ACTION_GAP = 6
@@ -119,7 +121,7 @@ ACTION_GAP = 6
 # requirements.
 DOMAIN_BADGES = {True: ("#1F5FBF", "#E6F0FF"), False: ("#5B6B7C", "#F1F3F6"),
                  "function": ("#0E7490", "#E0F5F9"), "inherited": ("#5B6B7C", "#F1F3F6"),
-                 "derived": ("#7C3AED", "#F3EEFF")}
+                 "derived": ("#7C3AED", "#F3EEFF"), "link": ("#B45309", "#FEF3C7")}
 BADGE_TIPS = {True: "Dominio principale della sezione (A4)", False: "Dominio che contribuisce alla sezione (A4)",
               "derived": "Requisito derivato (SA-4) dalla voce"}
 
@@ -664,7 +666,9 @@ class SrsReader(QWidget):
                       "Clausole: i badge sono le funzioni mappate (azzurre; grigie se mappate alla sezione) e i "
                       "requisiti derivati (viola); «Mappa a Funzione» le mappa "
                       "alle funzioni di sistema, «Deriva…» crea uno o più requisiti derivati, «Condividi» ed «Escludi» "
-                      "creano l'ADR per condividerle tra domini o non mapparle, «Non analizzato» segna che l'hai presa "
+                      "creano l'ADR per condividerle tra domini o non mapparle, «Collega…» indica le voci che la "
+                      "clausola richiama, include o da cui dipende (badge gialli: → verso, ← da altre voci), "
+                      "«Non analizzato» segna che l'hai presa "
                       "in carico (col mouse sopra: chi l'ha analizzata). In giallo le clausole del tuo team dentro "
                       "sezioni di altri team. Doppio clic apre la voce. "
                       "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
@@ -985,7 +989,12 @@ class SrsReader(QWidget):
         for d in self.project.model.of_kind("derived_requirement"):
             if d.get("parent"):
                 derived.setdefault(d.get("parent"), []).append(d)
-        self._links = {"functions": functions, "derived": derived}
+        from arcadia_tool.model.srs_links import links_of
+        incoming = {}  # the links to each item from the others (see model.srs_links)
+        for e in self.project.model.of_kind("requirement"):
+            for link_type, target in links_of(e):
+                incoming.setdefault(target, []).append((link_type, e))
+        self._links = {"functions": functions, "derived": derived, "incoming": incoming}
         self._marks = marks_by_requirement(self.project.model)
 
     def _analysis(self, element):
@@ -1057,10 +1066,20 @@ class SrsReader(QWidget):
             return f"{kind} {part.get('id') if part is not None else '?'}"
 
         derived = self._links.get("derived", {}).get(element.uuid, [])
+        from arcadia_tool.model.srs_links import INVERSE, links_of
+
+        def item_id(uuid):
+            target = model.get(uuid)
+            return target.get("id") if target is not None else "?"
+        links = [(f"→ {item_id(u)}", "link", f"{t} la voce {item_id(u)} (Collega… per cambiarlo).")
+                 for t, u in links_of(element)]
+        links += [(f"← {source.get('id') or '?'}", "link", f"{INVERSE[t]} {source.get('id') or '?'}.")
+                  for t, source in self._links.get("incoming", {}).get(element.uuid, [])]
         return ([(named(f), "function", f"Mappata direttamente alla clausola {ident}.{role(f)}") for f, _p in direct]
                 + [(named(f), "inherited", f"Mappata alla {where(p)}, che contiene la voce {ident}: la voce la eredita."
                     f"{role(f)}") for f, p in inherited]
-                + [(d.get("id") or "?", "derived", f"Requisito derivato (SA-4) dalla voce {ident}.") for d in derived])
+                + [(d.get("id") or "?", "derived", f"Requisito derivato (SA-4) dalla voce {ident}.") for d in derived]
+                + links)
 
     def _links_text(self, element):
         kind = row_kind(element)
@@ -1111,6 +1130,11 @@ class SrsReader(QWidget):
         elif name == ANALYZED:
             self.toggle_analysis(item)
             return
+        elif name == "links":  # the other SRS items it refers to, includes or depends on
+            from arcadia_tool.ui.srs_links import edit_links
+            changed = edit_links(self.project, item, self)
+            if not changed:
+                return
         elif name in ("share", "exclude"):  # an ADR for the clause, created and opened by the window
             from arcadia_tool.ui.model_tree import SHARED_CLAUSES, UNMAPPED_CLAUSES
             self.clause_declared.emit(SHARED_CLAUSES if name == "share" else UNMAPPED_CLAUSES, uuid)
@@ -1130,6 +1154,11 @@ class SrsReader(QWidget):
         self.view.viewport().update()
         if changed:
             self.elements_changed.emit(changed)
+
+    def links_changed(self):
+        """The links between SRS items changed elsewhere (e.g. from the model tree): the badges of the rows follow."""
+        self._rebuild_links()
+        self.view.viewport().update()
 
     def _double_clicked(self, index):
         pos = self.view.viewport().mapFromGlobal(QCursor.pos())
@@ -1185,6 +1214,8 @@ class SrsReader(QWidget):
                                lambda _=False: self.run_action(element.uuid, "functions"))
             menu.addAction(icon("mdi6.call-split"), "Deriva più requisiti…",
                            lambda _=False: self.run_action(element.uuid, "derive"))
+            menu.addAction(icon("mdi6.link-variant"), "Collega…",
+                           lambda _=False: self.run_action(element.uuid, "links"))
         menu.addSeparator()
         n = len(self.view.selectionModel().selectedRows())
         delete = menu.addAction(icon("mdi6.trash-can-outline"), f"Elimina selezionate ({n})",

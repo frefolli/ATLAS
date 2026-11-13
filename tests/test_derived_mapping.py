@@ -1,5 +1,6 @@
 """The derived requirements (SA-4) mapped on a system function (SA-2): «Mappa requisiti derivati…» of its sheet, a
 window with only the clauses they are derived from and, under each, its derived requirements with ticks."""
+from arcadia_tool.model.links import derived_functions
 import pytest
 from PySide6.QtWidgets import QApplication, QPushButton
 
@@ -58,23 +59,24 @@ def test_the_window_lists_only_the_clauses_with_derived_requirements(app, tmp_pa
     monkeypatch.setattr(srs_trace.QMessageBox, "question",
                         lambda *a, **k: asked.append(a[1]) or srs_trace.QMessageBox.Yes)
     dialog.accept()
-    # Asked: one of another domain (it takes the domain of the function), one mapped on another function.
-    assert asked == ["Requisiti derivati di un altro dominio", "Requisito derivato già mappato"]
-    assert [e[k].get("system_function") for k in ("own", "bullet", "taken", "other")] == [
-        e["sf1"].uuid, None, e["sf1"].uuid, e["sf1"].uuid]
-    assert e["other"].get("domain") == e["d1"].uuid and e["taken"].get("domain") == e["d1"].uuid
+    # Asked: one of another domain, mapped on no function yet (it takes the domain of the function). One mapped
+    # on another function keeps it: mapped on both, with the domain of the first one.
+    assert asked == ["Requisiti derivati di un altro dominio"]
+    assert [derived_functions(e[k]) for k in ("own", "bullet", "taken", "other")] == [
+        [e["sf1"].uuid], [], [e["sf2"].uuid, e["sf1"].uuid], [e["sf1"].uuid]]
+    assert e["other"].get("domain") == e["d1"].uuid and e["taken"].get("domain") == e["d2"].uuid
     assert e["other"] in dialog.changed and e["own"].uuid in p.pending()
     # Unticked: no longer mapped.
     again = srs_trace.TraceDerivedDialog(p, e["sf1"])
     assert again.chosen(srs_trace.ALLOCATED) == {e[k].uuid for k in ("own", "taken", "other")}
     again.set_state(e["own"].uuid, None)
     again.accept()
-    assert e["own"].get("system_function") is None and e["taken"].get("system_function") == e["sf1"].uuid
+    assert derived_functions(e["own"]) == [] and derived_functions(e["taken"]) == [e["sf2"].uuid, e["sf1"].uuid]
     # Cancelled: nothing changes.
     cancelled = srs_trace.TraceDerivedDialog(p, e["sf1"])
     cancelled.set_state(e["taken"].uuid, None)
     cancelled.reject()
-    assert e["taken"].get("system_function") == e["sf1"].uuid
+    assert derived_functions(e["taken"]) == [e["sf2"].uuid, e["sf1"].uuid]
 
 
 def test_the_sheets_show_the_mapping_and_the_coverage_counts_it(app, tmp_path, monkeypatch):
@@ -97,7 +99,7 @@ def test_the_sheets_show_the_mapping_and_the_coverage_counts_it(app, tmp_path, m
         return True
     monkeypatch.setattr(srs_trace.TraceDerivedDialog, "exec", ticks)
     buttons["Mappa requisiti derivati…"].click()
-    assert e["own"].get("system_function") == e["sf1"].uuid
+    assert derived_functions(e["own"]) == [e["sf1"].uuid]
     from PySide6.QtWidgets import QListWidget
     mapped = window.editor.widget().findChild(QListWidget, "derivedMapped")
     assert [mapped.item(i).data(0x0100) for i in range(mapped.count())] == [e["own"].uuid]
@@ -105,7 +107,8 @@ def test_the_sheets_show_the_mapping_and_the_coverage_counts_it(app, tmp_path, m
     assert e["own"].uuid not in p.pending()
     # The sheet of the derived requirement: its system function, chosen with ticks.
     window._select(e["own"])
-    assert window.editor.widgets["systemFunction"].text() == p.model.choice_label(e["sf1"])
+    functions = window.editor.widgets["systemFunction"]  # a list, one per row
+    assert [functions.item(i).text() for i in range(functions.count())] == [p.model.choice_label(e["sf1"])]
     # The item it is derived from: covered at the level of the system functions too.
     rows = {r.item.get("id"): r for r in coverage(p.model, document_order(p.model), "Bordo").rows}
     assert rows["3.4.1.1"].at(FUNCTION) and e["sf1"] in rows["3.4.1.1"].functions

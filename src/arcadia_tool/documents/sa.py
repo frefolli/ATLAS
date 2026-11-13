@@ -194,7 +194,8 @@ SA2_EXAMPLE = ["SF-DF06-04", "Supervisionare lo standstill", "Cosa fa la funzion
 
 def sa2_row(doc, f):
     model = doc.model
-    derived = by_id(d for d in model.of_kind("derived_requirement") if d.get("system_function") == f.uuid)
+    from arcadia_tool.model.links import derived_functions
+    derived = by_id(d for d in model.of_kind("derived_requirement") if f.uuid in derived_functions(d))
     return [f.get("id") or "", f.get("name") or "", plain(f.get("description")), shorts(model, f.get("sections")),
             ", ".join(d.get("id") or "" for d in derived), ", ".join(f.get("rows_452") or []),
             label(model, f.get("proposed_component")), str(doc.board_items(f.get("sections"))),
@@ -233,8 +234,8 @@ def sa3_records(doc):
     for r in model.of_kind("trace_record"):
         item = model.get(r.get("requirement")) if r.get("requirement") else None
         domain = model.get(principal_of(model, item) or "") if item is not None else None
-        functions = [model.get(u) for u in [*(r.get("primary_functions") or []), *(r.get("secondary_functions") or [])]
-                     if u]
+        from arcadia_tool.model.links import record_functions
+        functions = [model.get(u) for u in [*sum(record_functions(model, r), [])] if u]
         if doc.domains is not None and not doc.in_scope(domain) and not any(
                 doc.in_scope(domain_of(model, f.uuid)) for f in functions if f is not None):
             continue
@@ -243,6 +244,8 @@ def sa3_records(doc):
 
 
 def write_sa3(w, doc, records):
+    from arcadia_tool.model.links import record_functions
+
     model = doc.model
     w.document(header(doc, "SA-3", scope_text(doc) if doc.filled else ""))
     if records is None:
@@ -256,7 +259,7 @@ def write_sa3(w, doc, records):
                      short(model, principal_of(model, item)) if item is not None else "",
                      short(model, r.get("requirement")), ", ".join(item.get("category") or []) if item else "",
                      text_of(model, r, _f("trace_record", "b5_question")), r.get("outcome") or "",
-                     shorts(model, r.get("primary_functions")), shorts(model, r.get("secondary_functions")),
+                     *(shorts(model, functions) for functions in record_functions(model, r)),
                      shorts(model, r.get("exchange_items")), plain(r.get("notes")), shorts(model, r.get("adrs")),
                      r.get("status") or ""])
     w.table(SA3_COLUMNS, rows)
@@ -279,14 +282,16 @@ def sa4_items(doc):
 
 
 def write_sa4(w, doc, items):
+    from arcadia_tool.model.links import derived_domains, derived_functions
+
     model = doc.model
     w.document(header(doc, "SA-4", scope_text(doc) if doc.filled else ""))
     if items is None:
         w.table(SA4_COLUMNS, example=SA4_EXAMPLE, empty=15)
         return
     w.table(SA4_COLUMNS, [[d.get("id") or "", d.get("name") or "", short(model, d.get("parent")),
-                           plain(d.get("obligation")), short(model, d.get("system_function")),
-                           short(model, d.get("function")), short(model, d.get("domain")),
+                           plain(d.get("obligation")), shorts(model, derived_functions(d)),
+                           short(model, d.get("function")), shorts(model, derived_domains(model, d)),
                            text_of(model, d, _f("derived_requirement", "b6_scheme")), d.get("status") or ""]
                           for d in items])
 

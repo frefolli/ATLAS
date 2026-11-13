@@ -784,14 +784,16 @@ def test_only_the_design_authority_changes_the_srs_items(app, tmp_path, monkeypa
     window.close()
 
 
-def test_a_click_on_an_srs_item_in_the_tree_goes_to_it_in_the_catalogue(app, tmp_path):
+def test_a_double_click_on_an_srs_item_in_the_tree_goes_to_it_in_the_catalogue(app, tmp_path):
     from arcadia_tool.ui import main_window as mw
 
     p, da, domain, section, clause, other = srs_project(tmp_path)
     window = mw.MainWindow()
     window._set_project(p)
     tree = window.tree
-    tree.tree.setCurrentItem(tree._items[clause.uuid])  # a click
+    tree.tree.setCurrentItem(tree._items[clause.uuid])  # a click: only selected
+    assert window.reader is None or window.pages.currentWidget() is not window.reader
+    tree.tree.itemDoubleClicked.emit(tree._items[clause.uuid], 0)
     reader = window.reader
     assert reader is not None and window.pages.currentWidget() is reader
     window.show()  # the rows are laid out once it is visible: the item is reached then
@@ -800,7 +802,7 @@ def test_a_click_on_an_srs_item_in_the_tree_goes_to_it_in_the_catalogue(app, tmp
     # Another chapter, hidden by the search: the catalogue goes there and shows it.
     reader.search.setText("clausola")
     assert all(e.uuid != other.uuid for e in reader.model.elements)
-    tree._clicked(tree._items[other.uuid], 0)
+    tree.tree.itemDoubleClicked.emit(tree._items[other.uuid], 0)
     assert reader.selected_elements() == [other] and reader.search.text() == ""
     # A double click in the catalogue, and the links to an item, still open its sheet.
     window._open_from_reader(clause.uuid)

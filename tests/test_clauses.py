@@ -82,8 +82,10 @@ def test_sharing_a_clause_creates_its_adr_filled_by_the_tool(app, tmp_path):
     assert [r.text(0) for r in rows] == [f"3.5.3.7 · {adr.get('id')} · Attiva"]
     selected = []
     tree.element_selected.connect(selected.append)
-    tree.tree.setCurrentItem(rows[0])
-    assert selected[-1] is adr  # the row opens the ADR
+    tree.tree.setCurrentItem(rows[0])  # a click: only selected
+    assert not selected
+    tree.tree.itemDoubleClicked.emit(rows[0], 0)
+    assert selected[-1] is adr  # the row opens the ADR with a double click
 
 
 def test_the_ripartition_in_derived_requirements_puts_the_adr_under_their_domains(app, tmp_path):
@@ -215,8 +217,8 @@ def test_the_buttons_of_a_clause_in_the_srs_catalogue(app, tmp_path):
     from arcadia_tool.ui.srs_reader import ROW_ACTIONS, SrsReader
     from arcadia_tool.ui.model_tree import SHARED_CLAUSES, UNMAPPED_CLAUSES
 
-    assert [name for name, _l, _t in ROW_ACTIONS["clause"]] == ["functions", "derive", "share", "exclude", "analyzed"]
-    assert [label for _n, label, _t in ROW_ACTIONS["clause"]][2:] == ["Condividi", "Escludi", "Non analizzato"]
+    assert [name for name, _l, _t in ROW_ACTIONS["clause"]] == ["functions", "derive", "share", "exclude", "analyzed", "links"]
+    assert [label for _n, label, _t in ROW_ACTIONS["clause"]][2:] == ["Condividi", "Escludi", "Non analizzato", "Collega…"]
     p, x = project(tmp_path)
     reader = SrsReader(p)
     asked = []
@@ -246,18 +248,22 @@ def test_the_sections_show_the_badge_of_their_domain(app, tmp_path):
     d1 = p.model.get(x.d1.uuid)
     expected = f"{d1.get('id')} · Odometria"
     assert section_badge(p.model, x.section) == expected
-    assert tree._items[x.section.uuid].data(0, BADGE_ROLE) == expected
-    assert tree._items[x.clause.uuid].data(0, BADGE_ROLE) is None  # a clause: no badge
+    assert tree._items[x.section.uuid].data(0, BADGE_ROLE) == d1.get("id")  # only the ID, the name in the tooltip
+    assert expected in tree._items[x.section.uuid].toolTip(0)
+    assert tree._items[x.clause.uuid].data(0, BADGE_ROLE) == d1.get("id")  # a clause: the domain of its section
+    assert "dalla sezione o clausola che la contiene" in tree._items[x.clause.uuid].toolTip(0)
     previous = x.section.copy()
     x.section.set("primary_domain", x.d2.uuid)  # assigned to another domain
     p.update(x.section, previous)
     tree.refresh_label(x.section)
-    assert tree._items[x.section.uuid].data(0, BADGE_ROLE).endswith("Radio")
+    assert tree._items[x.section.uuid].data(0, BADGE_ROLE) == x.d2.get("id")  # the other domain
+    assert tree._items[x.section.uuid].toolTip(0).endswith("Radio")
+    assert tree._items[x.clause.uuid].data(0, BADGE_ROLE) == x.d2.get("id")  # its clauses follow
     previous = x.d2.copy()
     x.d2.set("name", "Radio GSM-R")  # the domain renamed: its sections follow
     p.update(x.d2, previous)
     tree.refresh_label(x.d2)
-    assert tree._items[x.section.uuid].data(0, BADGE_ROLE).endswith("Radio GSM-R")
+    assert tree._items[x.section.uuid].toolTip(0).endswith("Radio GSM-R")  # the name: in the tooltip
     tree.resize(500, 400)
     tree.show()
     tree.select(x.section.uuid)

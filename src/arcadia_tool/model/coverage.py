@@ -99,9 +99,10 @@ def coverage(model, ordered, category):
         if d.get("parent"):
             derived_of.setdefault(d.get("parent"), []).append(d)
             # Mapped on a system function (SA-2): the item derived from is covered by it too.
-            sf = model.get(d.get("system_function")) if d.get("system_function") else None
-            if sf is not None and sf not in functions_of.get(d.get("parent"), []):
-                functions_of.setdefault(d.get("parent"), []).append(sf)
+            from arcadia_tool.model.links import derived_functions
+            for sf in (model.get(u) for u in derived_functions(d)):
+                if sf is not None and sf not in functions_of.get(d.get("parent"), []):
+                    functions_of.setdefault(d.get("parent"), []).append(sf)
     # Derived from (or traced to) a list item or a table row: they cover the clause containing it.
     for item in ordered:
         if item.get("item_type") in COUNTED_TYPES or not (derived_of.get(item.uuid) or functions_of.get(item.uuid)):
@@ -112,6 +113,17 @@ def coverage(model, ordered, category):
                                                           if d not in derived_of.get(clause.uuid, []))
             functions_of.setdefault(clause.uuid, []).extend(f for f in functions_of.get(item.uuid, [])
                                                             if f not in functions_of.get(clause.uuid, []))
+    # A clause including others (model.srs_links): covered, for the part included, by their tracing.
+    from arcadia_tool.model.srs_links import INCLUDES, included, links_of
+    base_functions = {u: list(fs) for u, fs in functions_of.items()}
+    base_derived = {u: list(ds) for u, ds in derived_of.items()}
+    for item in ordered:
+        if any(t == INCLUDES for t, _u in links_of(item)):
+            for target in included(model, item.uuid):
+                functions_of.setdefault(item.uuid, []).extend(
+                    f for f in base_functions.get(target, []) if f not in functions_of.get(item.uuid, []))
+                derived_of.setdefault(item.uuid, []).extend(
+                    d for d in base_derived.get(target, []) if d not in derived_of.get(item.uuid, []))
     rows, by_item = [], {}
     for item in ordered:
         if item.get("item_type") not in COUNTED_TYPES or category not in (item.get("category") or []):

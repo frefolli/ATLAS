@@ -6,6 +6,83 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.13.0] - 2026-11-13
+
+### Aggiunto
+- **Collegamenti tra voci SRS.** Ogni clausola indica le altre voci che **richiama**, che **include** o da cui
+  **dipende**. Si usa «Collega…», che si trova nel pulsante della riga nel catalogo delle voci SRS e nel clic destro
+  sulla voce, sia nel catalogo sia nell'albero a sinistra:
+  - **Include:** la clausola, per la parte inclusa, è coperta dalla tracciatura della clausola inclusa. Nel report di
+    copertura risulta coperta se lo è quella inclusa, e la colonna «Funzioni di sistema» del registro SA-3 ne
+    mostra le funzioni. Il nuovo esito SA-3 «Coperta dalla clausola inclusa» prende le funzioni da lì, in sola
+    lettura.
+  - **Richiama e Dipende da:** sono solo informativi. Una clausola che richiama una clausola di un altro dominio, o
+    ne dipende, è segnalata dalla verifica A4-11, perché potrebbe servire uno scambio funzionale o una condivisione.
+    Nel verso inverso la voce risulta «Richiamata da» o «Necessaria a».
+
+  Nel catalogo i collegamenti compaiono come badge gialli, «→ 3.12.2.3» verso altre voci e «← 3.8.4.1» da altre
+  voci. La scheda della voce li elenca nel riquadro «Collegamenti». La verifica A4-12 segnala collegamenti a voci
+  inesistenti e inclusioni circolari.
+  «Aggiungi collegamento…» fa scegliere prima il tipo, senza proporne nessuno, poi le voci. Ogni tipo è spiegato
+  con il testo completo di una clausola di esempio del SUBSET-026. La relazione si legge dalla clausola verso
+  l'altra voce.
+- **ADR collegate.** Ogni ADR, di qualsiasi tipo, ha in «Identificazione», sotto «Superata da», il campo «ADR
+  collegate». Con «Seleziona» si apre l'elenco di tutte le altre ADR, in ordine di ID e con tipo e stato, da
+  spuntare o da cui togliere la spunta; un'ADR senza spunta non è più collegata. Il campo non entra nei modelli
+  Excel X-1.
+- **Catalogo dei requisiti derivati.** Il doppio clic sul gruppo «Requisiti derivati» dell'albero apre una scheda
+  con la tabella dei requisiti derivati, come per le funzioni di sistema. Le colonne sono ID, nome sintetico, voce
+  madre, funzione di sistema e dominio. Il dominio, se manca, è quello della funzione. Oltre alla ricerca ci
+  sono tre pulsanti di filtro, «Voce madre…», «Funzione di sistema…» e «Dominio…». Accanto a ciascuno compare ciò che
+  è stato scelto, con una «×» per togliere il filtro. Si possono usare insieme e
+  ognuno ammette più valori. Ogni filtro offre tutti gli elementi del modello, non solo quelli già usati dai
+  requisiti derivati, nelle stesse finestre usate nel resto di ATLAS: le voci madri nella finestra delle voci SRS
+  (capitoli, ricerca, categorie e spunte), le funzioni raggruppate per dominio e i domini con ricerca e spunte.
+- **Vista del registro di tracciabilità (SA-3).** Il doppio clic sul gruppo «Registro di tracciabilità» dell'albero
+  apre una scheda con la tabella degli esiti di tracciatura, una riga per voce SRS in ordine di numero. Le colonne
+  sono voce SRS, categoria, funzioni di sistema, esito e dominio principale della voce. «Funzioni di sistema»
+  raccoglie tutte le funzioni tracciate alla clausola: quelle allocate alla clausola o ai suoi punti di elenco (SA-2),
+  quelle dell'esito (SA-3) e quelle dei suoi requisiti derivati (SA-4). I pulsanti di filtro sono quattro, ciascuno
+  con ciò che è stato scelto accanto:
+  - «Voce SRS…», nella finestra delle voci SRS;
+  - «Funzioni di sistema…», raggruppate per dominio;
+  - «Dominio principale…»;
+  - «Esito…».
+- **Clausole scomposte in requisiti derivati: funzioni dai derivati.** Per un esito SA-3 «Scomposta in requisiti
+  derivati» le funzioni non si scrivono più a mano ma derivano dai requisiti derivati della voce:
+  - **primarie:** le funzioni di sistema comuni a tutti i derivati; non ce ne sono finché un derivato non è mappato
+    o se i derivati non hanno una funzione in comune;
+  - **secondarie:** le altre funzioni dei derivati.
+
+  Nella scheda dell'esito i due campi diventano di sola lettura, con una nota sullo stato dei derivati, per esempio
+  «1 derivati su 2 mappati». Il documento SA-3 usa le stesse funzioni. Le funzioni scritte a mano in precedenza
+  restano salvate ma non contano più.
+- **Requisiti derivati: «Funzioni di sistema» e «Domini».** Nel catalogo SA-4 la colonna «Funzioni di sistema»
+  mostra tutte le funzioni tracciate al requisito. Nel catalogo e nel documento SA-4 la colonna «Domini» mostra i
+  domini di tutte quelle funzioni, o il dominio scritto se il requisito non è ancora mappato. Il filtro per dominio trova il
+  requisito con uno qualsiasi dei suoi domini.
+
+### Modificato
+- **Requisiti derivati su più funzioni di sistema.** Un requisito derivato può essere mappato su più funzioni di
+  sistema:
+  - nella sua scheda, «Scegli le funzioni di sistema…» le fa spuntare, raggruppate per dominio;
+  - in «Mappa requisiti derivati…» di una funzione, spuntarlo aggiunge quella funzione alle altre invece di
+    toglierlo dalla precedente.
+
+  Il dominio è quello della prima funzione. Il requisito compare tra i requisiti derivati di ogni sua funzione, nel
+  conteggio del catalogo delle funzioni, nei documenti SA-2 e SA-4 e nella copertura. I progetti esistenti, con
+  una sola funzione per requisito, vengono convertiti all'apertura. Le versioni precedenti di ATLAS non leggono
+  correttamente i requisiti derivati salvati così: è bene che tutti i team passino alla 0.13.0 insieme.
+- **Albero del modello: doppio clic per aprire.** Un clic su una voce dell'albero laterale (un'ADR, una funzione, un
+  requisito derivato, una vista grafica…) la seleziona soltanto; la scheda si apre con il doppio clic. Anche le voci
+  SRS si aprono nel catalogo con il doppio clic.
+- **Albero del modello: badge del dominio su tutte le voci SRS.** Sezioni, clausole e punti di elenco mostrano
+  l'ID del loro dominio principale, per esempio «DF09». È il dominio proprio della voce oppure quello ereditato
+  dalla sezione o clausola che la contiene. Il nome completo, con l'indicazione se è ereditato, è nel tooltip. Con
+  il solo ID resta spazio per le etichette fino all'ultimo livello.
+- **Pannello di sinistra più largo:** passa da 340 a 420 pixel. Chi lo aveva già regolato a mano mantiene la sua
+  larghezza.
+
 ## [0.12.0] - 2026-11-11
 
 ### Aggiunto
@@ -1087,7 +1164,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.12.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.13.0...main
+[0.13.0]: https://github.com/salvodesi/ATLAS/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/salvodesi/ATLAS/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/salvodesi/ATLAS/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/salvodesi/ATLAS/compare/v0.10.0...v0.10.1
