@@ -137,10 +137,19 @@ def test_buttons_of_a_row_run_the_actions(app, tmp_path, monkeypatch):
     rect = reader.view.visualRect(index)
     *_, actions, _ = reader.delegate._layout(e["clause"], rect)
     buttons = {name: box for name, _, box in actions[1]}
-    assert [name for name, _, _box in actions[1]] == ["functions", "derive", "share", "exclude", "analyzed", "links"]
-    opened = []
+    assert [name for name, _, _box in actions[1]] == ["analyzed", "actions"]
+    opened, shown = [], []
     reader.open_element.connect(opened.append)
-    _click(reader.view, buttons["functions"].center())  # «Mappa a Funzione» of the clause row
+    original = reader.quick_menu
+
+    def quick_menu(element, menu=None):  # «Azioni ▾» opens the menu under the mouse: «Mappa a funzione…» chosen
+        menu = original(element, menu)
+        shown.append([a.text() for a in menu.actions() if a.text()])
+        menu.exec = lambda *a: next(a for a in menu.actions() if a.text() == "Mappa a funzione…").trigger()
+        return menu
+    monkeypatch.setattr(reader, "quick_menu", quick_menu)
+    _click(reader.view, buttons["actions"].center())  # «Azioni ▾» of the clause row
+    assert shown and shown[0][0] == "Mappa a funzione…"
     assert e["sf"].get("sections") == [e["clause"].uuid] and opened == []  # done; the item was not opened
     assert reader._links_text(e["clause"]).startswith("Funzioni: SF-DF01-01 · SF-DF01-02 (sezione)")
     badges = reader._link_badges(e["clause"])  # drawn as badges: code and name, the one of the section in grey
@@ -181,7 +190,7 @@ def test_everything_but_chapters_and_sections_is_derivable(app, tmp_path):
                         category=["Bordo"], text="a sub-clause")
     assert not derivable(e["chapter"]) and not derivable(e["section"])  # e.g. 3.8.1
     assert all(derivable(x) for x in (e["clause"], sub, e["item"]))  # 3.8.1.1, its sub-clauses, list items
-    assert [name for name, *_ in ROW_ACTIONS[row_kind(e["item"])]] == ["derive"]  # functions: with the clause
+    assert [name for name, *_ in ROW_ACTIONS[row_kind(e["item"])]] == ["actions"]  # the quick actions
     # Derived from a list item: «3.14.4.2 a)-D1», covering its clause at the level SA-4.
     created, _ = p.derive_requirements(e["item"], [("", "Rileva il primo movimento.")])
     assert [d.get("id") for d in created] == ["3.14.4.2 a)-D1"]
@@ -191,9 +200,8 @@ def test_everything_but_chapters_and_sections_is_derivable(app, tmp_path):
     reader = SrsReader(p)
     texts = lambda x: [a.text() for a in reader.context_menu(x).actions()]
     assert not any(t.startswith("Deriva") for t in texts(e["section"]) + texts(e["chapter"]))
-    assert any(t.startswith("Deriva requisito") for t in texts(e["item"]))
-    assert "Deriva più requisiti…" in texts(e["item"]) and "Alloca alle funzioni di sistema…" not in texts(e["item"])
-    assert "Alloca alle funzioni di sistema…" in texts(sub)
+    assert "Deriva requisiti…" in texts(e["item"]) and "Mappa a funzione…" not in texts(e["item"])  # with the clause
+    assert "Mappa a funzione…" in texts(sub)
 
 
 def records_of(p, item):
@@ -297,3 +305,34 @@ def test_a_new_derived_requirement_cancelled_leaves_no_record(app, tmp_path):
     (derived,), _ = p.derive_requirements(e["clause"], [("", "Uno.")])  # «Nuovo», then «Annulla»: never saved
     assert p.discard_new(derived.uuid)
     assert not records_of(p, e["clause"]) and not p.model.of_kind("derived_requirement")
+
+
+def test_an_adr_created_from_any_srs_item(app, tmp_path, monkeypatch):
+    import arcadia_tool.ui.adr_types as adr_types
+    from arcadia_tool.model.schema import ADR_IMPLEMENTATION, ADR_SECTION, ADR_WAIVER, SCOPE_CLAUSES, SCOPE_SECTION
+
+    p, e = build(tmp_path)
+    reader = SrsReader(p)
+    for key in ("section", "clause", "item"):  # «Crea ADR…» in the quick actions of every row
+        assert "Crea ADR…" in [a.text() for a in reader.quick_menu(e[key]).actions()]
+    window = MainWindow()
+    window._set_project(p)
+    window.open_srs_reader()
+    chosen = []
+
+    def exec_(dialog):
+        chosen.append(dialog)
+        dialog.adr_type = types.pop(0)
+        return True
+    monkeypatch.setattr(adr_types.AdrTypeDialog, "exec", exec_)
+    types = [ADR_SECTION, ADR_SECTION, ADR_IMPLEMENTATION, ADR_WAIVER]
+    for key in ("section", "clause", "clause", "item"):
+        window.reader.run_action(e[key].uuid, "adr")
+    adrs = sorted(p.model.of_kind("adr"), key=lambda a: a.get("id"))
+    assert len(adrs) == 4 and window.editor.element is adrs[-1]  # each opened in its sheet
+    assert adrs[0].get("realloc_item") == [e["section"].uuid] and adrs[0].get("realloc_scope") == SCOPE_SECTION
+    assert adrs[1].get("realloc_item") == [e["clause"].uuid] and adrs[1].get("realloc_scope") == SCOPE_CLAUSES
+    assert adrs[2].get("impl_item") == e["clause"].uuid
+    assert adrs[3].get("srs_items") == [e["item"].uuid] and not adrs[3].get("concerns")  # «Voci SRS interessate»
+    window._set_project(None)
+    window.close()

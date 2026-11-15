@@ -216,6 +216,7 @@ class ModelTree(QFrame):
         # A click only selects; a double click opens the sheet (see _double_clicked).
         self.tree.currentItemChanged.connect(self._current_changed)
         self.tree.itemDoubleClicked.connect(self._double_clicked)
+        self.tree.itemClicked.connect(self._clicked)
         self.tree.setExpandsOnDoubleClick(False)
         model_page = QWidget()
         model_layout = QVBoxLayout(model_page)
@@ -719,6 +720,12 @@ class ModelTree(QFrame):
             self.breakdown_requested.emit(current.data(0, BREAKDOWN_ROLE))
         elif current.data(0, UUID_ROLE):
             self.element_selected.emit(self.project.model.get(current.data(0, UUID_ROLE)))
+
+    def _clicked(self, item, _column):
+        """A click on an SRS item: the list of the SRS items, on the tab of its chapter, at its row (the sheet of the
+        item: a double click on the row there). The other elements: only selected (a double click opens them)."""
+        if item.data(0, KIND_ROLE) == "requirement" and item.data(0, UUID_ROLE):
+            self.srs_item_chosen.emit(item.data(0, UUID_ROLE))
 
     def _double_clicked(self, item, _column):
         kind = item.data(0, KIND_ROLE)

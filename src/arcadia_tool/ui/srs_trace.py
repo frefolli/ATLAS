@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QHBoxLayout, QHeaderV
                                QTreeWidgetItemIterator, QVBoxLayout)
 
 from arcadia_tool.model.coverage import derivable
-from arcadia_tool.model.schema import ADR_ALLOCATION
+from arcadia_tool.model.schema import ADR_ALLOCATION, ADR_SECTION, SCOPE_CLAUSES, SCOPE_SECTION
 from arcadia_tool.ui.busy import save_project
 from arcadia_tool.ui.element_editor import load_pixmap
 from arcadia_tool.ui.srs_reader import CATEGORIES, CATEGORY_COLORS, NO_CATEGORY, chapter_of, document_order
@@ -26,6 +26,9 @@ VIEWER_IMAGE_WIDTH = 760  # fits the viewer with the indentation of the list ite
 # table rows and figures («Voce») are traced through their clause.
 TRACEABLE = ("Sezione", "Titolo", "Requisito")
 SHOWN = ("Capitolo",) + TRACEABLE
+POINT = "Voce"  # a point of a clause: chosen on its own only by the ADR of reallocation, exclusion, sharing
+POINT_HINT = (" Anche i punti di una clausola (es. 3.6.2.2.2 a), 3.6.2.2.2 a) 1st bullet), sotto la clausola: il punto "
+              "scelto avrà domini propri.")
 PRINCIPAL, CONTRIBUTES, EXCLUDED = 1, 2, 3  # domain
 ALLOCATED = 1  # function
 PARENT = 1  # derived requirement
@@ -240,6 +243,7 @@ class _TraceDialog(QDialog):
     HINT = ""
     WITH_DERIVED = False  # derived requirements (SA-4) listed under their clause
     CHOOSABLE = TRACEABLE  # the kinds of item that can be chosen (e.g. only the sections, see TraceSectionsDialog)
+    POINTS = False  # the points of the clauses (POINT) listed as rows of their own under their clause, choosable
     TRACED_WORD = "tracciate"  # in the tab of a chapter: how many rows are chosen
 
     def __init__(self, project, owner, parent=None):
@@ -260,7 +264,8 @@ class _TraceDialog(QDialog):
         for e in document_order(model):
             if e.get("item_type") not in SHOWN:
                 self.sub_items.setdefault(e.get("parent"), []).append(e)
-                continue
+                if not (self.POINTS and e.get("item_type") == POINT):
+                    continue
             if not self.shows(e):
                 continue
             self.by_chapter.setdefault(chapter_of(e), []).append(e)
@@ -475,11 +480,16 @@ class _TraceDialog(QDialog):
                     ancestor = model.get(ancestor.get("parent")) if ancestor.get("parent") else None
                 parent = parents.get(ancestor.uuid) if ancestor is not None else None
             label = model.choice_label(e)  # a derived requirement: ID and short name (if any)
+            if e.get("item_type") == POINT and not e.get("title"):  # a point: its number, then its text begins
+                start = " ".join((e.get("text") or "").split())
+                label = f"{e.get('id') or ''} – {start[:90]}{'…' if len(start) > 90 else ''}" if start else label
             item = QTreeWidgetItem(parent or self.tree, [label])
             item.setData(0, UUID_ROLE, e.uuid)
             item.setToolTip(0, (e.get("text") or e.get("obligation") or e.get("title") or "")[:600])
             if e.kind == "derived_requirement":
                 item.setIcon(0, icon("mdi6.call-split", MUTED))
+            elif e.get("item_type") == POINT:  # a point of a clause (listed with POINTS)
+                item.setIcon(0, icon("mdi6.format-list-bulleted", MUTED))
             categories = e.get("category") or []
             if categories:  # Bordo, Terra, Definizione, Informativa… coloured like the chips of the catalogue
                 item.setText(CATEGORY_COLUMN, ", ".join(categories))
@@ -973,20 +983,44 @@ class TraceReallocItemsDialog(_TeamFilter, TraceItemsDialog):
     """ADR of a reallocation (X-1): the SRS clauses to reallocate (or a section), one or more, provided they belong
     to the same section: those of another section are refused, with the advice to open a separate ADR."""
 
+    CHOOSABLE = TRACEABLE + (POINT,)
+    POINTS = True
+
     def __init__(self, project, owner, field, parent=None):
+        # What the reallocation moves (its «Oggetto»): one whole section, or clauses and their points.
+        self.scope = owner.get("realloc_scope") if owner.get("adr_type") == ADR_SECTION else None
+        if self.scope == SCOPE_SECTION:
+            self.CHOOSABLE, self.POINTS = ("Sezione",), False
+        elif self.scope == SCOPE_CLAUSES:
+            self.CHOOSABLE = ("Titolo", "Requisito", POINT)
         super().__init__(project, owner, field, parent)
         self._add_team_filter(project)
 
     def hint(self, label):
+        if self.scope == SCOPE_SECTION:
+            return ("Spunta la sezione (tre numeri, es. 3.4.1) da riallocare: una sola, spuntarne un'altra sposta la "
+                    "scelta. Passa al dominio proposto con tutte le sue clausole; quelle con un dominio proprio, per "
+                    "una decisione precedente, restano dove sono. Doppio clic su una riga per leggerne il testo "
+                    "completo.")
+        if self.scope == SCOPE_CLAUSES:
+            return ("Spunta le clausole (es. 3.4.1.3) da riallocare: una o più, purché della stessa sezione; per "
+                    "clausole di sezioni diverse apri ADR separate." + POINT_HINT + " Doppio clic su una riga per "
+                    "leggerne il testo completo.")
         return ("Spunta le clausole (es. 3.4.1.3) da riallocare, o la sezione (es. 3.4.1): una o più, purché della "
-                "stessa sezione; per voci di sezioni diverse apri ADR separate. Doppio clic su una riga per leggerne "
-                "il testo completo.")
+                "stessa sezione; per voci di sezioni diverse apri ADR separate." + POINT_HINT + " Doppio clic su una "
+                "riga per leggerne il testo completo.")
 
     def click(self, item, choice):
         from arcadia_tool.model.adr import same_section, section_of
 
         model = self.project.model
         uuid = item.data(0, UUID_ROLE)
+        if self.state[uuid] != PARENT and self.scope == SCOPE_SECTION:  # one section: another one moves the choice
+            if not self.confirm_other_team(model.get(uuid)):
+                return
+            for other in self.chosen(PARENT):
+                self.set_state(other, None)
+            return super().click(item, choice)
         if self.state[uuid] != PARENT:
             chosen = [model.get(u) for u in self.chosen(PARENT)]
             if chosen and not same_section(model, [*chosen, model.get(uuid)]):
@@ -1030,11 +1064,13 @@ class TraceReallocItemsDialog(_TeamFilter, TraceItemsDialog):
 class TraceExclusionItemsDialog(TraceItemsDialog):
     """ADR of an exclusion (X-1): the SRS sections and clauses the domain leaves out, one or more, each within a
     section of which the domain is principal."""
+    CHOOSABLE = TRACEABLE + (POINT,)
+    POINTS = True
 
     def hint(self, label):
         return ("Spunta le sezioni (es. 3.4.1.2) e le clausole (es. 3.4.1.3) che il dominio esclude: una o più, "
-                "purché contenute in una sezione di cui il dominio è principale. Doppio clic su una riga per "
-                "leggerne il testo completo.")
+                "purché contenute in una sezione di cui il dominio è principale." + POINT_HINT + " Doppio clic su "
+                "una riga per leggerne il testo completo.")
 
     def click(self, item, choice):
         from arcadia_tool.model.adr import principal_container
@@ -1060,14 +1096,14 @@ class TraceAllocationItemsDialog(TraceReallocItemsDialog):
     """ADR of a request of allocation (X-1): the clauses (four numbers or more, e.g. 3.4.1.5) of a section of another
     team that the team proposing it asks for, one or more of the same section. «Altri team» shows those the team does
     not hold; no question on choosing them: they are of another team by the nature of the request."""
-    CHOOSABLE = ("Titolo", "Requisito")
+    CHOOSABLE = ("Titolo", "Requisito", POINT)
     TEAM_FILTER, SHOWS_HELD = "Altri team", False
     TEAM_TIP = "Mostra solo le clausole delle sezioni che il team proponente non detiene"
 
     def hint(self, label):
         return ("Spunta le clausole (es. 3.4.1.5) di una sezione di un altro team da allocare a un dominio del tuo "
-                "team: una o più, purché della stessa sezione. Doppio clic su una riga per leggerne il testo "
-                "completo.")
+                "team: una o più, purché della stessa sezione." + POINT_HINT + " Doppio clic su una riga per "
+                "leggerne il testo completo.")
 
     def confirm_other_team(self, element):
         return True
@@ -1081,13 +1117,16 @@ class TraceClausesDialog(_TeamFilter, TraceItemsDialog):
     TEAM_TIP = "Mostra solo le clausole dei domini del team proponente (principale o contributore)"
 
     def __init__(self, project, owner, field, parent=None):
+        if field == "shared_items":  # a point of a clause can be shared on its own; not mapped: whole clauses
+            self.CHOOSABLE, self.POINTS = self.CHOOSABLE + (POINT,), True
         super().__init__(project, owner, field, parent)
         self._add_team_filter(project)
 
     def hint(self, label):
         return (f"Spunta le clausole (es. 3.8.4.1) di «{label}»: solo clausole, non le sezioni (es. 3.8.2); un clic "
-                "sulla spunta la toglie. «Propri domini» mostra solo quelle dei domini del tuo team: togli la spunta "
-                "per vederle tutte. Doppio clic su una riga per leggerne il testo completo.")
+                "sulla spunta la toglie." + (POINT_HINT if self.POINTS else "") + " «Propri domini» mostra solo "
+                "quelle dei domini del tuo team: togli la spunta per vederle tutte. Doppio clic su una riga per "
+                "leggerne il testo completo.")
 
     def _held(self, e):
         from arcadia_tool.model.adr import item_domains

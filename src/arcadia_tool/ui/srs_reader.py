@@ -100,28 +100,53 @@ WRAP = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
 # text, background) when nobody has, when others have, when the user has.
 ANALYZED = "analyzed"
 ANALYZED_STYLES = {"none": (MUTED, "white"), "others": ("#15803D", "#ECFDF3"), "mine": ("white", "#15803D")}
-# Actions in the row of a section (domains, A4) and of a clause (system functions, derived requirements).
-ROW_ACTIONS = {"section": (("domains", "Domini…", "Alloca la sezione ai domini funzionali (principale e "
-                                                   "contributori)"),),
-               "clause": (("functions", "Mappa a Funzione", "Mappa la clausola alle funzioni di sistema"),
-                          ("derive", "Deriva…", "Deriva uno o più requisiti dalla clausola"),
-                          ("share", "Condividi", "Propone di condividere la clausola tra più domini: crea l'ADR "
-                                                 "già compilata (Clausole condivise)"),
-                          ("exclude", "Escludi", "Propone di non mappare la clausola su nessun dominio: crea l'ADR "
-                                                 "già compilata (Clausole non mappate)"),
-                          (ANALYZED, "Non analizzato", "Segna che hai preso in carico la clausola; un altro clic "
-                                                      "toglie il tuo segno"),
-                          ("links", "Collega…", "Le altre voci SRS che la clausola richiama, include o da cui "
-                                                "dipende")),
-               "item": (("derive", "Deriva…", "Deriva uno o più requisiti dalla voce (punto di elenco, riga di "
-                                              "tabella…); la tracciabilità alle funzioni è quella della clausola"),)}
+# The buttons in the row of an item: «Non analizzato» of a clause, and «Azioni ▾», the menu of the quick actions
+# (QUICK_ACTIONS), the same as a right click on the row.
+ACTIONS = "actions"
+ACTIONS_BUTTON = (ACTIONS, "Azioni ▾", "Le azioni sulla voce: allocazione, derivazione, collegamenti, ADR (anche con "
+                                       "il clic destro sulla riga)")
+ROW_ACTIONS = {"section": (ACTIONS_BUTTON,),
+               "clause": ((ANALYZED, "Non analizzato", "Segna che hai preso in carico la clausola; un altro clic "
+                                                      "toglie il tuo segno"), ACTIONS_BUTTON),
+               "item": (ACTIONS_BUTTON,)}
+NEW_ADR = "adr"
+# The quick actions of an item, by its kind: (action, label, icon, what it does); None: a separator.
+QUICK_ACTIONS = {
+    "section": (("domains", "Alloca ai domini funzionali…", "mdi6.sitemap-outline",
+                 "Alloca la sezione ai domini funzionali (principale e contributori)"),
+                None,
+                (NEW_ADR, "Crea ADR…", "mdi6.scale-balance", "Una decisione architetturale sulla sezione: scegli il "
+                                                             "tipo, la scheda nasce già compilata")),
+    "clause": (("functions", "Mappa a funzione…", "mdi6.function-variant", "Mappa la clausola alle funzioni di "
+                                                                           "sistema"),
+               ("derive", "Deriva requisiti…", "mdi6.call-split", "Deriva uno o più requisiti dalla clausola"),
+               ("links", "Collega…", "mdi6.link-variant", "Le altre voci SRS che la clausola richiama, include o da "
+                                                          "cui dipende"),
+               None,
+               ("share", "Condividi tra domini…", "mdi6.share-variant-outline",
+                "Propone di condividere la clausola tra più domini: crea l'ADR già compilata (Clausole condivise)"),
+               ("exclude", "Escludi (non mappata)…", "mdi6.cancel",
+                "Propone di non mappare la clausola su nessun dominio: crea l'ADR già compilata (Clausole non "
+                "mappate)"),
+               (NEW_ADR, "Crea ADR…", "mdi6.scale-balance", "Una decisione architetturale sulla clausola: scegli il "
+                                                            "tipo, la scheda nasce già compilata")),
+    "item": (("derive", "Deriva requisiti…", "mdi6.call-split", "Deriva uno o più requisiti dalla voce (punto di "
+                                                               "elenco, riga di tabella…); la tracciabilità alle "
+                                                               "funzioni è quella della clausola"),
+             ("links", "Collega…", "mdi6.link-variant", "Le altre voci SRS che la voce richiama, include o da cui "
+                                                        "dipende"),
+             None,
+             (NEW_ADR, "Crea ADR…", "mdi6.scale-balance", "Una decisione architetturale sul punto: scegli il tipo, "
+                                                          "la scheda nasce già compilata")),
+}
 ACTION_GAP = 6
 # The badges of a row, drawn like its buttons: (text and border, background). The domains of a section: principal
 # (True), contributing (False); the system functions of a clause: mapped to it, or to its section; its derived
 # requirements.
 DOMAIN_BADGES = {True: ("#1F5FBF", "#E6F0FF"), False: ("#5B6B7C", "#F1F3F6"),
                  "function": ("#0E7490", "#E0F5F9"), "inherited": ("#5B6B7C", "#F1F3F6"),
-                 "derived": ("#7C3AED", "#F3EEFF"), "link": ("#B45309", "#FEF3C7")}
+                 "derived": ("#7C3AED", "#F3EEFF"), "link": ("#B45309", "#FEF3C7"),
+                 "excluded": ("#B42318", "#FEE4E2"), "mixed": ("#9A3412", "#FFEDD5")}
 BADGE_TIPS = {True: "Dominio principale della sezione (A4)", False: "Dominio che contribuisce alla sezione (A4)",
               "derived": "Requisito derivato (SA-4) dalla voce"}
 
@@ -550,6 +575,7 @@ class SrsReader(QWidget):
     elements_changed = Signal(list)  # elements changed from a row (domains of a section, functions of a clause)
     elements_created = Signal()  # derived requirements created from a row
     clause_declared = Signal(str, str)  # «Condividi» or «Escludi» of a clause: the list (see model_tree), its uuid
+    adr_requested = Signal(str)  # «Crea ADR…» of an item: its uuid
     analysis_changed = Signal()  # «Analizzato» of a clause: the mark saved (a change to publish)
 
     def __init__(self, project, edit_mode=None, user_of=None):
@@ -662,14 +688,13 @@ class SrsReader(QWidget):
         self.view.customContextMenuRequested.connect(self._context_menu)
         QShortcut(QKeySequence.Delete, self.view, activated=self.delete_selected)
 
-        hint = QLabel("Sezioni: i badge sono i domini (blu il principale, grigi i contributori), «Domini…» le alloca. "
-                      "Clausole: i badge sono le funzioni mappate (azzurre; grigie se mappate alla sezione) e i "
-                      "requisiti derivati (viola); «Mappa a Funzione» le mappa "
-                      "alle funzioni di sistema, «Deriva…» crea uno o più requisiti derivati, «Condividi» ed «Escludi» "
-                      "creano l'ADR per condividerle tra domini o non mapparle, «Collega…» indica le voci che la "
-                      "clausola richiama, include o da cui dipende (badge gialli: → verso, ← da altre voci), "
-                      "«Non analizzato» segna che l'hai presa "
-                      "in carico (col mouse sopra: chi l'ha analizzata). In giallo le clausole del tuo team dentro "
+        hint = QLabel("Sezioni: i badge sono i domini (blu il principale, grigi i contributori). Clausole: i badge "
+                      "sono le funzioni mappate (azzurre; grigie se mappate alla sezione), i requisiti derivati "
+                      "(viola) e le voci collegate (gialli: → verso, ← da altre voci). «Azioni ▾» in ogni riga, o il "
+                      "clic destro, apre le azioni sulla voce: allocare ai domini, mappare alle funzioni, derivare "
+                      "requisiti, collegare ad altre voci, condividere o escludere la clausola, creare un'ADR. "
+                      "«Non analizzato» segna che hai preso "
+                      "in carico la clausola (col mouse sopra: chi l'ha analizzata). In giallo le clausole del tuo team dentro "
                       "sezioni di altri team. Doppio clic apre la voce. "
                       "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
                       "modalità modifica, Canc elimina le voci selezionate.",
@@ -941,9 +966,10 @@ class SrsReader(QWidget):
             self._go_to_later = uuid
             return
         chapter = chapter_of(element)
-        if self.chapter is not None and chapter != self.chapter:
-            index = next((i for i in range(self.tabs.count()) if self.tabs.tabData(i) == chapter), 0)
-            self.tabs.setCurrentIndex(index)
+        if chapter != self.chapter:  # the tab of its chapter (also from «Tutti»)
+            index = next((i for i in range(self.tabs.count()) if self.tabs.tabData(i) == chapter), None)
+            if index is not None:
+                self.tabs.setCurrentIndex(index)
         if all(e.uuid != uuid for e in self.model.elements):
             for widget in (self.search, self.show_headings, self.scope, *self.category_boxes.values()):
                 widget.blockSignals(True)
@@ -994,7 +1020,9 @@ class SrsReader(QWidget):
         for e in self.project.model.of_kind("requirement"):
             for link_type, target in links_of(e):
                 incoming.setdefault(target, []).append((link_type, e))
-        self._links = {"functions": functions, "derived": derived, "incoming": incoming}
+        from arcadia_tool.model.adr import mixed_points
+        self._links = {"functions": functions, "derived": derived, "incoming": incoming,
+                       "mixed": mixed_points(self.project.model)}
         self._marks = marks_by_requirement(self.project.model)
 
     def _analysis(self, element):
@@ -1075,11 +1103,40 @@ class SrsReader(QWidget):
                  for t, u in links_of(element)]
         links += [(f"← {source.get('id') or '?'}", "link", f"{INVERSE[t]} {source.get('id') or '?'}.")
                   for t, source in self._links.get("incoming", {}).get(element.uuid, [])]
-        return ([(named(f), "function", f"Mappata direttamente alla clausola {ident}.{role(f)}") for f, _p in direct]
+        return (self._own_domain_badges(element) + [(named(f), "function", f"Mappata direttamente alla clausola {ident}.{role(f)}") for f, _p in direct]
                 + [(named(f), "inherited", f"Mappata alla {where(p)}, che contiene la voce {ident}: la voce la eredita."
                     f"{role(f)}") for f, p in inherited]
                 + [(d.get("id") or "?", "derived", f"Requisito derivato (SA-4) dalla voce {ident}.") for d in derived]
                 + links)
+
+    def _own_domain_badges(self, element):
+        """A point of a clause with domains of its own (by an ADR of reallocation, exclusion, sharing): its domains;
+        a clause with such points: «Punti in altri domini», what they are in the tip."""
+        from arcadia_tool.model.adr import POINT, own_domains_of_point
+
+        badges = []
+        if element.get("item_type") == POINT:
+            primary, contributors, excluded = own_domains_of_point(element)
+            ident = element.get("id") or ""
+            if primary:
+                badges.append((self._domain(primary), True, f"Dominio principale proprio del punto {ident}, deciso "
+                                                            "con un'ADR: non quello della sua clausola."))
+            badges += [(self._domain(d), False, f"Dominio contributore proprio del punto {ident} (ADR).")
+                       for d in contributors]
+            badges += [(f"non {self._domain(d)}", "excluded", f"Il punto {ident} è escluso da questo dominio (ADR "
+                                                              "di esclusione).") for d in excluded]
+        points = self._links.get("mixed", {}).get(element.uuid, [])
+        if points:
+            lines = []
+            for p in points:
+                primary, contributors, excluded = own_domains_of_point(p)
+                what = ([f"{self._domain(primary)} (principale)"] if primary else []) + \
+                    [f"{self._domain(d)} (contributo)" for d in contributors] + \
+                    [f"escluso da {self._domain(d)}" for d in excluded]
+                lines.append(f"{p.get('id') or '?'}: {', '.join(what)}")
+            badges.append((f"Punti in altri domini ({len(points)})", "mixed",
+                           "Clausola mista: alcuni suoi punti hanno domini propri (ADR).\n" + "\n".join(lines)))
+        return badges
 
     def _links_text(self, element):
         kind = row_kind(element)
@@ -1107,11 +1164,17 @@ class SrsReader(QWidget):
         return ""
 
     def run_action(self, uuid, name):
-        """«Domini…» of a section, «Mappa a Funzione», «Deriva…», «Condividi» or «Escludi» of a clause."""
+        """An action of a row: «Non analizzato», «Azioni ▾» (the quick actions, see QUICK_ACTIONS), or one of them."""
         from arcadia_tool.ui.srs_row_actions import DeriveDialog, ItemDomainsDialog, choose_functions
 
         item = self.project.model.get(uuid)
         if item is None:
+            return
+        if name == ACTIONS:  # «Azioni ▾»: the quick actions, under the mouse
+            self.quick_menu(item).exec(QCursor.pos())
+            return
+        if name == NEW_ADR:  # «Crea ADR…»: its type chosen, then created and opened by the window
+            self.adr_requested.emit(uuid)
             return
         if name == "domains":
             reason = self.edit_mode.reason()  # it changes the item itself
@@ -1193,30 +1256,31 @@ class SrsReader(QWidget):
         self.delete_button.setToolTip("" if self.edit_mode.enabled else
                                       "Attiva la modalità modifica per eliminare le voci SRS.")
 
+    def quick_menu(self, element, menu=None):
+        """The quick actions of an item (QUICK_ACTIONS): the menu of «Azioni ▾» in its row, and the top of the menu of
+        a right click on it."""
+        menu = menu or QMenu(self)
+        menu.setToolTipsVisible(True)
+        for action in QUICK_ACTIONS.get(row_kind(element), ()):
+            if action is None:
+                menu.addSeparator()
+                continue
+            name, label, icon_name, tip = action
+            entry = menu.addAction(icon(icon_name), label, lambda _=False, n=name: self.run_action(element.uuid, n))
+            entry.setToolTip(tip)
+            if name == "domains" and self.edit_mode.reason():  # it changes the item itself
+                entry.setEnabled(False)
+                entry.setToolTip(self.edit_mode.reason())
+        return menu
+
     def context_menu(self, element):
-        menu = QMenu(self)
-        label = element.get("id") or ""
-        menu.addAction(icon("mdi6.arrow-right-bold-box-outline"), f"Vai alla voce {label}",
-                       lambda _=False: self.open_element.emit(element.uuid))
-        kind = row_kind(element)
-        if kind in ("clause", "item"):  # not from chapters and sections
-            menu.addAction(icon("mdi6.call-split"), f"Deriva requisito da {label}…",
-                           lambda _=False: self.derive_requested.emit(element.uuid))
-        if kind:
+        """A right click on a row: the quick actions of the item (as «Azioni ▾»), then its sheet and the deletion."""
+        menu = self.quick_menu(element)
+        if row_kind(element):
             menu.addSeparator()
-        if kind == "section":
-            menu.addAction(icon("mdi6.sitemap-outline"), "Alloca ai domini funzionali…",
-                           lambda _=False: self.run_action(element.uuid, "domains")
-                           ).setEnabled(not self.edit_mode.reason())
-        elif kind in ("clause", "item"):
-            if kind == "clause":
-                menu.addAction(icon("mdi6.function-variant"), "Alloca alle funzioni di sistema…",
-                               lambda _=False: self.run_action(element.uuid, "functions"))
-            menu.addAction(icon("mdi6.call-split"), "Deriva più requisiti…",
-                           lambda _=False: self.run_action(element.uuid, "derive"))
-            menu.addAction(icon("mdi6.link-variant"), "Collega…",
-                           lambda _=False: self.run_action(element.uuid, "links"))
-        menu.addSeparator()
+        label = element.get("id") or ""
+        menu.addAction(icon("mdi6.arrow-right-bold-box-outline"), f"Apri la scheda della voce {label}",
+                       lambda _=False: self.open_element.emit(element.uuid))
         n = len(self.view.selectionModel().selectedRows())
         delete = menu.addAction(icon("mdi6.trash-can-outline"), f"Elimina selezionate ({n})",
                                 lambda _=False: self.delete_selected())

@@ -69,7 +69,8 @@ def test_a_new_adr_knows_what_the_selected_element_says(tmp_path):
     assert adr_defaults(p.model, ADR_DOMAIN_SCOPE, d1) == {
         "adr_type": ADR_DOMAIN_SCOPE, "status": "Proposta", "domain": d1.uuid}  # its mission: read from it
     assert adr_defaults(p.model, ADR_SECTION, section) == {
-        "adr_type": ADR_SECTION, "status": "Proposta", "realloc_item": [section.uuid]}  # its domains: read from it
+        "adr_type": ADR_SECTION, "status": "Proposta", "realloc_item": [section.uuid],
+        "realloc_scope": "Intera sezione"}  # its domains: read from it
     assert adr_defaults(p.model, ADR_FUNCTION, sf) == {"adr_type": ADR_FUNCTION, "status": "Proposta",
                                                        "function": sf.uuid}
     assert adr_defaults(p.model, ADR_WAIVER, d1) == {"adr_type": ADR_WAIVER, "status": "Proposta"}
@@ -418,7 +419,7 @@ def test_the_reallocation_of_a_section_shows_its_domains_now_and_those_proposed(
     d3 = p.new_element("domain", name="Modi")
     section = p.new_element("requirement", id="3.14.4", item_type="Sezione", primary_domain=d1.uuid,
                             contributing_domains=[d2.uuid])
-    assert [f.name for f in type_fields(ADR_SECTION)] == ["realloc_item", "primary_current", "contributors_current",
+    assert [f.name for f in type_fields(ADR_SECTION)] == ["realloc_scope", "realloc_item", "primary_current", "contributors_current",
                                                           "primary_proposed", "contributors_proposed",
                                                           "realloc_reason"]
     # No description, options, relations: only the decision of the DA.

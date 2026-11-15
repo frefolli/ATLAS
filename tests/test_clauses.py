@@ -217,10 +217,17 @@ def test_the_buttons_of_a_clause_in_the_srs_catalogue(app, tmp_path):
     from arcadia_tool.ui.srs_reader import ROW_ACTIONS, SrsReader
     from arcadia_tool.ui.model_tree import SHARED_CLAUSES, UNMAPPED_CLAUSES
 
-    assert [name for name, _l, _t in ROW_ACTIONS["clause"]] == ["functions", "derive", "share", "exclude", "analyzed", "links"]
-    assert [label for _n, label, _t in ROW_ACTIONS["clause"]][2:] == ["Condividi", "Escludi", "Non analizzato", "Collega…"]
+    from arcadia_tool.ui.srs_reader import QUICK_ACTIONS
+
+    # In the row: «Non analizzato» and «Azioni ▾»; the others in its menu (also with a right click).
+    assert [label for _n, label, _t in ROW_ACTIONS["clause"]] == ["Non analizzato", "Azioni ▾"]
+    assert [a[0] for a in QUICK_ACTIONS["clause"] if a] == ["functions", "derive", "links", "share", "exclude", "adr"]
     p, x = project(tmp_path)
     reader = SrsReader(p)
+    quick = [a.text() for a in reader.quick_menu(x.clause).actions() if a.text()]
+    assert quick == ["Mappa a funzione…", "Deriva requisiti…", "Collega…", "Condividi tra domini…",
+                     "Escludi (non mappata)…", "Crea ADR…"]
+    assert [a.text() for a in reader.context_menu(x.clause).actions() if a.text()][:len(quick)] == quick
     asked = []
     reader.clause_declared.connect(lambda key, uuid: asked.append((key, uuid)))
     reader.run_action(x.clause.uuid, "share")

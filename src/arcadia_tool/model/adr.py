@@ -9,7 +9,7 @@ from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DE
                                        ADR_OWNER,
                                        ADR_PRODUCT_OPTION,
                                        ADR_SECTION, ADR_SHARED, ADR_SPLIT_DOMAIN, ADR_UNMAPPED, KINDS_BY_NAME,
-                                       REALLOC_TYPES)
+                                       REALLOC_TYPES, SCOPE_CLAUSES, SCOPE_SECTION)
 from arcadia_tool.model.teams import person_key
 
 PROPOSED, IN_REVIEW, REVIEWED, DECIDED = "Proposta", "In revisione DA", "Revisionato DA", "Decisa"
@@ -50,6 +50,45 @@ def realloc_items(model, adr):
     value = adr.get("realloc_item") or adr.get("impl_item") or []
     uuids = [value] if isinstance(value, str) else list(value)  # one item: written by earlier versions
     return [e for e in (model.get(u) for u in uuids) if e is not None]
+
+
+def realloc_scope(model, adr):
+    """What a reallocation moves (SCOPE_SECTION, SCOPE_CLAUSES): as written in the ADR, else (an ADR of an earlier
+    version) read from its items: one or more sections, or clauses; None if it cannot be told (nothing chosen, or
+    sections with clauses). Not a reallocation of a section or clause: None."""
+    if adr.get("adr_type") != ADR_SECTION:
+        return None
+    if adr.get("realloc_scope"):
+        return adr.get("realloc_scope")
+    items = realloc_items(model, adr)
+    sections = [e for e in items if e.get("item_type") == "Sezione"]
+    if not items:
+        return None
+    if not sections:
+        return SCOPE_CLAUSES
+    if len(sections) == 1 and all(e is sections[0] or section_of(model, e) is sections[0] for e in items):
+        return SCOPE_SECTION  # a section, maybe with some of its clauses: they follow it
+    return None
+
+
+def scope_of_item(item):
+    """The scope a reallocation opened from an SRS item proposes: of the section, or of the clause."""
+    return SCOPE_SECTION if item.get("item_type") == "Sezione" else SCOPE_CLAUSES
+
+
+def scope_mismatch(model, adr, scope=None):
+    """The items of the reallocation that its scope (or `scope`) does not admit: a whole section admits one section
+    (its own clauses, if chosen too, follow it: admitted), clauses admit no section."""
+    scope = scope or adr.get("realloc_scope")
+    items = realloc_items(model, adr)
+    if adr.get("adr_type") != ADR_SECTION or not scope:
+        return []
+    if scope == SCOPE_SECTION:
+        sections = [e for e in items if e.get("item_type") == "Sezione"]
+        first = sections[0] if sections else None
+        return [e for e in items if e.get("item_type") != "Sezione" and (first is None or section_of(model, e)
+                                                                          is not first)] + sections[1:]
+    return [e for e in items if e.get("item_type") == "Sezione"]
 
 
 def allocated_part(model, item):
@@ -107,6 +146,38 @@ def allocated_from(model, adr):
         if part is not None and part is not item and part.get("primary_domain") and part not in result:
             result.append(part)
     return result
+
+
+# A point of a clause: a list item («3.6.2.2.2 a)»), a bullet («3.6.2.2.2 a) 1st bullet»), a table row, a figure. An
+# ADR of reallocation, exclusion or sharing can be about one: it then has domains of its own, and its clause is mixed.
+POINT = "Voce"
+
+
+def own_domains_of_point(item):
+    """The domains a point has of its own: (principal or None, contributors, excluded); all empty: those of its
+    clause."""
+    return (item.get("primary_domain"), list(item.get("contributing_domains") or []),
+            list(item.get("excluded_domains") or []))
+
+
+def clause_of_point(model, item):
+    """The clause (or section) containing a point, above the points containing it (a bullet of a letter)."""
+    seen, part = {item.uuid}, model.get(item.get("parent")) if item.get("parent") else None
+    while part is not None and part.uuid not in seen and part.get("item_type") == POINT:
+        seen.add(part.uuid)
+        part = model.get(part.get("parent")) if part.get("parent") else None
+    return part
+
+
+def mixed_points(model):
+    """{clause uuid: [its points with domains of their own]}: the clauses whose points are not all in their domains."""
+    found = {}
+    for item in model.of_kind("requirement"):
+        if item.get("item_type") == POINT and any(own_domains_of_point(item)):
+            clause = clause_of_point(model, item)
+            if clause is not None:
+                found.setdefault(clause.uuid, []).append(item)
+    return found
 
 
 def section_of(model, item):
@@ -172,8 +243,9 @@ def allocation_warnings(model, adr):
     if team and requested is not None and requested.uuid not in own:
         warnings.append(f"Il dominio richiedente {model.label(requested)} non è un dominio del team proponente.")
     for item in realloc_items(model, adr):
-        if item.get("item_type") not in ("Titolo", "Requisito"):
-            warnings.append(f"{item.get('id')} non è una clausola: si richiedono solo clausole (es. 3.4.1.5).")
+        if item.get("item_type") not in ("Titolo", "Requisito", POINT):
+            warnings.append(f"{item.get('id')} non è una clausola: si richiedono solo clausole (es. 3.4.1.5) o loro "
+                            "punti (es. 3.4.1.5 a)).")
         elif team and held(model, item, own):
             warnings.append(f"{item.get('id')} è già in un dominio del team proponente: non serve richiederla.")
     return warnings
@@ -433,6 +505,20 @@ def suggested_type(element):
     return SUGGESTED.get(element.kind) if element is not None else None
 
 
+def new_adr_values(model, adr_type, element):
+    """The values of an ADR created from an element («Nuova ADR…» of a sheet, «Crea ADR…» of an SRS item): those of
+    adr_defaults; the domain or function it is about («Riguarda»); an SRS item named by none of the fields of the
+    type: among the «Voci SRS interessate», when the type has them."""
+    values = adr_defaults(model, adr_type, element)
+    if element.kind in ("domain", "system_function"):
+        values["concerns"] = [element.uuid]
+    elif element.kind == "requirement" and not any(values.get(f) for f in TEAM_ITEM_FIELDS):
+        probe = Element("adr", values=dict(values))
+        if probe.schema.field("srs_items").applies(probe):
+            values["srs_items"] = [element.uuid]
+    return values
+
+
 def adr_defaults(model, adr_type, element=None):
     """The values of a new ADR of the type, from the element selected when it is created (None: just the type)."""
     values = {"adr_type": adr_type, "status": "Proposta"}
@@ -449,6 +535,8 @@ def adr_defaults(model, adr_type, element=None):
         values["merged_domains"] = [element.uuid]  # the others: added in the sheet
     elif kind == "requirement" and adr_type in REALLOC_TYPES:
         values["realloc_item"] = [element.uuid]  # its domains now: read from it (see item_primary)
+        if adr_type == ADR_SECTION:
+            values["realloc_scope"] = scope_of_item(element)
     elif kind == "requirement" and adr_type == ADR_EXCLUSION:
         values["excluded_item"] = [element.uuid]
     elif kind == "requirement" and adr_type == ADR_SHARED:
@@ -651,11 +739,18 @@ def reallocation_problems(model, adr):
         problems.append("Mancano le sezioni o clausole da riallocare.")
     if not primary or model.get(primary) is None:
         problems.append("Manca il dominio principale proposto.")
-    for item in realloc_targets(model, adr):
-        if item.get("item_type") == "Voce":
-            problems.append(f"{item.get('id')} è un punto di elenco o una riga di tabella: si spostano solo clausole "
-                            "intere. Aggiungi all'ADR la sua clausola, oppure deriva un requisito dal punto e "
-                            "assegnalo al nuovo dominio.")
+    scope = realloc_scope(model, adr)
+    if adr.get("adr_type") == ADR_SECTION and realloc_items(model, adr) and scope is None:
+        problems.append("Indica l'«Oggetto»: un'intera sezione o delle clausole (le voci scelte sono di entrambi i "
+                        "tipi).")
+    wrong = scope_mismatch(model, adr, scope)
+    if wrong and scope == SCOPE_SECTION:
+        problems.append("Oggetto «Intera sezione»: va scelta una sola sezione (tre numeri, es. 3.4.1), le sue "
+                        f"clausole la seguono; da togliere: {', '.join(e.get('id') or '?' for e in wrong)}.")
+    elif wrong:
+        problems.append(f"Oggetto «Clausole»: {', '.join(e.get('id') or '?' for e in wrong)} è una sezione; per "
+                        "riallocarla intera scegli l'oggetto «Intera sezione».")
+    for item in realloc_targets(model, adr):  # a point of a clause too (POINT): it gets a principal domain of its own
         if primary in (item.get("excluded_domains") or []):
             problems.append(f"{item.get('id')} è esclusa dal dominio proposto: togli prima l'ADR di esclusione.")
     return problems

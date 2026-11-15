@@ -152,11 +152,6 @@ def test_the_proposed_contributors_are_written(tmp_path):
 def test_what_cannot_be_approved(tmp_path):
     p, e = build(tmp_path)
     assert any("dominio principale proposto" in t for t in reallocation_problems(p.model, adr(p, [e["clause"]])))
-    alone = adr(p, [e["item"]], e["df4"])  # a list item alone: only whole clauses move
-    assert any("punto di elenco" in t for t in reallocation_problems(p.model, alone))
-    with pytest.raises(ValueError):
-        approve_reallocation(p, alone)
-    assert not e["item"].get("primary_domain")
     assert not can_approve(adr(p, [e["clause"]], e["df4"], da_decision="Respinta"))
     excluded = e["other"]
     excluded.set("excluded_domains", [e["df4"].uuid])
@@ -240,3 +235,40 @@ def test_an_approved_adr_stays_as_it_was(tmp_path):
     assert item_primary(p.model, p.model.get(decision.uuid)) == e["df1"].uuid
     assert item_contributors(p.model, p.model.get(decision.uuid)) == [e["df7"].uuid]
 
+
+
+def test_a_whole_section_or_clauses(app, tmp_path):
+    from arcadia_tool.model.adr import adr_defaults, realloc_scope, scope_mismatch
+    from arcadia_tool.model.schema import KINDS_BY_NAME, SCOPE_CLAUSES, SCOPE_SECTION
+    from arcadia_tool.ui import srs_trace
+
+    p, e = build(tmp_path)
+    assert adr_defaults(p.model, ADR_SECTION, e["section"])["realloc_scope"] == SCOPE_SECTION
+    assert adr_defaults(p.model, ADR_SECTION, e["clause"])["realloc_scope"] == SCOPE_CLAUSES
+    # Of an earlier version, without the scope: read from the items.
+    assert realloc_scope(p.model, adr(p, [e["section"]])) == SCOPE_SECTION
+    assert realloc_scope(p.model, adr(p, [e["section"], e["clause"]])) == SCOPE_SECTION  # its clause follows it
+    assert realloc_scope(p.model, adr(p, [e["clause"], e["other"]])) == SCOPE_CLAUSES
+    field = KINDS_BY_NAME["adr"].field
+    whole = adr(p, [e["section"]], e["df4"], realloc_scope=SCOPE_SECTION)
+    assert field("realloc_item").label_for(whole) == "Sezione da riallocare (con le sue clausole)"
+    assert field("realloc_reason").label_for(whole) == "Motivazione della riallocazione della sezione"
+    clauses = adr(p, [e["clause"]], e["df4"], realloc_scope=SCOPE_CLAUSES)
+    assert field("realloc_item").label_for(clauses) == "Clausole da riallocare"
+    assert reallocation_problems(p.model, whole) == [] and reallocation_problems(p.model, clauses) == []
+    wrong = adr(p, [e["section"]], e["df4"], realloc_scope=SCOPE_CLAUSES)
+    assert scope_mismatch(p.model, wrong) == [e["section"]]
+    assert any("Oggetto «Clausole»: 3.8.1 è una sezione" in t for t in reallocation_problems(p.model, wrong))
+    wrong = adr(p, [e["clause"]], e["df4"], realloc_scope=SCOPE_SECTION)
+    assert any("una sola sezione" in t for t in reallocation_problems(p.model, wrong))
+    # The window: one section, or clauses and their points.
+    dialog = srs_trace.TraceReallocItemsDialog(p, adr(p, [], realloc_scope=SCOPE_SECTION).copy(), "realloc_item")
+    assert set(dialog.state) == {e["section"].uuid} and "una sola" in dialog.HINT
+    dialog.reject()
+    dialog = srs_trace.TraceReallocItemsDialog(p, adr(p, [], realloc_scope=SCOPE_CLAUSES).copy(), "realloc_item")
+    assert e["section"].uuid not in dialog.state and {e["clause"].uuid, e["item"].uuid} <= set(dialog.state)
+    dialog.reject()
+    # The whole section approved: its clauses follow, those with a domain of their own stay.
+    e["other"].set("primary_domain", e["df7"].uuid)
+    approve_reallocation(p, whole)
+    assert principal_of(p.model, e["clause"]) == e["df4"].uuid and principal_of(p.model, e["other"]) == e["df7"].uuid

@@ -29,7 +29,8 @@ def request(p, e, items, domain="mine", **values):
 
 def test_the_type_has_the_fields_of_a_reallocation_with_labels_of_its_own(tmp_path):
     assert ADR_ALLOCATION in ADR_TYPE_LABELS and adr_area(ADR_ALLOCATION) == adr_area(ADR_SECTION)
-    assert [f.name for f in type_fields(ADR_ALLOCATION)] == [f.name for f in type_fields(ADR_SECTION)]
+    assert [f.name for f in type_fields(ADR_ALLOCATION)] == [f.name for f in type_fields(ADR_SECTION)
+                                                             if f.name != "realloc_scope"]  # clauses only: no scope
     p, e = build(tmp_path)
     adr = request(p, e, ["c2"])
     field = KINDS_BY_NAME["adr"].field

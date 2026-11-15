@@ -72,6 +72,19 @@ ADR_MERGE_DOMAINS = "Fusione di domini"
 ADR_SPLIT_DOMAIN = "Scissione di dominio"
 ADR_DOMAIN_SCOPE = "Ridefinizione dello scopo del dominio"
 ADR_SECTION = "Riallocazione di sezione o clausola"
+# What a reallocation moves: a whole section with its clauses (those with a domain of their own, by an earlier
+# decision, stay where they are), or one or more clauses (or their points).
+SCOPE_SECTION, SCOPE_CLAUSES = "Intera sezione", "Clausole"
+REALLOC_SCOPES = (SCOPE_SECTION, SCOPE_CLAUSES)
+REALLOC_SCOPE_GUIDE = (
+    "<p><b>Intera sezione</b>: una sezione (tre numeri, es. 3.4.1) passa al dominio proposto con tutte le sue "
+    "clausole. Le clausole che hanno già un dominio proprio, per una decisione precedente, restano dove sono: "
+    "l'approvazione le elenca.</p>"
+    "<p><b>Clausole</b>: una o più clausole (es. 3.4.1.3) o loro punti (es. 3.4.1.3 a)) della stessa sezione passano "
+    "al dominio proposto; la sezione e le altre clausole restano dove sono.</p>")
+# The fields whose value chooses another label of a field (see Field.labels): what a reallocation moves, then the type
+# of the ADR.
+LABEL_KEYS = ("realloc_scope", "adr_type")
 # A team asks that a clause of a section of another team be allocated to one of its own domains.
 ADR_ALLOCATION = "Richiesta di allocazione di clausola"
 ADR_EXCLUSION = "Esclusione di sezione o clausola"
@@ -94,7 +107,8 @@ ADR_TYPES = (
     (ADR_MERGE_DOMAINS, "Due o più domini separati da un confine artificiale (catene che rimbalzano, scambi densi)."),
     (ADR_SPLIT_DOMAIN, "Lo scopo del dominio non sta in una frase o la dimensione è eccessiva: si divide."),
     (ADR_DOMAIN_SCOPE, "Il perimetro di un dominio cambia: estensione, riduzione o cambio totale di scopo."),
-    (ADR_SECTION, "Dubbio sul dominio principale o sui contributori di una sezione o clausola (A4)."),
+    (ADR_SECTION, "Dubbio sul dominio principale o sui contributori di un'intera sezione, con le sue clausole, o di "
+                  "una o più clausole (A4): l'«Oggetto» dell'ADR dice quale dei due."),
     (ADR_ALLOCATION, "Un team chiede che una clausola di una sezione di un altro team sia allocata a un proprio "
                      "dominio (A4)."),
     (ADR_EXCLUSION, "Una sezione o clausola, contenuta in una sezione di cui il dominio è principale, è esclusa di "
@@ -215,9 +229,13 @@ class Field:
         return not self.when or element.get(self.when[0]) in self.when[1]
 
     def label_for(self, element):
-        """The label of the field in the element (of its type of ADR, see `labels`)."""
+        """The label of the field in the element (of its type of ADR, or of what a reallocation moves, see
+        `labels`)."""
         if self.labels and element is not None:
-            return dict(self.labels).get(element.get("adr_type"), self.label)
+            labels = dict(self.labels)
+            for key in LABEL_KEYS:
+                if element.get(key) in labels:
+                    return labels[element.get(key)]
         return self.label
 
 
@@ -644,8 +662,12 @@ KINDS = (
         # The reallocation of SRS items: the items (chosen with ticks, one or more, of sections of the same domain),
         # their domains now (read from them) and those proposed, with the motivation. The same fields for the request
         # of a team to allocate to one of its domains clauses of a section of another team (labels of its own).
+        # A reallocation of a whole section (one, its clauses follow it) or of clauses: what can be chosen, the labels.
+        _adr(Field("realloc_scope", "Oggetto", ENUM, REALLOC_SCOPES, guide=REALLOC_SCOPE_GUIDE), ADR_SECTION),
         _adr(Field("realloc_item", "Sezioni o clausole da riallocare", REFS, ref_kinds=("requirement",),
-                   labels=((ADR_ALLOCATION, "Clausole richieste"),)), *REALLOC_TYPES),
+                   labels=((ADR_ALLOCATION, "Clausole richieste"),
+                           (SCOPE_SECTION, "Sezione da riallocare (con le sue clausole)"),
+                           (SCOPE_CLAUSES, "Clausole da riallocare"))), *REALLOC_TYPES),
         _adr(Field("primary_current", "Dominio principale attuale", REF, ref_kinds=("domain",), stored=False,
                    computed="item_primary"), *REALLOC_TYPES),
         _adr(Field("contributors_current", "Contributori attuali", REFS, ref_kinds=("domain",), stored=False,
@@ -654,7 +676,9 @@ KINDS = (
                    labels=((ADR_ALLOCATION, "Dominio richiedente (principale proposto)"),)), *REALLOC_TYPES),
         _adr(Field("contributors_proposed", "Contributori proposti", REFS, ref_kinds=("domain",)), *REALLOC_TYPES),
         _adr(Field("realloc_reason", "Motivazione della riallocazione", TEXT,
-                   labels=((ADR_ALLOCATION, "Motivazione della richiesta"),)), *REALLOC_TYPES),
+                   labels=((ADR_ALLOCATION, "Motivazione della richiesta"),
+                           (SCOPE_SECTION, "Motivazione della riallocazione della sezione"),
+                           (SCOPE_CLAUSES, "Motivazione della riallocazione delle clausole"))), *REALLOC_TYPES),
         # Written when the reallocation is applied: the domains the items had, as the ADR goes on showing them.
         Field("realloc_applied", "Riallocazione applicata", BOOL, hidden=True, when=("adr_type", REALLOC_TYPES)),
         Field("primary_at_approval", "Dominio principale prima dell'approvazione", REF, ref_kinds=("domain",),

@@ -16,7 +16,7 @@ import openpyxl
 
 from arcadia_tool.documents.adr import hint
 from arcadia_tool.model.adr import PROPOSED, common_fields, same_section, section_of, type_fields
-from arcadia_tool.model.schema import (ADR_TYPE_LABELS, BOOL, DA_DECISION, ENUM, KINDS_BY_NAME, REALLOC_TYPES,
+from arcadia_tool.model.schema import (ADR_SECTION, ADR_TYPE_LABELS, BOOL, DA_DECISION, ENUM, KINDS_BY_NAME, REALLOC_TYPES,
                                        MULTIENUM, REF, REFS, TABLE, TEXT)
 from arcadia_tool.model.teams import member_rows, person_key
 
@@ -24,7 +24,9 @@ ADR = KINDS_BY_NAME["adr"]
 ADR_ID = re.compile(r"\bADR[\s_-]*0*(\d+)\b", re.IGNORECASE)
 DOMAIN_ID = re.compile(r"\bDF\s*[-_]?\s*0*(\d+)\b", re.IGNORECASE)
 # A clause (3.14.1.3), its list items («3.15.9.5 a) b)»), a subset of a section («3.9.2.x»).
-CLAUSE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)((?:\s*\b[a-z]\))*)(\.x\b)?", re.IGNORECASE)
+# A clause, its list items («3.6.2.2.2 a)»), a bullet («3.10.2.2 1st bullet», «3.6.2.2.2 a) 2nd bullet»), «.x».
+CLAUSE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)((?:\s*\b[a-z]\))*)(\s+\d+(?:st|nd|rd|th)\s+bullet\b)?(\.x\b)?",
+                    re.IGNORECASE)
 # Rows of the header of the document (three label and value pairs per row: A–B, C–D, E–F).
 HEADER = {"template": "template", "team": "team", "team / dominio": "team", "versione": "version",
           "autore": "author", "revisore": "reviewer", "data": "date", "stato": "sheet_status",
@@ -252,14 +254,20 @@ class Resolver:
         """(items, what is written for each, problems)."""
         found, written, problems = [], [], []
         for m in CLAUSE.finditer(text):
-            clause, subs, subset = m[1], m[2] or "", m[3]
+            clause, subs, bullet, subset = m[1], m[2] or "", m[3], m[4]
+            if bullet:  # a bullet of the clause, or of one of its list items
+                letters = " ".join(re.findall(r"[a-z]\)", subs, re.IGNORECASE))
+                point = self.items.get(" ".join(p for p in (clause, letters, " ".join(bullet.split())) if p))
+                if point is not None:
+                    self._add(point, point.get("id"), found, written)
+                    continue
             if self._sub_items(clause, subs, found, written):
                 continue
             item = self.items.get(clause)
             if item is None:
                 problems.append(f"«{m[0].strip()}» non trovata tra le voci SRS del progetto")
                 continue
-            if subs.strip():
+            if subs.strip() or bullet:
                 problems.append(f"«{m[0].strip()}»: sottovoci non trovate, si riferisce alla clausola {clause}")
             if subset:
                 problems.append(f"«{m[0].strip()}»: un sottoinsieme non precisato, si riferisce alla sezione {clause}")
@@ -664,6 +672,17 @@ def plan_adr(model, sheet, resolver=None, taken=()):
             p.choices.append("Proponente (membro del team): non indicato e il team non ha un referente, il campo "
                              "resta vuoto")
     items = [model.get(u) for u in values.get("realloc_item") or []]
+    if p.adr_type == ADR_SECTION and items and not values.get("realloc_scope"):  # what it moves: read from its items
+        from arcadia_tool.model.adr import realloc_scope
+        from arcadia_tool.model.element import Element
+
+        scope = realloc_scope(model, Element("adr", values={**values, "adr_type": p.adr_type}))
+        if scope:
+            values["realloc_scope"] = scope
+            p.choices.append(f"Oggetto «{scope}»: ricavato dalle voci da riallocare")
+        else:
+            plan.warn("Le voci da riallocare sono sia sezioni sia clausole: l'«Oggetto» (intera sezione o clausole) "
+                      "va indicato nella scheda dell'ADR")
     if p.adr_type in REALLOC_TYPES and not same_section(model, items):  # the rule of the reallocation (A4)
         sections = sorted({(section_of(model, e) or e).get("id") for e in items})
         plan.warn(f"Le voci da riallocare sono di sezioni diverse ({', '.join(sections)}): un'ADR di riallocazione "

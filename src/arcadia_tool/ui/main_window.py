@@ -4,7 +4,7 @@ from PySide6.QtCore import QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu,
                                QMessageBox,
-                               QPushButton, QSplitter, QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget,
+                               QPushButton, QSplitter, QStackedWidget, QToolBar, QVBoxLayout, QWidget,
                                QDialog)
 
 from arcadia_tool import APP_NAME, __version__
@@ -40,6 +40,7 @@ from arcadia_tool.ui.model_tree import TAB_ICONS, ModelTree
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode
 from arcadia_tool.ui.srs_reader import SrsReader, SrsReaderWindow
 from arcadia_tool.ui.start_page import StartPage
+from arcadia_tool.ui.tab_bar import TabWidget
 from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, MUTED, TEXT, icon, kind_icon
 from arcadia_tool.ui.branches import BranchesDialog
 from arcadia_tool.ui.overview import OverviewSetup, OverviewWindow
@@ -145,7 +146,8 @@ class MainWindow(QMainWindow):
         self._idle_editor = ElementEditor(self.srs_edit_mode)  # «editor» when no element tab is shown
         self._last_editor = None
         self.reader = None
-        self.pages = QTabWidget()
+        # The wheel scrolls the tabs smoothly without changing the current one; they are reordered by dragging them.
+        self.pages = TabWidget()
         self.pages.setDocumentMode(True)
         self.pages.setTabsClosable(True)
         # No tab until an element is opened: its tab is named after it (see _show_editor).
@@ -1219,7 +1221,7 @@ class MainWindow(QMainWindow):
             return
         index = self.pages.indexOf(editor)
         if index < 0:
-            index = self.pages.insertTab(self._element_tab_count(), editor, "")
+            index = self.pages.addTab(editor, "")  # right after the current tab
         draft = editor.draft if editor.draft is not None and editor.draft.uuid == element.uuid else element
         label = self.project.model.label(draft)  # as being typed
         short = label if len(label) <= TAB_TITLE_LENGTH else label[:TAB_TITLE_LENGTH - 1] + "…"
@@ -1235,10 +1237,6 @@ class MainWindow(QMainWindow):
             return
         self.tree.show_label(draft)
         self._show_editor(editor, activate=False)
-
-    def _element_tab_count(self):
-        """Element tabs come before the SUBSET-026 catalogue."""
-        return sum(1 for i in range(self.pages.count()) if isinstance(self.pages.widget(i), ElementEditor))
 
     def _hide_editor(self, editor=None):
         editor = editor or self.editor
@@ -1272,6 +1270,7 @@ class MainWindow(QMainWindow):
             self.reader.elements_created.connect(self._model_changed)
             # «Condividi» / «Escludi» of a clause: its ADR, as from the lists of the tree (it opens in its sheet).
             self.reader.clause_declared.connect(lambda key, uuid: self.tree.declare_clauses(key, [uuid]))
+            self.reader.adr_requested.connect(self.new_adr_for)  # «Crea ADR…» of an item
             self._reader_to_tab()
         self._show_reader()
 
@@ -1718,9 +1717,9 @@ class MainWindow(QMainWindow):
         self._refresh_state()
 
     def new_adr_for(self, uuid):
-        """«Nuova ADR…» of a domain or a function sheet: its type chosen (the one suggested for the element first),
-        then the ADR created about it, filled from it, and opened."""
-        from arcadia_tool.model.adr import adr_defaults, suggested_type
+        """«Nuova ADR…» of a domain or a function sheet, «Crea ADR…» of an SRS item: its type chosen (the one
+        suggested for the element first), then the ADR created about it, filled from it, and opened."""
+        from arcadia_tool.model.adr import adr_defaults, new_adr_values, suggested_type
         from arcadia_tool.ui.adr_types import AdrTypeDialog
 
         element = self.project.model.get(uuid) if self.project else None
@@ -1729,7 +1728,7 @@ class MainWindow(QMainWindow):
         dialog = AdrTypeDialog(self, preselect=suggested_type(element))
         if not dialog.exec():
             return
-        self.tree.create("adr", {**adr_defaults(self.project.model, dialog.adr_type, element), "concerns": [uuid]})
+        self.tree.create("adr", new_adr_values(self.project.model, dialog.adr_type, element))
 
     def _refresh_domain_sheets(self):
         self._domain_refresh_pending = False

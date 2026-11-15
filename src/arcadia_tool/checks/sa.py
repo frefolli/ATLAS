@@ -205,8 +205,8 @@ def a4_too_many_domains(ctx):
 @check("A4-04", "Clausola allocata a un dominio estraneo alla sua sezione", "A", "A4, B5")
 def a4_clause_outside_section(ctx):
     for r in ctx.of("requirement"):
-        if r.get("item_type") not in CLAUSE_TYPES or not r.get("primary_domain"):
-            continue
+        if r.get("item_type") not in CLAUSE_TYPES + ("Voce",) or not r.get("primary_domain"):
+            continue  # a point of a clause too («3.6.2.2.2 a)»): reallocated by an ADR like a clause
         section = ctx.section_of(r)
         if section is not None and section.get("primary_domain") and \
                 r.get("primary_domain") not in ctx.own_domains(section):

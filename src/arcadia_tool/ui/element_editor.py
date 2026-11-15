@@ -27,7 +27,7 @@ from arcadia_tool.model.adr import (approval_problems, approve_new_domain, appro
 from arcadia_tool.model.element import ROW_KEY, is_empty, natural_key, new_row_key
 from arcadia_tool.model.required import save_refusal
 from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
-                                       IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR, STRLIST, TABLE, TEXT, enum_option)
+                                       IMAGE, INT, KINDS_BY_NAME, LABEL_KEYS, MAP, MULTIENUM, REF, REFS, STR, STRLIST, TABLE, TEXT, enum_option)
 from arcadia_tool.storage.project import local_change, local_changes
 from arcadia_tool.ui.checks_panel import SEVERITY_COLORS, summary
 from arcadia_tool.ui.dialogs import replace_page
@@ -2171,7 +2171,7 @@ class ElementEditor(QScrollArea):
             w = ValuePicker(f.label, lambda _current, field=f: [(o, o) for o in field.options], enum_option(f, value),
                             guide=f.guide)
             w.changed.connect(self._changed)
-            if any(o.when and o.when[0] == f.name for o in self.element.schema.fields) or \
+            if any(o.when and o.when[0] == f.name for o in self.element.schema.fields) or f.name in LABEL_KEYS or \
                     (self.element.kind == "trace_record" and f.name == "outcome"):
                 # It decides which fields the sheet has (the type of an ADR), or what they show (the outcome of a
                 # record: decomposed, its functions come from the derived requirements): the page follows it.
@@ -2321,6 +2321,10 @@ class ElementEditor(QScrollArea):
         self._apply()
         lost = [f for f in self.draft.schema.fields if f.when and f.when[0] == name and not f.applies(self.draft)
                 and not is_empty(self.draft.values.get(f.name))]
+        if name == "realloc_scope" and not self._scope_changed():
+            self.draft = before
+            self._build()
+            return
         if lost:
             labels = ", ".join(f"«{f.label}»" for f in lost)
             answer = QMessageBox.question(self, "Cambio di tipo",
@@ -2334,6 +2338,24 @@ class ElementEditor(QScrollArea):
                 self.draft.set(f.name, None)
         self._set_dirty(True)
         self._build()
+
+    def _scope_changed(self):
+        """What a reallocation moves changed (its «Oggetto»): the items it no longer admits are removed, after a
+        confirmation. False: cancelled."""
+        from arcadia_tool.model.adr import scope_mismatch
+
+        wrong = scope_mismatch(self.project.model, self.draft)
+        if not wrong:
+            return True
+        ids = ", ".join(e.get("id") or "?" for e in wrong)
+        answer = QMessageBox.question(self, "Oggetto della riallocazione",
+                                      f"Con l'oggetto «{self.draft.get('realloc_scope')}» queste voci non sono "
+                                      f"ammesse e vengono tolte: {ids}. Continuare?")
+        if answer != QMessageBox.Yes:
+            return False
+        out = {e.uuid for e in wrong}
+        self.draft.set("realloc_item", [u for u in self.draft.get("realloc_item") or [] if u not in out])
+        return True
 
     def _draft_changed(self):
         """A choice made in a window (voce madre, funzione…) changed the draft: show it."""

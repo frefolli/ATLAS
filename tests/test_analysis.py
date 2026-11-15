@@ -93,7 +93,7 @@ def test_the_button_of_the_clause_row(app, tmp_path):
     label, box = button()
     assert label == "Non analizzato" and reader._analysis(clause)[1] == "none"
     names = [name for name, _l, _b in reader.delegate._layout(clause, reader.view.visualRect(index))[-2][1]]
-    assert names.index("analyzed") == names.index("exclude") + 1  # right of «Escludi»
+    assert names == ["analyzed", "actions"]  # left of «Azioni ▾»
     _click(reader.view, box.center())
     assert button()[0] == "Analizzato" and reader._analysis(clause)[1] == "mine"
     assert not p.is_modified and p.has_unpublished_changes()  # saved at once, to publish

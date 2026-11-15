@@ -279,14 +279,14 @@ def test_reader_context_menu_opens_and_derives(app, tmp_path):
     window.open_srs_reader()
     menu = window.reader.context_menu(e["r10"])
     actions = {a.text().split(" ")[0]: a for a in menu.actions() if a.text()}
-    go, delete = menu.actions()[0], actions["Elimina"]
+    go, delete = actions["Apri"], actions["Elimina"]
     assert not delete.isEnabled()  # read-only
-    assert "Alloca" in actions and "Deriva" in actions  # a clause: allocation and derivation from its row
+    assert "Mappa" in actions and "Deriva" in actions  # a clause: allocation and derivation from its row
     go.trigger()
     assert window.pages.currentWidget() is window.editor and window.editor.element is e["r10"]
 
     window.open_srs_reader()
-    window.reader.context_menu(e["r10"]).actions()[1].trigger()
+    window.reader.derive_requested.emit(e["r10"].uuid)  # one requirement derived from the item, in its sheet
     derived = window.editor.element
     assert derived.kind == "derived_requirement" and derived.get("parent") == e["r10"].uuid
     assert derived.get("id") == "3.14.4.10-D1" and window.editor.back_label
@@ -382,5 +382,27 @@ def test_import_srs_is_in_the_menu_of_the_srs_items_not_in_the_toolbar(app, tmp_
     assert list(menus[0])[0] == "Importa SRS…"
     menus[0]["Importa SRS…"].trigger()
     assert opened == [True]
+    window._set_project(None)
+    window.close()
+
+
+def test_a_click_on_an_srs_item_in_the_tree_goes_to_its_row_on_the_tab_of_its_chapter(app, tmp_path):
+    p, e = build(tmp_path)
+    window = MainWindow()
+    window.show()
+    window._set_project(p)
+    tree = window.tree
+    for key, chapter in (("var", 7), ("r2", 3), ("a", 3)):  # «Tutti» at first, then from another chapter
+        item = tree._items[e[key].uuid]
+        tree.tree.setCurrentItem(item)
+        tree._clicked(item, 0)
+        app.processEvents()
+        reader = window.reader
+        assert window.pages.currentWidget() is reader and reader.chapter == chapter
+        assert reader.tabs.tabData(reader.tabs.currentIndex()) == chapter
+        assert reader.view.currentIndex().data(srs_reader.ELEMENT_ROLE) is e[key]  # its row, selected
+        assert tree.tree.currentItem() is item  # the tree keeps it: the next click is on another one
+    tree._clicked(tree._items[e["derived"].uuid], 0) if e["derived"].uuid in tree._items else None
+    assert reader.view.currentIndex().data(srs_reader.ELEMENT_ROLE) is e["a"]  # not an SRS item: nothing moves
     window._set_project(None)
     window.close()

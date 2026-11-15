@@ -6,6 +6,49 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.16.0] - 2026-11-15
+
+### Aggiunto
+- **Punti di una clausola nelle ADR.** Nelle ADR di riallocazione, di richiesta di allocazione, di esclusione e di
+  condivisione si possono scegliere anche i punti di una clausola: punti di elenco («3.6.2.2.2 a)»), bullet
+  («3.6.2.2.2 a) 1st bullet»), righe di tabella. Nella finestra di scelta compaiono sotto la loro clausola, con il
+  testo. Il punto approvato ha domini propri: principale, contributori o esclusioni. I suoi sottopunti lo seguono,
+  il resto della clausola resta com'era. Le ADR di clausole non mappate restano sulle clausole intere.
+  - Nell'elenco SRS il punto mostra i suoi domini propri (l'esclusione in rosso). La sua clausola mostra «Punti in
+    altri domini (n)», con il dettaglio nel suggerimento.
+  - Il controllo A4-04 vale anche per un punto spostato in un dominio estraneo alla sezione senza un'ADR decisa.
+  - L'import delle ADR da Excel riconosce anche i bullet («3.10.2.2 1st bullet»), oltre ai punti di elenco.
+- **Riallocazione di un'intera sezione o di clausole.** L'ADR «Riallocazione di sezione o clausola» ha il campo
+  «Oggetto»: «Intera sezione» o «Clausole».
+  - Con «Intera sezione» si sceglie una sola sezione, che passa al dominio proposto con tutte le sue clausole. Le
+    clausole che hanno già un dominio proprio, per una decisione precedente, restano dove sono.
+  - Con «Clausole» si scelgono una o più clausole, o loro punti, della stessa sezione.
+  - Le etichette della scheda («Sezione da riallocare (con le sue clausole)» / «Clausole da riallocare») e della
+    motivazione seguono l'oggetto. Cambiando oggetto, le voci non più ammesse si tolgono dopo una conferma.
+  - Una nuova ADR aperta da una sezione propone «Intera sezione», da una clausola «Clausole».
+  - Le ADR esistenti e quelle importate da Excel ricavano l'oggetto dalle voci scelte.
+  - Il template Excel X-1.06 è aggiornato con il nuovo campo.
+- **Azioni rapide sulle voci SRS.** Ogni riga dell'elenco SRS ha solo «Non analizzato» (sulle clausole) e
+  «Azioni ▾». Il menu raccoglie le azioni prima sparse in più pulsanti: domini, mappatura alle funzioni,
+  derivazione, collegamenti, condivisione, esclusione. Lo stesso menu si apre con il clic destro sulla riga, seguito
+  da «Apri la scheda della voce» ed «Elimina selezionate».
+  - Nuova azione «Crea ADR…» su sezioni, clausole e punti. Si sceglie il tipo e l'ADR nasce già compilata con la
+    voce: da riallocare (con l'oggetto proposto), da escludere, da condividere, che lascia la scelta
+    all'implementazione, oppure tra le «Voci SRS interessate» per gli altri tipi.
+- **Navigare l'SRS dall'albero del modello.** Un clic su una voce SRS nel menu di sinistra apre l'elenco delle voci
+  SRS sulla scheda del capitolo della voce, alla sua riga, selezionata. Prima serviva un doppio clic, e l'elenco
+  restava sulla scheda «Tutti». I filtri che nascondono la voce vengono tolti. La scheda di modifica si apre con il doppio
+  clic sulla riga dell'elenco o con «Apri la scheda della voce» nel menu.
+- **Schede più comode.**
+  - Con la rotellina del mouse sulla barra delle schede si passa alla scheda successiva (in giù) o precedente (in
+    su). La barra segue la scheda attiva in modo morbido, senza salti.
+  - Le schede si riordinano trascinandole.
+  - Ogni scheda nuova (elemento, elenco, vista grafica, catalogo…) si apre subito a destra di quella corrente.
+
+### Modificato
+- La riallocazione di un punto di elenco non è più bloccata all'approvazione (prima: «si spostano solo clausole
+  intere»). Derivare un requisito dal punto resta possibile.
+
 ## [0.15.0] - 2026-11-15
 
 ### Aggiunto
@@ -1391,7 +1434,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.15.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.16.0...main
+[0.16.0]: https://github.com/salvodesi/ATLAS/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/salvodesi/ATLAS/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/salvodesi/ATLAS/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/salvodesi/ATLAS/compare/v0.13.0...v0.13.1

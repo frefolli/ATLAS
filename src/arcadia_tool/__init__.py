@@ -1,4 +1,4 @@
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 APP_NAME = "ATLAS"
 APP_FULL_NAME = "Arcadia Traceability, Logical Architecture Software"
