@@ -7,11 +7,12 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEd
                                QPushButton, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
                                QTabBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from arcadia_tool.model.diagrams import BREAKDOWN_TYPES, BREAKDOWN_VIEWS, DIAGRAM, VIEW_GROUPS, views_of
+from arcadia_tool.model.diagrams import (BREAKDOWN_TYPES, BREAKDOWN_VIEWS, CONTEXT, DIAGRAM, INTERFACES,
+                                         VIEW_GROUPS, views_of)
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.model.identifiers import CREATION_CONTEXT
 from arcadia_tool.ui.element_list import LIST_COLUMNS
-from arcadia_tool.model.schema import DIAGRAM_TYPES, GROUPS, KINDS, KINDS_BY_NAME
+from arcadia_tool.model.schema import DIAGRAM_CHAIN, DIAGRAM_DATAFLOW, GROUPS, KINDS, KINDS_BY_NAME
 from arcadia_tool.ui.element_editor import RefPicker
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode
 from arcadia_tool.ui.srs_reader import confirm_delete
@@ -21,6 +22,7 @@ KIND_ROLE = Qt.UserRole
 UUID_ROLE = Qt.UserRole + 1
 # Tab «Viste grafiche»: on a group, the type of its views; on a functional breakdown, the kind of its SA.
 VIEWS_ROLE = Qt.UserRole + 2
+USER_VIEWS = "user views"  # the nested group of the dataflows of the users (SA-5), remembered collapsed or not
 BREAKDOWN_ROLE = Qt.UserRole + 3
 MODEL_TAB, VIEWS_TAB = 0, 1
 # Kinds shown first in their group of the tree (the others in the order of the schema): the external actors
@@ -257,6 +259,8 @@ class ModelTree(QFrame):
         self._srs_nodes = {}  # SRS_ROOT, SRS_SPEC → their item (expanded or not, kept across a reload)
         self._view_groups = {}  # diagram type (None: the functional breakdown) → its group in «Viste grafiche»
         self._view_items = {}  # uuid of a view → its item
+        self._user_views = None  # «Viste utente» under SA-5: the dataflows of the users, apart from the generated
+        self._collapsed_views = set()
 
     def add_footer(self, widget):
         self.footer.addWidget(widget)
@@ -389,11 +393,13 @@ class ModelTree(QFrame):
         """Tab «Viste grafiche»: the functional breakdown of SA-1 and SA-2, then the views of the users, a group for
         each type (with its SA)."""
         collapsed = {t for t, item in self._view_groups.items() if not item.isExpanded()}
+        user_views = self._user_views
+        self._collapsed_views = {USER_VIEWS} if user_views is not None and not user_views.isExpanded() else set()
         current = self.views.currentItem()
         current = (current.data(0, UUID_ROLE) or current.data(0, BREAKDOWN_ROLE)) if current else None
         self.views.blockSignals(True)
         self.views.clear()
-        self._view_groups, self._view_items = {}, {}
+        self._view_groups, self._view_items, self._user_views = {}, {}, None
         if self.project is not None:
             bold = QFont()
             bold.setWeight(QFont.DemiBold)
@@ -412,43 +418,69 @@ class ModelTree(QFrame):
                 # First, the breakdown of the whole model of its SA.
                 for kind, (name, _all_open, group_type) in BREAKDOWN_VIEWS.items():
                     if group_type == diagram_type:
-                        item = QTreeWidgetItem(group, [name, "tutto il modello"])
+                        # Its scope (the whole model) in the tooltip: the second column, narrow, for the counts.
+                        item = QTreeWidgetItem(group, [name, ""])
                         item.setIcon(0, icon("mdi6.view-grid-outline", ACCENT))
                         item.setForeground(0, accent)
-                        item.setForeground(1, muted)
                         item.setData(0, BREAKDOWN_ROLE, kind)
-                        item.setToolTip(0, f"{KINDS_BY_NAME[kind].template}: i domini funzionali e le loro "
-                                           "funzioni di sistema")
+                        item.setToolTip(0, f"{name} · tutto il modello\n{KINDS_BY_NAME[kind].template}: i domini "
+                                           "funzionali e le loro funzioni di sistema")
                         if current == kind:
                             self.views.setCurrentItem(item)
+                parent = group
+                if diagram_type == DIAGRAM_DATAFLOW:  # generated from the model: the interfaces of the domains
+                    self._interface_views(group, current, accent, muted)
+                    # The views of the users apart from the generated ones, in a group of their own.
+                    parent = QTreeWidgetItem(group, ["Viste utente", str(len(views))])
+                    parent.setIcon(0, icon("mdi6.account-edit-outline", ACCENT))
+                    parent.setForeground(1, muted)
+                    parent.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+                    parent.setData(0, VIEWS_ROLE, diagram_type)
+                    parent.setFlags(Qt.ItemIsEnabled)
+                    parent.setToolTip(0, "Le viste composte dagli utenti con i domini e le funzioni che scelgono")
+                    self._user_views = parent
+                chains = self._chain_parents(group, views, muted) if diagram_type == DIAGRAM_CHAIN else {}
                 for view in views:
-                    item = QTreeWidgetItem(group, [view.get("name") or "(vista senza nome)", ""])
+                    item = QTreeWidgetItem(chains.get(view.uuid, parent), [view.get("name") or "(vista senza nome)",
+                                                                           ""])
                     item.setIcon(0, icon("mdi6.vector-polyline", ACCENT))
                     item.setForeground(0, accent)
                     item.setData(0, KIND_ROLE, DIAGRAM)
                     item.setData(0, UUID_ROLE, view.uuid)
-                    item.setToolTip(0, view.get("description") or view.get("name") or "")
+                    item.setToolTip(0, self._chain_tip(view) if diagram_type == DIAGRAM_CHAIN else
+                                    view.get("description") or view.get("name") or "")
                     self._view_items[view.uuid] = item
                     if current == view.uuid:
                         self.views.setCurrentItem(item)
                 if diagram_type not in BREAKDOWN_TYPES and not views:
-                    empty = QTreeWidgetItem(group, ["nessuna vista: clic destro per crearne una"])
+                    empty = QTreeWidgetItem(parent, ["nessuna vista: clic destro per crearne una"])
                     empty.setForeground(0, muted)
                     empty.setFlags(Qt.ItemIsEnabled)
                 group.setExpanded(diagram_type not in collapsed)
+                if parent is not group:  # expanded after its group: Qt expands only items already shown
+                    parent.setExpanded(USER_VIEWS not in self._collapsed_views)
         self.views.blockSignals(False)
         self._apply_views_filter(self.views_filter.text())
 
     def _apply_views_filter(self, text):
+        """Shows the views whose name has the text; a group (also a nested one: the user views, the contexts) while
+        something inside it is shown."""
         text = text.lower().strip()
+
+        def visit(item, top=False):
+            named = text in item.text(0).lower()
+            if item.childCount():
+                inside = any([visit(item.child(i)) for i in range(item.childCount())])  # every child visited
+                shown = not text or inside or (named and not top)
+                if text and inside:
+                    item.setExpanded(True)
+            else:
+                shown = not text or named
+            item.setHidden(not shown)
+            return shown
+
         for group in self._view_groups.values():
-            shown = 0
-            for i in range(group.childCount()):
-                child = group.child(i)
-                hidden = bool(text) and text not in child.text(0).lower()
-                child.setHidden(hidden)
-                shown += not hidden
-            group.setHidden(bool(text) and not shown)
+            visit(group, top=True)
 
     def _add(self, parent_item, element):
         label = self.project.model.choice_label(element)  # elements are chosen here: with their short name
@@ -504,6 +536,12 @@ class ModelTree(QFrame):
             how = "" if element.get("primary_domain") else " (dalla sezione o clausola che la contiene)"
             item.setToolTip(0, f"{element.get('text') or model.choice_label(element)}\n"
                                f"Dominio principale: {badge}{how}")
+
+    def show_label(self, element):
+        """The text of the item of an element as it is (e.g. its sheet being typed, not saved yet)."""
+        item = self._items.get(element.uuid)
+        if item is not None:
+            item.setText(0, self.project.model.choice_label(element))
 
     def refresh_label(self, element):
         item = self._items.get(element.uuid)
@@ -606,6 +644,73 @@ class ModelTree(QFrame):
         elif self.project is not None:
             self.element_selected.emit(self.project.model.get(uuid))
 
+    def _chain_parents(self, group, views, muted):
+        """SA-7: one view for each chain, drawn as its path or its scenario. A chain with more than one view (e.g.
+        two scenarios at different levels, from an earlier version): a node of its own, its views under it.
+        Returns {uuid of a view: its node}."""
+        model = self.project.model
+        by_chain = {}
+        for view in views:
+            by_chain.setdefault(view.get("chain") or "", []).append(view)
+        result = {}
+        for uuid, of_chain in by_chain.items():
+            chain = model.get(uuid) if uuid else None
+            if chain is None or len(of_chain) < 2:
+                continue
+            node = QTreeWidgetItem(group, [model.label(chain), str(len(of_chain))])
+            node.setIcon(0, kind_icon("functional_chain"))
+            node.setForeground(1, muted)
+            node.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+            node.setData(0, VIEWS_ROLE, DIAGRAM_CHAIN)
+            node.setFlags(Qt.ItemIsEnabled)
+            node.setToolTip(0, self._chain_tip(of_chain[0]))
+            node.setExpanded(True)
+            result.update({v.uuid: node for v in of_chain})
+        return result
+
+    def _chain_tip(self, view):
+        """The chain of a view: its ID and title, how many steps, the domains it crosses; how the view is drawn."""
+        from arcadia_tool.model import diagrams as dg
+        model = self.project.model
+        chain = model.get(view.get("chain") or "")
+        if chain is None:
+            return f"{view.get('name') or ''}\nLa functional chain della vista non è più nel modello"
+        steps = [s for s in dg.chain_steps(model, view) if not s.wait]
+        domains = list(dict.fromkeys(s.domain_ident for s in steps if s.domain_ident))
+        lines = [model.label(chain), f"{len(steps)} {'passo' if len(steps) == 1 else 'passi'}" +
+                 (f" · domini: {', '.join(domains)}" if domains else ""),
+                 f"Disegno: {dg.drawing(view).lower()} · {dg.level(view).lower()}"]
+        return "\n".join(lines)
+
+    def _interface_views(self, group, current, accent, muted):
+        """«Matrice delle interfacce» and «Contesto di un dominio» (one for each domain): generated, always as the
+        model is, opened as the breakdowns (see BREAKDOWN_ROLE)."""
+        item = QTreeWidgetItem(group, ["Matrice delle interfacce", ""])
+        item.setIcon(0, icon("mdi6.table-large", ACCENT))
+        item.setForeground(0, accent)
+        item.setData(0, BREAKDOWN_ROLE, INTERFACES)
+        item.setToolTip(0, "Matrice delle interfacce · tutto il modello\nI dati scambiati tra i domini (e gli attori "
+                           "esterni): righe chi produce, colonne chi usa")
+        if current == INTERFACES:
+            self.views.setCurrentItem(item)
+        domains = self.project.model.of_kind("domain")
+        contexts = QTreeWidgetItem(group, ["Contesto di un dominio", str(len(domains))])
+        contexts.setIcon(0, icon("mdi6.target", ACCENT))
+        contexts.setForeground(1, muted)
+        contexts.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+        contexts.setFlags(Qt.ItemIsEnabled)
+        contexts.setToolTip(0, "Per ogni dominio: le sue funzioni e i domini e gli attori con cui scambia dati")
+        for domain in domains:
+            item = QTreeWidgetItem(contexts, [self.project.model.label(domain), ""])
+            item.setIcon(0, icon("mdi6.target", ACCENT))
+            item.setForeground(0, accent)
+            item.setData(0, BREAKDOWN_ROLE, CONTEXT + domain.uuid)
+            item.setToolTip(0, f"Contesto di {self.project.model.label(domain)}: cosa riceve, cosa produce, da chi e "
+                               "per chi")
+            if current == CONTEXT + domain.uuid:
+                self.views.setCurrentItem(item)
+                contexts.setExpanded(True)
+
     def _view_changed(self, current, _previous):
         """A click in «Viste grafiche»: the view opens (a functional breakdown, or a view of the users)."""
         if current is None or self.project is None:
@@ -687,6 +792,9 @@ class ModelTree(QFrame):
                              lambda _=False: self.create(kind))
         new.setEnabled(not locked and not denied)
         new.setToolTip(denied or "")
+        if kind == "domain" and uuid:
+            menu.addAction(icon("mdi6.target"), "Apri la vista di contesto",
+                           lambda _=False: self.breakdown_requested.emit(CONTEXT + uuid))
         if uuid:
             element = self.project.model.get(uuid)
             if kind == "requirement" and element is not None and element.get("item_type") != "Capitolo":
@@ -776,6 +884,14 @@ class ModelTree(QFrame):
             group = item if item is None or item.parent() is None else item.parent()
             diagram_type = group.data(0, VIEWS_ROLE) if group is not None else None
             # On a group, «Nuova vista…» of its type; elsewhere, one for each group.
+            if diagram_type == DIAGRAM_CHAIN:  # the chain itself, composed in its view
+                denied = self.edit_denied("functional_chain") if self.edit_denied else None
+                new = menu.addAction(kind_icon("functional_chain"), "Nuova catena funzionale…",
+                                     lambda _=False: self.create_chain())
+                new.setEnabled(not denied)
+                new.setToolTip(denied or "La functional chain (SA-7) con le sue viste: il percorso si compone "
+                                         "sulla tela")
+                menu.setToolTipsVisible(True)
             for title, t in VIEW_GROUPS:
                 if t == diagram_type or not diagram_type:
                     label = "Nuova vista…" if diagram_type else f"Nuova vista in {title}…"
@@ -788,7 +904,8 @@ class ModelTree(QFrame):
         «+ Nuova vista…» (from the group of an SA it is the type of the group). It opens to be composed with the
         elements of the model."""
         from arcadia_tool.ui.diagrams import NewViewDialog
-        dialog = NewViewDialog(self.project.model, [diagram_type] if diagram_type else DIAGRAM_TYPES, self)
+        dialog = NewViewDialog(self.project.model, [diagram_type] if diagram_type else [t for _, t in VIEW_GROUPS],
+                               self)
         if not dialog.exec():
             return None
         view = self.project.new_element(DIAGRAM, **dialog.values())
@@ -796,6 +913,22 @@ class ModelTree(QFrame):
         self.reload(select_uuid=view.uuid)
         self.model_changed.emit()
         return view
+
+    def create_chain(self):
+        """«Nuova catena funzionale…»: the functional chain (its title asked, its ID given by ATLAS) and its view,
+        which opens empty, to compose the path on the canvas (drawn as its scenario of exchange too)."""
+        from arcadia_tool.ui.diagrams import NewChainDialog
+        dialog = NewChainDialog(self.project.model, self)
+        if not dialog.exec():
+            return None
+        title, level = dialog.values()
+        chain = self.project.new_element("functional_chain", title=title)
+        view = self.project.new_element(DIAGRAM, name=title, diagram_type=DIAGRAM_CHAIN, chain=chain.uuid,
+                                        level=level)
+        self.view_created.emit(view.uuid)
+        self.reload(select_uuid=view.uuid)  # the view of the chain opens
+        self.model_changed.emit()
+        return chain
 
     def rename_view(self, view):
         from PySide6.QtWidgets import QInputDialog
@@ -926,7 +1059,11 @@ class ModelTree(QFrame):
                 return False
             delete_domain(self.project, element, dialog.choices)
         else:
-            answer = QMessageBox.question(self, "Elimina", f"Eliminare «{self.project.model.label(element)}»?")
+            views = self.project.views_of_chain(element.uuid) if element.kind == "functional_chain" else []
+            also = ("\n\nSi eliminano anche le sue viste grafiche:\n" +
+                    "\n".join(f"• {v.get('diagram_type')}: {v.get('name') or ''}" for v in views)) if views else ""
+            answer = QMessageBox.question(self, "Elimina",
+                                          f"Eliminare «{self.project.model.label(element)}»?{also}")
             if answer != QMessageBox.Yes:
                 return False
             self.project.delete_element(element.uuid)

@@ -15,6 +15,7 @@ from arcadia_tool.storage.repository import PROJECT_FILE
 from arcadia_tool.storage.trash import move_to_trash
 
 TAB_TITLE_LENGTH = 48
+from arcadia_tool.ui import busy
 from arcadia_tool.ui.busy import run_busy, save_project
 from arcadia_tool.ui.dialogs import NewProjectDialog, settings
 from arcadia_tool.ui.accounts import AccountDialog, account_store, require_login
@@ -42,6 +43,7 @@ from arcadia_tool.ui.start_page import StartPage
 from arcadia_tool.ui.theme import ACCENT, CHANGE_COLORS, MUTED, TEXT, icon, kind_icon
 from arcadia_tool.ui.branches import BranchesDialog
 from arcadia_tool.ui.overview import OverviewSetup, OverviewWindow
+from arcadia_tool.ui.local_changes import LocalChangesDialog
 from arcadia_tool.ui.versions import CompareDialog, DiscardDialog, HistoryDialog, PublishDialog, UnpublishedDialog
 from arcadia_tool.ui import updates as updates_ui
 
@@ -94,6 +96,8 @@ def show_access_denied(parent, reason, user):
 
 
 
+
+PANEL_WIDTH = 280  # the panel at the left (model, views), until the user drags its divider
 
 class LocalChangesCheck(QThread):
     """Whether the saved project differs from the last published version: it reads the whole project, seconds the first
@@ -160,10 +164,13 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.tree)
         splitter.addWidget(self.work_area)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([420, 1100])
         # At its left the bar of icons: the tabs of the panel, and the panel closed to the left and opened again.
-        self.activity = ActivityBar(self.tree, self.tree.tabs, splitter, TAB_ICONS, settings(), width=420,
-                                    old_widths=(340,))  # 340 up to 0.12: wider now
+        store = settings()
+        if store.value("panel/narrowed") != "280":  # the panel narrower now: the width kept before, once forgotten
+            store.remove("panel/width")
+            store.setValue("panel/narrowed", "280")
+        self.activity = ActivityBar(self.tree, self.tree.tabs, splitter, TAB_ICONS, store, width=PANEL_WIDTH)
+        splitter.setSizes([self.activity._width, 1100])  # the width kept, or the one given
         workspace = QWidget()
         row = QHBoxLayout(workspace)
         row.setContentsMargins(0, 0, 0, 0)
@@ -257,6 +264,13 @@ class MainWindow(QMainWindow):
         self.overview_action = self._action("Vista d'insieme", "mdi6.layers-triple-outline", self.open_overview, None,
                                             "Il ramo principale con il lavoro dei rami scelti sovrapposto, in sola "
                                             "lettura: ciò che è approvato e ciò che non lo è ancora")
+        self.local_changes_action = self._action(
+            "Modifiche Locali", "mdi6.timeline-clock-outline", self.show_local_changes, QKeySequence("Ctrl+Alt+Z"),
+            "Le modifiche non ancora pubblicate, in ordine cronologico: scarta l'ultima o ripristina l'ultima "
+            "scartata, una alla volta")
+        # Each action of the user, when it has ended, is an entry of the local changes (see storage.journal).
+        self._journal_timer = QTimer(self, interval=400, timeout=self._record_change)
+        self._journal_timer.start()
         self.history_action = self._action("Versioni Modello", "mdi6.history", self.history, None,
                                            "Le versioni del modello, con quella locale non ancora pubblicata, da "
                                            "pubblicare o scartare")
@@ -324,8 +338,8 @@ class MainWindow(QMainWindow):
         self.profile_action = bar.addWidget(self.profile_combo)
         bar.addAction(self.check_settings_action)
         bar.addSeparator()
-        for a in (self.history_action, self.overview_action, self.branches_action, self.receive_action,
-                  self.compare_action, self.publish_action, self.propagate_action):
+        for a in (self.local_changes_action, self.history_action, self.overview_action, self.branches_action,
+                  self.receive_action, self.compare_action, self.publish_action, self.propagate_action):
             bar.addAction(a)
         bar.addSeparator()
         bar.addAction(self.notifications_action)
@@ -365,7 +379,7 @@ class MainWindow(QMainWindow):
         versions_menu = self.menuBar().addMenu("&Versioni")
         for a in (self.publish_action, self.propagate_action, self.send_action, self.receive_action,
                   self.compare_action,
-                  self.overview_action, self.history_action, self.branches_action):
+                  self.overview_action, self.local_changes_action, self.history_action, self.branches_action):
             # «Versioni Modello» before «Rami», as in the bar
             versions_menu.addAction(a)
         user_menu = self.menuBar().addMenu("&Utente")
@@ -408,7 +422,7 @@ class MainWindow(QMainWindow):
     def set_user(self, account):
         self.user = account
         denied = access_denied(self.project.model, account) if self.project is not None else None
-        if denied is not None and self._confirm_discard():  # another user, not a member: the project closes
+        if denied is not None and self._confirm_discard(reopen=False):  # another user, not a member: it closes
             self._set_project(None)
             show_access_denied(self, denied, account)
         self._refresh_state()
@@ -687,7 +701,7 @@ class MainWindow(QMainWindow):
                   self.close_action, self.import_action, self.settings_action, self.send_action,
                   self.reload_action, self.migrate_action, self.check_action, self.check_settings_action,
                   self.receive_action, self.branches_action, self.sheets_action, self.sheets_settings_action,
-                  self.notifications_action):
+                  self.notifications_action, self.local_changes_action):
             a.setEnabled(has_project)
         self.propagate_action.setVisible(has_project and self.user_is_da)  # not shown to the other teams
         self.propagate_action.setEnabled(has_project and self.user_is_da)
@@ -836,8 +850,10 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _confirm_discard(self):
-        """Ask what to do with unsaved edits. Returns False if the user cancels."""
+    def _confirm_discard(self, reopen=True):
+        """Ask what to do with the local changes (not saved, or saved and not published). Returns False if the user
+        cancels. reopen: after a discard the project is opened again (its files changed), for who goes on with it;
+        False for who closes it."""
         if not self._resolve_unsaved_views():
             return False
         self._flush_editors()
@@ -850,21 +866,32 @@ class MainWindow(QMainWindow):
             self._abandon_new(editor.element)  # created and never saved: not saved with the project either
         if not self.project:
             return True
-        if not self.project.is_modified:
+        published = bool(self.project.versions())
+        if not self.project.is_modified and not (published and self.project.has_unpublished_changes()):
             # Nothing to save: a copy for the recovery written earlier (edits undone since, e.g. a new element
             # cancelled) is not left behind, or the next start would offer it as an interrupted session.
             self.project.discard_recovery()
             return True
-        answer = QMessageBox.question(
-            self, "Modifiche non salvate", f"Salvare le modifiche a «{self.project.name}»?",
-            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
-        if answer == QMessageBox.Save:
-            save_project(self, self.project)
-        elif answer == QMessageBox.Discard:
-            if not DiscardDialog(self.project, self, unsaved=True).exec():  # what is lost, before losing it
-                return False
+        # At once the local changes, to keep (saved) or to discard, all of them or those ticked: what is lost is seen
+        # before losing it. Without a published version: those not saved, back to the last save.
+        dialog = DiscardDialog(self.project, self, unsaved=not published, selectable=published, closing=True)
+        if not dialog.exec():
+            return False
+        if dialog.save:
+            if self.project.is_modified:
+                save_project(self, self.project)
+            return True
+        if not published or dialog.leave:  # what is not saved is lost; what is saved stays as it is
             self.project.discard_recovery()
-        return answer != QMessageBox.Cancel
+            return True
+        only = dialog.chosen()  # None: all of them
+        path = self.project.path
+        run_busy(self, "Annullamento delle modifiche locali…", lambda _report: (
+            self.project.discard_unpublished() if only is None else self.project.discard_some(only)))
+        if reopen:
+            self._set_project(None)  # its files changed
+            self.open_project(str(path), confirmed=True, ask_update=False)
+        return True
 
     def new_project(self):
         if not self._confirm_discard():
@@ -1042,7 +1069,7 @@ class MainWindow(QMainWindow):
         self.tree.delete_all_requirements()  # asks to confirm (and to switch to the SRS edit mode)
 
     def close_project(self):
-        if self._confirm_discard():
+        if self._confirm_discard(reopen=False):
             self._set_project(None)
 
     def _set_project(self, project):
@@ -1066,6 +1093,8 @@ class MainWindow(QMainWindow):
         self.checks_dock.setVisible(project is not None)
         self.checks_dock.reset()
         self._refresh_state()
+        if project is not None and project.migration_notes:  # data of an earlier version, changed
+            self.statusBar().showMessage(" ".join(project.migration_notes), 15000)
 
     # --- editing -------------------------------------------------------------------------------
 
@@ -1135,6 +1164,7 @@ class MainWindow(QMainWindow):
         editor.approver = self.da_name
         editor.user_of = lambda: self.user
         editor.discussion_changed.connect(self._discussion_changed)
+        editor.draft_renamed.connect(lambda draft, e=editor: self._draft_renamed(e, draft))
         return editor
 
     def _save_local(self, page):
@@ -1190,13 +1220,21 @@ class MainWindow(QMainWindow):
         index = self.pages.indexOf(editor)
         if index < 0:
             index = self.pages.insertTab(self._element_tab_count(), editor, "")
-        label = self.project.model.label(element)
+        draft = editor.draft if editor.draft is not None and editor.draft.uuid == element.uuid else element
+        label = self.project.model.label(draft)  # as being typed
         short = label if len(label) <= TAB_TITLE_LENGTH else label[:TAB_TITLE_LENGTH - 1] + "…"
         self.pages.setTabText(index, f"● {short}" if editor.dirty else short)  # ●: changes not saved
         self.pages.setTabIcon(index, kind_icon(element.kind))
         self.pages.setTabToolTip(index, f"{element.schema.label}: {label}")
         if activate:
             self.pages.setCurrentWidget(editor)
+
+    def _draft_renamed(self, editor, draft):
+        """A name being typed in a sheet: its item in the tree and its tab show it (before «Salva»)."""
+        if editor.element is None or draft.uuid != editor.element.uuid:
+            return
+        self.tree.show_label(draft)
+        self._show_editor(editor, activate=False)
 
     def _element_tab_count(self):
         """Element tabs come before the SUBSET-026 catalogue."""
@@ -1267,8 +1305,15 @@ class MainWindow(QMainWindow):
     # --- graphic views ---------------------------------------------------------------------------------
 
     def open_breakdown(self, kind):
-        """The overview of the whole model: SA-1 (only the domains) or SA-2 (every domain open on its functions)."""
-        from arcadia_tool.model.diagrams import BREAKDOWN_VIEWS
+        """The overview of the whole model: SA-1 (only the domains) or SA-2 (every domain open on its functions);
+        also the views generated under SA-5: the matrix of the interfaces, the context of a domain."""
+        from arcadia_tool.model.diagrams import BREAKDOWN_VIEWS, CONTEXT, INTERFACES
+        if self.project and kind == INTERFACES:
+            self.open_interfaces()
+            return
+        if self.project and kind and kind.startswith(CONTEXT):
+            self.open_context(kind[len(CONTEXT):])
+            return
         if not self.project or kind not in BREAKDOWN_VIEWS:
             return
         key = f"breakdown:{kind}"
@@ -1278,6 +1323,7 @@ class MainWindow(QMainWindow):
             title = f"{KINDS_BY_NAME[kind].template} {name}"  # «Vista complessiva» under SA-1 and SA-2
             page = BreakdownPage(self.project, functions, self.checks.findings_for, title)
             page.open_requested.connect(self._open_finding)
+            page.context_requested.connect(self.open_context)
             page.element_created.connect(lambda uuid, p=page: self._element_created(uuid, p))
             page.model_edited.connect(lambda message, p=page: self._diagram_edited(message, p))
             page.delete_requested.connect(self._delete_from_list)
@@ -1286,12 +1332,51 @@ class MainWindow(QMainWindow):
             self.pages.setTabToolTip(index, title)
         self.pages.setCurrentWidget(page)
 
+    def open_interfaces(self):
+        """«Matrice delle interfacce» (SA-5): generated from the model, in its tab."""
+        from arcadia_tool.model.diagrams import INTERFACES
+        from arcadia_tool.ui.interfaces import TITLE, InterfacesPage
+        page = self.diagram_pages.get(INTERFACES)
+        if page is None:
+            page = InterfacesPage(self.project)
+            page.open_requested.connect(self._open_finding)
+            page.context_requested.connect(self.open_context)
+            self.diagram_pages[INTERFACES] = page
+            index = self.pages.addTab(page, icon("mdi6.table-large", ACCENT), TITLE)
+            self.pages.setTabToolTip(index, f"SA-5 {TITLE}")
+        self.pages.setCurrentWidget(page)
+
+    def open_context(self, uuid):
+        """The view of the context of a domain (SA-5): generated from the model, drawn again when it changes."""
+        from arcadia_tool.model import diagrams as dg
+        key = dg.CONTEXT + uuid
+        page = self.diagram_pages.get(key)
+        if page is None:
+            def view(project=self.project):
+                domain = project.model.get(uuid)
+                return dg.context_view(project.model, domain) if domain is not None and domain.kind == "domain" \
+                    else None
+            first = view()
+            if first is None:
+                return
+            page = DiagramPage(self.project, first, self.checks.findings_for, generated=view)
+            page.open_requested.connect(self._open_finding)
+            page.context_requested.connect(self.open_context)
+            page.element_created.connect(lambda u, p=page: self._element_created(u, p))
+            page.model_edited.connect(lambda message, p=page: self._diagram_edited(message, p))
+            page.delete_requested.connect(self._delete_from_list)
+            self.diagram_pages[key] = page
+            index = self.pages.addTab(page, icon("mdi6.target", ACCENT), first.get("name"))
+            self.pages.setTabToolTip(index, f"SA-5 {first.get('name')}")
+        self.pages.setCurrentWidget(page)
+
     def open_diagram(self, view):
         """A graphic view composed by the user, in its tab."""
         page = self.diagram_pages.get(view.uuid)
         if page is None:
             page = DiagramPage(self.project, view, self.checks.findings_for)
             page.open_requested.connect(self._open_finding)
+            page.context_requested.connect(self.open_context)
             page.element_created.connect(lambda uuid, p=page: self._element_created(uuid, p))
             page.model_edited.connect(lambda message, p=page: self._diagram_edited(message, p))
             page.delete_requested.connect(self._delete_from_list)
@@ -1331,12 +1416,22 @@ class MainWindow(QMainWindow):
                              if element is not None else "", page)
 
     def _diagram_edited(self, message, page=None):
-        """Elements created or deleted from a view: written at once (only them), the other views drawn again."""
+        """Elements created or deleted from a view: written at once (only them), the other views drawn again; the
+        open sheets of the elements changed from it (e.g. the path of a chain composed in its view) show them."""
+        changed = local_changes(page, self.project) if page is not None else set()
         if page is None:
             save_project(self, self.project)
         else:
             self._save_local(page)
         self._model_changed()
+        for uuid in changed:
+            element = self.project.model.get(uuid)
+            editor = self.editors.get(uuid)
+            if element is None or element.kind == "diagram":
+                continue
+            if editor is not None and editor.element is not element and not editor.dirty:
+                editor.element = element  # put back by Ctrl+Z in the view: the one now in the model
+            self._element_changed(element)
         if message:
             self.statusBar().showMessage(message, 5000)
 
@@ -1351,6 +1446,10 @@ class MainWindow(QMainWindow):
     def _refresh_diagrams(self):
         """The model changed: the views are drawn again; those of a view deleted are closed."""
         for key, page in list(self.diagram_pages.items()):
+            if isinstance(page, DiagramPage) and page.generated is not None:  # the context of a domain
+                if not page.regenerate():
+                    self._close_diagram(page)
+                continue
             if isinstance(page, DiagramPage):
                 if self.project.model.get(key) is None:
                     self._close_diagram(page)
@@ -1992,23 +2091,63 @@ class MainWindow(QMainWindow):
             elif dialog.request is not None:
                 self.branch_request(dialog.request)
 
+    def _record_change(self):
+        """The changes of the action just ended, as an entry of the local changes (not while an operation runs)."""
+        if self.project is not None and not busy.RUNNING[0]:
+            self.project.journal.record()
+
+    def show_local_changes(self):
+        """«Modifiche locali» (Ctrl+Alt+Z): the changes not published, in order, to discard or restore one at a
+        time. The sheets and the views with changes in progress: saved or discarded first."""
+        if not self.project or not self._resolve_unsaved_pages():
+            return
+        self._flush_editors()
+        self.project.journal.record()
+        dialog = LocalChangesDialog(self.project, self)
+        dialog.changed.connect(self._local_changes_applied)
+        dialog.exec()
+
+    def _local_changes_applied(self, uuids):
+        """Elements put back or restored from «Modifiche locali»: their sheets and views show them as they are now."""
+        model = self.project.model
+        for uuid in uuids:
+            element = model.get(uuid)
+            editor = self.editors.get(uuid)
+            if element is not None and editor is not None:
+                editor.element = element  # a new object: the one now in the model
+                editor.refresh()
+            page = self.diagram_pages.get(uuid)
+            if isinstance(page, DiagramPage):  # its view element was replaced: opened again on the new one
+                self._close_diagram(page)
+                if element is not None:
+                    self.open_diagram(element)
+            if element is not None:
+                self.tree.refresh_label(element)
+        self._model_changed()
+        self.statusBar().showMessage("Modifiche locali aggiornate: salva per renderle definitive su disco", 5000)
+
     def discard_local_changes(self):
         """«Scarta le modifiche locali» of the versions: the model goes back to the last version published of the
         branch (the sheets and the views in edit mode too); the project is opened again."""
         if not self.project or not self.project.versions():
             return False
         self._flush_editors()
-        if not DiscardDialog(self.project, self, pending=len(self._dirty_pages())).exec():
+        dialog = DiscardDialog(self.project, self, pending=len(self._dirty_pages()), selectable=True)
+        if not dialog.exec():
             return False
+        only = dialog.chosen()  # None: all of them
         for editor in self._unsaved_editors():  # their drafts go with the rest
             editor.cancel_changes(ask=False)
         path = self.project.path
-        run_busy(self, "Annullamento delle modifiche locali…", lambda _report: self.project.discard_unpublished())
+        run_busy(self, "Annullamento delle modifiche locali…", lambda _report: (
+            self.project.discard_unpublished() if only is None else self.project.discard_some(only)))
         self._set_project(None)  # its files changed
         self.open_project(str(path), confirmed=True, ask_update=False)
         if self.project is not None:
-            self.statusBar().showMessage("Modifiche locali scartate: il modello è all'ultima versione pubblicata",
-                                         8000)
+            self.statusBar().showMessage(
+                "Modifiche locali scartate: il modello è all'ultima versione pubblicata" if only is None else
+                f"Scartate {len(only)} {'modifica locale' if len(only) == 1 else 'modifiche locali'}: le altre restano "
+                "da pubblicare", 8000)
         return True
 
     def show_branches(self):
@@ -2265,7 +2404,7 @@ class MainWindow(QMainWindow):
         return True
 
     def closeEvent(self, event):
-        if not getattr(self, "_closing_for_update", False) and not self._confirm_discard():
+        if not getattr(self, "_closing_for_update", False) and not self._confirm_discard(reopen=False):
             event.ignore()
             return
         if self.project:

@@ -40,7 +40,7 @@ def build(tmp_path):
     p.new_element("functional_exchange", name="Messaggio", source=used.uuid, target=target.uuid)
     derived = p.new_element("derived_requirement", id="3.5.1.1-D1", obligation="Una", domain=gone.uuid,
                             parent=clause.uuid)
-    chain = p.new_element("functional_chain", name="Sessione radio", responsible_domain=gone.uuid)
+    chain = p.new_element("functional_chain", title="Sessione radio", domains=[gone.uuid, kept.uuid])
     adr = p.new_element("adr", title="Eliminare la radio", adr_type=ADR_DELETE_DOMAIN, status="Proposta",
                         deleted_domain=gone.uuid)
     p.save()
@@ -52,11 +52,13 @@ def test_the_orphans_and_what_can_be_deleted(tmp_path):
     p, e = build(tmp_path)
     groups = {g.kind: [x.uuid for x in elements] for g, elements in orphans(p.model, e["gone"].uuid)}
     assert groups == {"requirement": [e["section"].uuid], "system_function": [e["free"].uuid, e["used"].uuid],
-                      "derived_requirement": [e["derived"].uuid], "functional_chain": [e["chain"].uuid]}
+                      "derived_requirement": [e["derived"].uuid]}
     assert deletable(p.model, e["free"], e["gone"].uuid) and deletable(p.model, e["derived"], e["gone"].uuid)
     assert not deletable(p.model, e["used"], e["gone"].uuid)  # an exchange uses it
     assert not deletable(p.model, e["section"], e["gone"].uuid)  # SRS items are never deleted
-    assert {x.uuid for x in second_references(p.model, e["gone"].uuid)} == {e["other"].uuid, e["team"].uuid}
+    # A chain only loses it among its domains involved.
+    assert {x.uuid for x in second_references(p.model, e["gone"].uuid)} == {e["other"].uuid, e["team"].uuid,
+                                                                            e["chain"].uuid}
     assert can_approve(e["adr"]) and deletion_problems(p.model, e["adr"]) == []
     empty = p.new_element("adr", adr_type=ADR_DELETE_DOMAIN, status="Proposta")
     assert deletion_problems(p.model, empty) == ["Manca il dominio da eliminare."]
@@ -66,12 +68,12 @@ def test_the_approval_removes_the_domain_as_chosen(tmp_path):
     p, e = build(tmp_path)
     gone, kept = e["gone"].uuid, e["kept"].uuid
     choices = {e["section"].uuid: kept, e["free"].uuid: DELETE, e["used"].uuid: DELETE,  # not deletable: kept
-               e["derived"].uuid: kept, e["chain"].uuid: KEEP}
+               e["derived"].uuid: kept}
     changed, deleted = approve_domain_deletion(p, e["adr"], choices)
     assert p.model.get(gone) is None and set(deleted) == {gone, e["free"].uuid}
     assert e["section"].get("primary_domain") == kept and not e["section"].get("contributing_domains")
     assert e["used"].get("domain") is None and p.model.get(e["used"].uuid) is not None
-    assert e["derived"].get("domain") == kept and e["chain"].get("responsible_domain") is None
+    assert e["derived"].get("domain") == kept and e["chain"].get("domains") == [kept]
     assert not e["other"].get("contributing_domains") and not e["other"].get("excluded_domains")
     assert e["team"].get("domains") == [kept]
     adr = e["adr"]
@@ -97,7 +99,6 @@ def test_the_sheet_shows_the_orphans_and_approves_the_deletion(app, tmp_path, mo
     frame = editor.findChild(QFrame, "domainOrphans")
     text = " ".join(label.text() for label in frame.findChildren(QLabel))
     assert "Funzioni di sistema (2)" in text and f"<a href='{e['section'].uuid}'>3.5.1</a>" in text
-    assert "Functional chain di cui è responsabile (1)" in text
 
     seen = []
 
@@ -126,7 +127,7 @@ def test_the_choice_for_a_whole_group(app, tmp_path):
 
     p, e = build(tmp_path)
     dialog = DomainDeletionDialog(p, e["gone"])
-    assert set(dialog.choices) == {e[k].uuid for k in ("section", "free", "used", "derived", "chain")}
+    assert set(dialog.choices) == {e[k].uuid for k in ("section", "free", "used", "derived")}
     assert set(dialog.choices.values()) == {None}  # each to be chosen
     assert not dialog.ok.isEnabled()
     top = dialog.tree.topLevelItem(1)  # the system functions

@@ -334,42 +334,96 @@ LOADING = "Lettura delle modifiche locali…"  # thousands of sheets compared: s
 class DiscardDialog(QDialog):
     """What is lost when the local changes are discarded, shown as in «Pubblica»; accepted: discard them.
     unsaved: only the changes not saved yet are lost (else also those saved and not published); pending: the sheets and
-    views open with changes still in progress, which go with them."""
+    views open with changes still in progress, which go with them. selectable: each change has a tick, to discard some
+    only: ticking one ticks the changes linked to it, which need it (see storage.selective); `chosen()` says which.
+    closing: the project is closed (or another one opened) with local changes: «Esci senza scartare» too (nothing
+    discarded: those saved stay local, those not saved are not saved) and, with changes not saved, «Salva» (the first
+    choice); accepted, `save` and `leave` say which, neither of them: discard them."""
 
-    def __init__(self, project, parent=None, unsaved=False, pending=0):
+    def __init__(self, project, parent=None, unsaved=False, pending=0, selectable=False, closing=False):
         super().__init__(parent)
-        self.setWindowTitle("Scarta le modifiche locali")
+        self.setWindowTitle("Modifiche locali" if closing else "Scarta le modifiche locali")
         maximizable(self)
         self.resize(1240, 760)
+        self.needs = None
+        self.save = False
+        self.leave = False  # «Esci senza scartare»: nothing saved, nothing discarded
         if unsaved:
             base_label = "Ultimo salvataggio"
             self.diff = run_busy(parent, LOADING, lambda _report: diff_models(project.saved_model(), project.model))
-            text = "Queste modifiche non salvate vanno perse: il modello resta com'era all'ultimo salvataggio."
+            text = ("Queste modifiche non salvate vanno perse: il modello resta com'era all'ultimo salvataggio." if not
+                    closing else f"Le modifiche a «{project.name}» non sono salvate: salvale, o scartale e il modello "
+                                 "resta com'era all'ultimo salvataggio.")
         else:
             versions = project.versions()
             base_label = version_label(versions[0]) if versions else "Nessuna versione pubblicata"
-            self.diff = run_busy(parent, LOADING, lambda _report: diff_models(project.published_model(), project.model))
+            published = run_busy(parent, LOADING, lambda _report: project.published_model())
+            self.diff = run_busy(parent, LOADING, lambda _report: diff_models(published, project.model))
             text = (f"Queste modifiche locali vanno perse: il modello torna all'ultima versione pubblicata del ramo "
                     f"«{project.current_branch()}» ({base_label}).")
+            if selectable and self.diff:
+                from arcadia_tool.storage.selective import dependencies, linked_to_discard
+                self.needs = linked_to_discard(dependencies(published, project.model,
+                                                            [c.uuid for c in self.diff.changes]))
+                text = (f"Le modifiche spuntate vanno perse: tornano come nell'ultima versione pubblicata del ramo "
+                        f"«{project.current_branch()}» ({base_label}). Togli la spunta a quelle da tenere: restano "
+                        "locali, da pubblicare.")
+            if closing:
+                keep = ("«Salva» le salva, «Esci senza scartare» chiude senza salvare quelle non ancora salvate; "
+                        "restano") if project.is_modified else "«Esci senza scartare» le tiene"
+                text = (f"«{project.name}» ha modifiche locali non pubblicate: {keep}, da pubblicare. Con «Scarta» "
+                        f"quelle spuntate si perdono e tornano come nell'ultima versione pubblicata del ramo "
+                        f"«{project.current_branch()}» ({base_label}); togli la spunta a quelle da tenere.")
         if pending:
             text += (f" Si perdono anche le modifiche in corso di {pending} "
                      f"{'scheda o vista aperta' if pending == 1 else 'schede o viste aperte'}.")
         intro = QLabel(text)
         intro.setWordWrap(True)
-        changes, changes_layout = card("Modifiche che verranno scartate")
+        changes, changes_layout = card("Modifiche locali" if closing else "Modifiche che verranno scartate")
+        self.view = None
         if self.diff:
-            changes_layout.addWidget(DiffView(self.diff, base_label, WORKING_LABEL), 1)
+            self.view = DiffView(self.diff, base_label, WORKING_LABEL, needs=self.needs,
+                                 linked_text="Si scarta insieme a: ",
+                                 follow_texts=("Da scartare anche, perché collegate (ne dipendono): ",
+                                               "Tenute anche, perché servono a questa: "))
+            changes_layout.addWidget(self.view, 1)
         else:
             changes_layout.addWidget(QLabel("Nessuna modifica alle schede del modello · cambiate le impostazioni "
                                             "condivise del progetto o modifiche ancora in corso.", objectName="muted"))
+        self.chosen_label = QLabel(objectName="muted")
+        self.chosen_label.setWordWrap(True)
+        self.chosen_label.setVisible(False)
+        changes_layout.addWidget(self.chosen_label)
         self.discard_button = QPushButton(icon("mdi6.undo-variant", "#B42318"), "Scarta le modifiche")
         self.discard_button.clicked.connect(self.accept)
+        if self.needs is not None:
+            self.view.selection_changed.connect(self._chosen_changed)
+            self._chosen_changed()
         cancel = QPushButton("Annulla")
         cancel.clicked.connect(self.reject)
         buttons = QHBoxLayout()
         buttons.addStretch()
         buttons.addWidget(cancel)
         buttons.addWidget(self.discard_button)
+        self.save_button = self.leave_button = None
+        if closing and not unsaved:  # always: with nothing to save, the first choice
+            saving = project.is_modified
+            self.leave_button = QPushButton(icon("mdi6.exit-run", *(() if saving else ("white",))),
+                                            "Esci senza scartare")
+            self.leave_button.setToolTip(
+                "Chiude senza salvare e senza scartare: le modifiche non salvate non vengono salvate, quelle locali "
+                "già salvate restano, da pubblicare" if saving else
+                "Chiude senza scartare nulla: le modifiche locali restano, da pubblicare")
+            self.leave_button.clicked.connect(self._leave_chosen)
+            if not saving:
+                primary(self.leave_button)
+                self.leave_button.setDefault(True)
+            buttons.addWidget(self.leave_button)
+        if closing and project.is_modified:
+            self.save_button = primary(QPushButton(icon("mdi6.content-save-outline", "white"), "Salva"))
+            self.save_button.clicked.connect(self._save_chosen)
+            self.save_button.setDefault(True)
+            buttons.addWidget(self.save_button)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
@@ -378,7 +432,32 @@ class DiscardDialog(QDialog):
         if not self.diff:
             layout.addStretch()
         layout.addLayout(buttons)
-        cancel.setFocus()  # what is lost is not recovered
+        (self.save_button or self.leave_button or cancel).setFocus()  # what is lost is not recovered
+
+    def _save_chosen(self):
+        self.save = True
+        self.accept()
+
+    def _leave_chosen(self):
+        self.leave = True
+        self.accept()
+
+    def chosen(self):
+        """The uuids of the changes to discard; None: all of them (the settings shared too)."""
+        if self.needs is None or len(self.view.chosen) == len(self.diff.changes):
+            return None
+        return set(self.view.chosen)
+
+    def _chosen_changed(self):
+        total, chosen = len(self.diff.changes), len(self.view.chosen)
+        kept = total - chosen
+        self.chosen_label.setText(
+            f"Da scartare: {chosen} di {total} modifiche" + (f" · {kept} restano locali, da pubblicare" if kept else "")
+            + " · spuntando una modifica si spuntano anche quelle collegate, che ne dipendono.")
+        self.chosen_label.setVisible(True)
+        self.discard_button.setEnabled(chosen > 0)
+        self.discard_button.setText("Scarta le modifiche" if not kept else
+                                    f"Scarta {chosen} {'modifica' if chosen == 1 else 'modifiche'}")
 
 
 class CompareSide:

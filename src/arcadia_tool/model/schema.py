@@ -6,6 +6,8 @@ but that can be computed from the model (e.g. SA-1 "Funzioni di sistema", SA-2
 """
 from dataclasses import dataclass, field
 
+from arcadia_tool.model import guides
+
 STR = "str"
 TEXT = "text"
 INT = "int"
@@ -23,6 +25,43 @@ NATURES = ("FLOW", "EVENT", "OPERATION")
 SHEET_STATES = ("Bozza", "In revisione", "Approvato")
 ETCS_MODES = ("FS", "LS", "OS", "SR", "SH", "UN", "PS", "SL", "SB", "TR", "PT", "SF", "IS", "NL", "SN", "RV", "NP")
 FUNCTIONS = ("system_function", "logical_function")
+INTERNAL = "Interno"  # the nature of a step of a chain whose data stays in the function (see model.chains)
+# The types of an Exchange Item (SA-6): the coding of an external interface, or a logical data.
+EI_EXTERNAL_IN, EI_EXTERNAL_OUT, EI_LOGICAL = ("Dato di interfaccia esterna (ingresso)",
+                                               "Dato di interfaccia esterna (uscita)", "Dato logico")
+EI_TYPES = (EI_EXTERNAL_IN, EI_EXTERNAL_OUT, EI_LOGICAL)
+# What the nature of an Exchange Item means (B4): shown in the window to choose it.
+NATURE_GUIDE = (
+    "La natura dice <b>come si comporta il dato</b> nel tempo, e quindi quando il produttore lo scrive e come "
+    "l'utilizzatore lo legge."
+    "<ul style='margin-left:-20px'>"
+    "<li><b>FLOW</b>: un valore sempre disponibile, che l'utilizzatore legge quando gli serve; conta l'ultimo "
+    "valore. Prodotto sempre o a ogni variazione. Es. EI-Velocita, EI-ModoCorrente, EI-StatoBanchi.</li>"
+    "<li><b>EVENT</b>: un fatto accaduto in un istante, da non perdere; conta che sia avvenuto. Prodotto su "
+    "evento. Es. EI-EventoAccensione, EI-EsitoTestFreni, EI-ConfermaMacchinista.</li>"
+    "<li><b>OPERATION</b>: una richiesta di azione rivolta a un altro dominio, che la esegue. Prodotta su "
+    "richiesta. Es. EI-RichiestaFrenatura, EI-RichiestaTestAvvio, EI-RichiestaChiusuraSessione.</li></ul>"
+    "Gli scambi funzionali che trasportano il dato ne ereditano la natura (il loro «Tipo»), e la condizione di "
+    "produzione dello scambio deve esserle coerente.<br>"
+    "Non va confuso con il <b>tipo</b>, che dice se il dato è la forma esterna su un'interfaccia o la forma logica "
+    "tra i domini.")
+# What the type of an Exchange Item means: shown in the window to choose it.
+EI_TYPE_GUIDE = (
+    "Il tipo dice se l'Exchange Item è la <b>forma esterna</b> di un dato, come viaggia su un'interfaccia verso un "
+    "attore esterno, o la sua <b>forma logica</b>, come lo usano i domini dentro l'EVC."
+    "<ul style='margin-left:-20px'>"
+    "<li><b>Dato di interfaccia esterna (ingresso)</b>: il dato come arriva da un attore esterno, con la sua "
+    "codifica (SUBSET-034/119, ERA_ERTMS_015560…). Es. EI-CabStatusTIU, prodotto dalla TIU.</li>"
+    "<li><b>Dato di interfaccia esterna (uscita)</b>: il dato come esce verso un attore esterno, con la codifica di "
+    "quell'interfaccia. Es. EI-VelocitaDMI, verso la DMI.</li>"
+    "<li><b>Dato logico</b>: il dato come lo scambiano i domini tra loro, senza codifica. Es. EI-StatoBanchi, "
+    "EI-ModoCorrente.</li></ul>"
+    "Un dato esterno e il dato logico corrispondente sono due Exchange Item distinti: EI-CabStatusTIU arriva al "
+    "dominio dell'interfaccia treno, che lo traduce in EI-StatoBanchi per gli altri domini.<br>"
+    "Non va confuso con la <b>natura</b> (FLOW, EVENT, OPERATION), che dice come si comporta il dato: un valore "
+    "sempre disponibile, un fatto accaduto, una richiesta di azione.")
+EI_SECTION = "Dizionario EI"
+CONTEXT = "Contesto"
 EXCHANGE_ENDS = ("system_function", "logical_function", "external_actor")
 
 
@@ -118,6 +157,9 @@ class Column:
     # Chosen in a list computed from the element (the name of the function in model.adr.CHOICES): e.g. the SRS
     # items of the domain split by an ADR, or the resulting domains written above.
     choices: str = ""
+    # Computed from the row, shown read-only and not saved: the name of the function in model.chains.STEP_COMPUTED
+    # (e.g. the domain of the function of a step of a chain).
+    computed: str = ""
 
 
 @dataclass(frozen=True)
@@ -156,11 +198,17 @@ class Field:
     # Computed from the other fields of the element, shown read-only and not saved: the name of the function in
     # model.adr.COMPUTED (e.g. the SRS items of the domains merged by an ADR).
     computed: str = ""
+    # What the field means and how to choose its value (rich text): shown in the window to choose it (e.g. the type
+    # of an Exchange Item).
+    guide: str = ""
     # Shown only when another field of the element has one of these values: (field, (values…)), e.g. the fields
     # of a type of ADR.
     when: tuple = ()
     # Another label for some types of ADR: ((type, label)…), e.g. the clauses of a request of allocation.
     labels: tuple = ()
+    # A TABLE whose rows have a stable identifier (ROW_KEY, kept by the tool, not shown): the views refer to a
+    # row by it, not by its position (e.g. the steps of a chain, inserted and moved).
+    row_key: bool = False
 
     def applies(self, element):
         """The field belongs to the element as it is (see `when`)."""
@@ -202,6 +250,14 @@ DIAGRAM_CHAIN = "Catena funzionale"
 DIAGRAM_SCENARIO = "Scenario di scambio"
 DIAGRAM_TYPES = (DIAGRAM_BREAKDOWN, DIAGRAM_FUNCTIONS, DIAGRAM_DATAFLOW, DIAGRAM_CHAIN, DIAGRAM_SCENARIO)
 DIAGRAM_LEVELS = ("Per dominio", "Per funzione")
+# How a dataflow is drawn: its elements and the arrows between them, or swimlanes with the data exchanged.
+GRAPH, SWIMLANES = "Grafo", "Swimlane"
+DATAFLOW_DRAWINGS = (GRAPH, SWIMLANES)
+# How a view of a chain is drawn: its path (the steps, the arrows between them), or its scenario of exchange
+# (the lifelines, the messages from top to bottom). Up to 0.14 the scenario was a view of its own (DIAGRAM_SCENARIO,
+# migrated: see storage.project).
+PATH, SCENARIO = "Percorso", "Scenario"
+CHAIN_DRAWINGS = (PATH, SCENARIO)
 
 
 # Decision questions of activity B5 and schemes of B6, worded as in the templates (SA-3 and SA-4). Projects
@@ -241,8 +297,8 @@ def derived_value(model, element, field):
     return target.get(source) if target is not None else None
 
 
-def _common_status(options=SHEET_STATES):
-    return Field("status", "Stato", ENUM, options, significant=True)
+def _common_status(options=SHEET_STATES, guide=""):
+    return Field("status", "Stato", ENUM, options, significant=True, guide=guide)
 
 
 KINDS = (
@@ -277,26 +333,29 @@ KINDS = (
     )),
     # Columns of the SA-3 register, in its order, in one card of the sheet.
     Kind("trace_record", "Esito di tracciatura", "Registro di tracciabilità", "sa/trace", "Requisiti", "SA-3", "", (
-        Field("requirement", "ID voce", REF, ref_kinds=("requirement",), section=TRACE_SECTION, picker=True),
+        Field("requirement", "ID voce", REF, ref_kinds=("requirement",), section=TRACE_SECTION, picker=True,
+              guide=guides.TR_ITEM),
         Field("category", "Categoria cap. 9", STRLIST, derived_from=("requirement", "category"), stored=False,
-              section=TRACE_SECTION),
+              section=TRACE_SECTION, guide=guides.TR_CATEGORY),
         # One or more: an item can be realized by several functions, each of them primary (saved by earlier
         # versions as one «primary_function», see Project._migrate).
         Field("primary_functions", "Funzioni primarie", REFS, ref_kinds=FUNCTIONS, significant=True,
-              section=TRACE_SECTION),
-        Field("secondary_functions", "Funzioni secondarie", REFS, ref_kinds=FUNCTIONS, section=TRACE_SECTION),
+              section=TRACE_SECTION, guide=guides.TR_PRIMARY),
+        Field("secondary_functions", "Funzioni secondarie", REFS, ref_kinds=FUNCTIONS, section=TRACE_SECTION,
+              guide=guides.TR_SECONDARY),
         # Name kept from the first version (it held only Exchange Items): saved projects stay valid.
         Field("exchange_items", "Derivati / dizionario", REFS, ref_kinds=("derived_requirement", "exchange_item"),
-              section=TRACE_SECTION),
-        Field("b5_question", "Domanda B5 decisiva", ENUM, B5_QUESTIONS, significant=True, section=TRACE_SECTION),
+              section=TRACE_SECTION, guide=guides.TR_DERIVED),
+        Field("b5_question", "Domanda B5 decisiva", ENUM, B5_QUESTIONS, significant=True, section=TRACE_SECTION,
+              guide=guides.TR_B5),
         Field("outcome", "Esito", ENUM, (
             "Non tracciata", "Ipotesi d'ambiente / dato atteso", "Tracciata al dizionario",
             "Scomposta in requisiti derivati", "Collegata alla voce nominale", "Tracciata a funzione",
             "Coperta dalla clausola inclusa"),
-            significant=True, section=TRACE_SECTION),
-        Field("notes", "Note", TEXT, section=TRACE_SECTION),
-        Field("adrs", "ADR", REFS, ref_kinds=("adr",), section=TRACE_SECTION),
-        _common_status(("Da analizzare", "Proposto", "Rivisto", "Approvato")),
+            significant=True, section=TRACE_SECTION, guide=guides.TR_OUTCOME),
+        Field("notes", "Note", TEXT, section=TRACE_SECTION, guide=guides.TR_NOTES),
+        Field("adrs", "ADR", REFS, ref_kinds=("adr",), section=TRACE_SECTION, guide=guides.TR_ADRS),
+        _common_status(("Da analizzare", "Proposto", "Rivisto", "Approvato"), guides.TR_STATUS),
     )),
     Kind("derived_requirement", "Requisito derivato", "Requisiti derivati", "sa/derived", "Requisiti", "SA-4",
          "<voce>-Dn", (
@@ -315,107 +374,120 @@ KINDS = (
         _common_status(("Proposto", "Rivisto", "Approvato")),
     )),
     Kind("domain", "Dominio funzionale", "Domini funzionali", "sa/domains", "System Analysis", "SA-1", "DFnn", (
-        Field("id", "ID"),
-        Field("name", "Nome"),
-        Field("mission", "Missione", TEXT),
+        Field("id", "ID", guide=guides.DF_ID),
+        Field("name", "Nome", guide=guides.DF_NAME),
+        Field("mission", "Missione", TEXT, guide=guides.DF_MISSION),
         # «Include» and «Esclude» were removed: values saved by earlier versions are kept in the files.
-        Field("team", "Team assegnatario", REF, ref_kinds=("team",), section="Identificazione"),
+        Field("team", "Team assegnatario", REF, ref_kinds=("team",), section="Identificazione", guide=guides.DF_TEAM),
         # A member of the team assigned, chosen in the sheet (the referent of the team when the team is assigned): who
         # answers for the domain, notified of what concerns it (see model.notifications).
-        Field("referent", "Referente", members_of="team"),
-        Field("planned_components", "Componenti logici previsti", REFS, ref_kinds=("logical_component",)),
+        Field("referent", "Referente", members_of="team", guide=guides.DF_REFERENT),
+        Field("planned_components", "Componenti logici previsti", REFS, ref_kinds=("logical_component",),
+              guide=guides.DF_COMPONENTS),
         # Linked by hand by earlier versions: now among the ADR about the domain (see related_adrs).
         Field("adrs", "Decisioni collegate", REFS, ref_kinds=("adr",), hidden=True),
         Field("related_adrs", "Decisioni architetturali (ADR)", REFS, ref_kinds=("adr",), stored=False,
-              computed="related_adrs"),
-        _common_status(),
+              computed="related_adrs", guide=guides.DF_ADRS),
+        _common_status(guide=guides.SHEET_STATUS),
     )),
     Kind("system_function", "Funzione di sistema", "Funzioni di sistema", "sa/functions", "System Analysis", "SA-2",
          "SF-DFnn-mm", (
-        Field("id", "ID"),
-        Field("name", "Nome (verbo + oggetto)"),
-        Field("domain", "Dominio", REF, ref_kinds=("domain",), significant=True),
-        Field("description", "Descrizione", TEXT),
+        Field("id", "ID", guide=guides.SF_ID),
+        Field("name", "Nome (verbo + oggetto)", guide=guides.SF_NAME),
+        Field("domain", "Dominio", REF, ref_kinds=("domain",), significant=True, guide=guides.SF_DOMAIN),
+        Field("description", "Descrizione", TEXT, guide=guides.SF_DESCRIPTION),
         # Shown and edited in the traceability card of the sheet, with the derived requirements of the function.
         Field("sections", "Sezioni SRS", REFS, ref_kinds=("requirement",), hidden=True),
-        Field("rows_452", "Righe 4.5.2", STRLIST),
-        Field("proposed_component", "Componente logico proposto", REF, ref_kinds=("logical_component",)),
-        Field("is_new", "Funzione nuova", BOOL),
-        Field("new_reason", "Motivo", TEXT),
-        Field("notes", "Note e decisioni", TEXT),
+        Field("rows_452", "Righe 4.5.2", STRLIST, guide=guides.SF_ROWS),
+        Field("proposed_component", "Componente logico proposto", REF, ref_kinds=("logical_component",),
+              guide=guides.SF_COMPONENT),
+        Field("is_new", "Funzione nuova", BOOL, guide=guides.SF_NEW),
+        Field("new_reason", "Motivo", TEXT, guide=guides.SF_REASON),
+        Field("notes", "Note e decisioni", TEXT, guide=guides.SF_NOTES),
         # Linked by hand by earlier versions: now among the ADR about the function (see related_adrs).
         Field("adrs", "ADR", REFS, ref_kinds=("adr",), hidden=True),
         Field("related_adrs", "Decisioni architetturali (ADR)", REFS, ref_kinds=("adr",), stored=False,
-              computed="related_adrs"),
+              computed="related_adrs", guide=guides.SF_ADRS),
         # Imported from the SA-2 catalogue in Excel (its ID there is not kept: ATLAS gives its own); a re-import
         # deletes it if no longer there.
         Field("imported", "Importata dal catalogo SA-2", BOOL, hidden=True),
-        _common_status(("Proposta", "Rivista", "Approvata")),
+        _common_status(("Proposta", "Rivista", "Approvata"), guides.SF_STATUS),
     )),
     Kind("external_actor", "Attore esterno", "Attori esterni", "sa/actors", "System Analysis", "", "", (
         Field("id", "ID"),
         Field("name", "Nome"),
         Field("description", "Descrizione", TEXT),
     )),
+    # As the dictionary of the Exchange Items (SA-6): the producer and the users are read from the exchanges.
     Kind("exchange_item", "Exchange Item", "Exchange Item", "sa/exchange-items", "System Analysis", "SA-6",
          "EI-nome", (
-        Field("id", "ID"),
-        Field("name", "Nome"),
-        Field("type", "Tipo", ENUM, ("Messaggio", "Pacchetto", "Variabile", "Dato logico")),
-        Field("nature", "Natura", ENUM, NATURES, significant=True),
-        Field("meaning", "Significato", TEXT),
-        Field("srs_origin", "Origine SRS"),
-        Field("elements", "Elementi (variabili cap. 7)", TABLE, columns=(
-            Column("variable", "Variabile"), Column("description", "Descrizione"),
-            Column("unit", "Unità"), Column("range", "Campo"), Column("resolution", "Risoluzione"))),
-        Field("notes", "Note", TEXT),
-        _common_status(),
+        Field("id", "ID", section=EI_SECTION, guide=guides.EI_ID),
+        Field("name", "Nome", section=EI_SECTION, guide=guides.EI_NAME),
+        Field("nature", "Natura", ENUM, NATURES, significant=True, section=EI_SECTION, guide=NATURE_GUIDE),
+        # «Messaggio», «Pacchetto», «Variabile», «Significato» and the table of the elements (variables of chapter 7)
+        # were removed: values saved by earlier versions are kept in the files.
+        Field("type", "Tipo", ENUM, EI_TYPES, section=EI_SECTION, guide=EI_TYPE_GUIDE),
+        Field("content", "Elementi", TEXT, section=EI_SECTION, guide=guides.EI_CONTENT),
+        Field("srs_origin", "Origine o specifica", section=EI_SECTION, guide=guides.EI_ORIGIN),
+        Field("producer", "Produttore", REFS, ref_kinds=EXCHANGE_ENDS, stored=False, computed="item_producer",
+              section=EI_SECTION, guide=guides.EI_PRODUCER),
+        Field("users", "Utilizzatori", REFS, ref_kinds=EXCHANGE_ENDS, stored=False, computed="item_users",
+              section=EI_SECTION, guide=guides.EI_USERS),
+        Field("notes", "Note", TEXT, section=EI_SECTION, guide=guides.EI_NOTES),
+        _common_status(guide=guides.SHEET_STATUS),
     )),
     Kind("functional_exchange", "Scambio funzionale", "Scambi funzionali", "sa/exchanges", "System Analysis", "SA-5",
          "FE-DFaa-DFbb-nn", (
-        Field("id", "ID scambio"),
-        Field("name", "Nome"),
-        Field("source", "Produttore", REF, ref_kinds=EXCHANGE_ENDS, significant=True),
-        Field("target", "Utilizzatore", REF, ref_kinds=EXCHANGE_ENDS, significant=True),
-        Field("exchange_item", "Dato di interfaccia", REF, ref_kinds=("exchange_item",), significant=True),
-        Field("nature", "Natura", ENUM, NATURES),
+        Field("id", "ID scambio", guide=guides.FE_ID),
+        Field("name", "Nome", guide=guides.FE_NAME),
+        Field("source", "Produttore", REF, ref_kinds=EXCHANGE_ENDS, significant=True, guide=guides.FE_SOURCE),
+        Field("target", "Utilizzatore", REF, ref_kinds=EXCHANGE_ENDS, significant=True, guide=guides.FE_TARGET),
+        Field("exchange_item", "Dato di interfaccia", REF, ref_kinds=("exchange_item",), significant=True,
+              guide=guides.FE_ITEM),
+        # The nature of the data carried, copied from the Exchange Item (and kept in step with it).
+        Field("nature", "Tipo", ENUM, NATURES, derived_from=("exchange_item", "nature"), guide=guides.FE_NATURE),
         Field("production_condition", "Condizione di produzione", ENUM,
-              ("Sempre", "A ogni variazione", "Su evento", "Su richiesta")),
-        Field("clauses", "Clausole", REFS, ref_kinds=("requirement",)),
-        Field("producer_agreement", "Accordo del produttore"),
-        Field("consumer_agreement", "Accordo dell'utilizzatore"),
-        _common_status(("Proposto", "Concordato", "Approvato")),
+              ("Sempre", "A ogni variazione", "Su evento", "Su richiesta"), guide=guides.FE_CONDITION),
+        Field("clauses", "Clausole", REFS, ref_kinds=("requirement",), guide=guides.FE_CLAUSES),
+        # «Accordo del produttore» and «Accordo dell'utilizzatore» were removed: the state says whether the exchange
+        # is agreed (values saved by earlier versions are kept in the files).
+        _common_status(("Proposto", "Concordato", "Approvato"), guides.FE_STATUS),
     )),
+    # As the sheet of a chain (SA-7) up to the exchanges used: «Incremento», «Procedura o sezione SRS», «Capability
+    # operativa», «Decisioni collegate», the
+    # variants, the decision on the metrics, the oracle and the integration test were removed (values saved by
+    # earlier versions are kept in the files).
     Kind("functional_chain", "Functional chain", "Functional chain", "sa/chains", "System Analysis", "SA-7",
          "FC-nome", (
-        Field("id", "ID"),
-        Field("title", "Titolo"),
-        Field("capability", "Capability operativa"),
-        Field("procedure", "Procedura o sezione SRS"),
-        Field("responsible_domain", "Dominio responsabile", REF, ref_kinds=("domain",)),
-        Field("adrs", "Decisioni collegate", REFS, ref_kinds=("adr",)),
-        Field("trigger", "Trigger", TEXT),
-        Field("final_effect", "Effetto osservabile finale", TEXT),
-        Field("preconditions", "Precondizioni", TEXT),
-        Field("postconditions", "Postcondizioni", TEXT),
-        Field("out_of_scope", "Fuori ambito", TEXT),
-        Field("steps", "Percorso", TABLE, columns=(
+        Field("id", "ID", section="Identificazione", guide=guides.FC_ID),
+        Field("title", "Titolo", section="Identificazione", guide=guides.FC_TITLE),
+        # The domains of the system functions of the path (always), and the others ticked in its window. They
+        # replace «Dominio responsabile» (values saved by earlier versions are kept in the files).
+        Field("domains", "Domini coinvolti", REFS, ref_kinds=("domain",), section="Identificazione",
+              guide=guides.FC_DOMAINS),
+        Field("startable", "Avviabilità", section="Identificazione", guide=guides.FC_STARTABLE),
+        Field("trigger", "Trigger", TEXT, section=CONTEXT, guide=guides.FC_TRIGGER),
+        Field("final_effect", "Effetto osservabile finale", TEXT, section=CONTEXT, guide=guides.FC_EFFECT),
+        Field("preconditions", "Precondizioni", TEXT, section=CONTEXT, guide=guides.FC_PRECONDITIONS),
+        Field("postconditions", "Postcondizioni", TEXT, section=CONTEXT, guide=guides.FC_POSTCONDITIONS),
+        Field("out_of_scope", "Fuori ambito", TEXT, section=CONTEXT, guide=guides.FC_OUT_OF_SCOPE),
+        Field("steps", "Percorso", TABLE, guide=guides.FC_STEPS, row_key=True, columns=(
+            Column("number", "#", computed="step_number"),
             Column("cycle", "Ciclo"),
+            Column("domain", "Dominio", computed="step_domain"),
             Column("function", "Funzione SF", REF, ref_kinds=FUNCTIONS),
+            Column("function_name", "Nome funzione", computed="function_name"),
             Column("what", "Cosa fa"),
+            Column("input", "Ingresso", REF, ref_kinds=("functional_exchange",)),
             Column("data", "Dato prodotto"),
-            Column("nature", "Natura", ENUM, options=NATURES),
-            Column("exchange", "Scambio", REF, ref_kinds=("functional_exchange",)),
-            Column("srs", "Voci SRS"),
-            Column("component", "Componente logico", REF, ref_kinds=("logical_component",)))),
-        Field("variants", "Varianti", TABLE, columns=(
-            Column("variant", "Variante"),
-            Column("type", "Tipo", ENUM, options=("Exchange Scenario", "Chain distinta")),
-            Column("difference", "Differenza dal nominale"), Column("srs", "Voci SRS"))),
-        Field("decision", "Decisione (metriche)", TEXT),
-        Field("oracle", "Oracolo", TEXT),
-        Field("integration_test", "Caso di test di integrazione", TEXT),
-        _common_status(),
+            Column("nature", "Natura", ENUM, options=(*NATURES, INTERNAL)),
+            Column("exchange", "Scambio in uscita", REF, ref_kinds=("functional_exchange",)),
+            Column("srs", "Voci SRS"))),
+        Field("used_exchanges", "Scambi usati", TABLE, stored=False, computed="used_exchanges",
+              guide=guides.FC_USED, columns=(
+            Column("exchange", "ID scambio"), Column("source", "Produttore"), Column("target", "Utilizzatore"),
+            Column("data", "Dato"), Column("nature", "Natura"), Column("type", "Tipo"), Column("status", "Stato"))),
+        _common_status(guide=guides.SHEET_STATUS),
     )),
     Kind("logical_function", "Funzione logica", "Funzioni logiche", "la/functions", "Logical Architecture", "LA-2",
          "LF-DFnn-mm-kk", (
@@ -738,6 +810,9 @@ KINDS = (
         # Catena funzionale and scenario: the chain whose steps are shown.
         Field("chain", "Functional chain", REF, ref_kinds=("functional_chain",)),
         Field("level", "Livello", ENUM, DIAGRAM_LEVELS),
+        # Dataflow: drawn as a graph or as swimlanes (see model.diagrams.dataflow_lanes); a chain: its path or its
+        # scenario of exchange.
+        Field("drawing", "Disegno", ENUM, DATAFLOW_DRAWINGS + CHAIN_DRAWINGS, hidden=True),
         # What the view shows and where: {uuid of an element (or «step:n» of the chain): "x,y"}. A text and not a
         # pair of numbers: the three-way merge takes a position as a whole.
         Field("layout", "Elementi e posizioni", MAP, hidden=True),

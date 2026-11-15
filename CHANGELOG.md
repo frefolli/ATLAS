@@ -6,6 +6,198 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.15.0] - 2026-11-15
+
+### Aggiunto
+- **Catena funzionale composta nella vista grafica.** In «Viste grafiche», clic destro su «SA-7 Catene funzionali» →
+  «Nuova catena funzionale…»: chiede il titolo (l'ID FC-… si vede mentre lo scrivi) e crea la functional chain con
+  la sua vista; si apre la vista della catena, vuota.
+  - Una funzione di sistema trascinata sulla tela (o con un doppio clic nell'elenco) è un nuovo passo del
+    «Percorso»: ATLAS chiede «Cosa fa» e il ciclo. Rilasciata sulla freccia tra due passi, va tra di loro.
+  - Con un connettore di «Strumenti», da un passo al successivo: lo scambio tra le loro funzioni (uno già nel
+    modello, scelto, o uno nuovo con il suo dato) diventa lo «Scambio in uscita» del primo e l'«Ingresso» del
+    secondo, con «Dato prodotto» e «Natura» dal suo Exchange Item. Da un attore esterno a un passo: il trigger.
+  - Clic destro su un passo: modifica «Cosa fa» e ciclo, dato interno al dominio, attesa dopo il passo, sposta
+    prima o dopo, togli dalla vista, togli dal percorso. Clic destro sulla freccia: apri lo scambio o toglilo dal
+    percorso.
+  - Nel pannello di destra delle viste di catena e di scenario, una scheda «Passi» (icona dell'elenco numerato)
+    elenca i passi del percorso raggruppati per ciclo, con le attese tra un ciclo e l'altro. Un clic seleziona il
+    passo nella vista, un doppio clic lo modifica e il clic destro apre il suo menu. I passi tolti dalla vista
+    restano in elenco, in grigio. Una vista con passi si apre su questa scheda.
+  - Nella scheda «Passi» i passi si trascinano. Sopra o sotto un altro passo dello stesso ciclo ne cambia l'ordine;
+    su un passo di un altro ciclo, o sull'intestazione «Ciclo N», il passo prende quel ciclo. Sopra un'attesa va in
+    fondo al ciclo prima, sotto va all'inizio del ciclo dopo. Ctrl+Z annulla lo spostamento. Vale anche nello
+    scenario di scambio: lì la scheda «Passi» ha lo stesso trascinamento e lo stesso menu dei passi, mentre la tela
+    non compone il percorso.
+  - La freccia tra due passi si seleziona con un clic e si colora al passaggio del mouse. Ha la manina e un
+    suggerimento che ricorda il clic destro.
+  - «Inverti il verso» sulla freccia mette il secondo passo prima del primo. Gli scambi che non vanno più nel verso
+    dei passi escono dal percorso (restano nel modello): quello tra i due passi e quelli con i passi vicini. Se i due
+    passi erano collegati da uno scambio, ATLAS chiede quello nel verso nuovo, già nel modello o nuovo; con «Annulla»
+    restano senza scambio.
+  - Ogni modifica va subito nella scheda SA-7 (aperta, si aggiorna) e nello scenario della catena; Ctrl+Z la
+    annulla.
+- **Eliminando una functional chain si elimina anche la sua vista grafica**: la conferma le elenca, spariscono da «Viste grafiche» e le loro schede aperte si chiudono. Prima
+  restavano, con l'avviso «La functional chain della vista non è più nel modello».
+- **Interfacce tra domini (SA-5), generate dal modello.** In «Viste grafiche», sotto «SA-5 Dataflow funzionali», ci
+  sono due viste sempre aggiornate, che non vanno create né salvate.
+  - **Matrice delle interfacce:** righe chi produce, colonne chi usa (i domini, poi gli attori esterni). In ogni cella
+    ci sono i dati scambiati, sulla diagonale gli scambi interni al dominio. La cella è verde se tutti gli scambi sono
+    concordati e arancione se qualcuno è da concordare; il suggerimento elenca scambi, dati e stati. In alto c'è il
+    conteggio di interfacce, scambi, scambi da concordare e scambi senza dato. Il doppio clic su una cella apre lo
+    scambio, su un dominio apre la sua vista di contesto.
+  - **Contesto di un dominio**, una voce per dominio: le sue funzioni al centro, a sinistra chi gli invia dati, a
+    destra chi li riceve soltanto, con i soli scambi del dominio. Si apre anche con il clic destro su un dominio, nel
+    Modello e nelle viste («Apri la vista di contesto»). Si ridisegna quando il modello cambia e si può vedere anche
+    a swimlane.
+  - Le viste dataflow create dagli utenti sono raccolte a parte, nel gruppo «Viste utente» sotto «Contesto di un
+    dominio». La ricerca delle viste cerca anche dentro i gruppi annidati.
+- **Stato degli scambi sulle frecce.** Nei dataflow (grafo e swimlane), nelle viste di contesto e negli scenari:
+  - una freccia è arancione, con «da concordare» accanto all'ID, finché lo scambio non è «Concordato» o «Approvato»;
+  - uno scambio senza Exchange Item mostra «(dato da definire)» in grigio;
+  - una legenda sotto la barra della vista spiega i colori.
+- **Dataflow a swimlane.** Nella barra di una vista dataflow, «Grafo / Swimlane» sceglie il disegno, salvato con la
+  vista.
+  - A swimlane c'è una corsia per dominio o per funzione («Per dominio / Per funzione») e una per attore esterno,
+    nell'ordine da sinistra a destra che gli elementi hanno nel grafo.
+  - Tra le corsie, una freccia per ogni scambio, con il dato scambiato (l'Exchange Item) e l'ID dello scambio,
+    nell'ordine degli ID. Uno scambio interno a una corsia è un piccolo anello, e il doppio clic sulla freccia apre lo
+    scambio.
+  - Gli elementi si aggiungono e si tolgono come nel grafo; gli scambi nuovi si creano con i connettori del grafo.
+- **Modifiche locali, in ordine cronologico** (pulsante «Modifiche Locali» prima di «Versioni Modello», menu
+  Versioni, Ctrl+Alt+Z). Una finestra elenca le modifiche non ancora pubblicate, una per azione: una scheda salvata,
+  un elemento creato o eliminato, una vista cambiata, con gli altri elementi cambiati insieme. A destra si vede il
+  dettaglio, campo per campo.
+  - «Scarta l'ultima modifica» riporta i suoi elementi com'erano; «Ripristina l'ultima scartata» li rifà.
+  - Si può anche scegliere una modifica precedente: «Scarta la selezionata» la scarta insieme alle modifiche
+    successive collegate. Sono collegate le modifiche sugli stessi elementi, quelle su elementi che lei crea o elimina
+    e quelle che danno lo stesso ID a elementi diversi. Prima di scartarle, la finestra le evidenzia e le elenca.
+  - Una modifica scartata si ripristina con «Ripristina la selezionata», insieme alle modifiche scartate precedenti
+    che le servono.
+  - Una modifica nuova sugli stessi elementi di una scartata rende definitivo lo scarto: quella scartata esce
+    dall'elenco.
+  - L'elenco resta con il progetto salvato, anche tra una sessione e l'altra, fino alla pubblicazione. Le modifiche
+    fatte prima, o prima di ricevere una versione, sono la prima voce, «Modifiche precedenti».
+  - Ctrl+Z resta l'annullamento immediato nelle viste grafiche e nei campi di testo.
+- **Scartare solo alcune modifiche locali.** In «Scarta le modifiche locali» ogni modifica ha la sua spunta; all'apertura
+  sono tutte spuntate (si scarta tutto, come prima). Spuntando una modifica si spuntano anche quelle collegate che non
+  reggerebbero senza di lei: scartando un dominio nuovo si scartano anche le funzioni aggiunte in quel dominio. Togliendo
+  la spunta si tengono anche le modifiche che le servono. Le modifiche non spuntate restano locali, da pubblicare; le
+  impostazioni condivise del progetto si scartano solo scartando tutto.
+- **I passi del percorso hanno un identificativo stabile.** Le viste riconoscono un passo da quello, non più dalla
+  sua posizione: inserire, spostare o togliere un passo non scambia i riquadri. I progetti esistenti si aggiornano
+  da soli all'apertura; l'identificativo non si vede nella scheda né nel confronto tra versioni.
+
+### Modificato
+- **Chiusura con modifiche locali in un passaggio.** Chiudendo il progetto (o aprendone un altro) si apre subito la
+  finestra delle modifiche locali: tutte quelle non pubblicate, salvate o no. Prima c'era una domanda
+  Save/Discard/Cancel e, con Discard, una seconda finestra che mostrava solo quelle non salvate.
+  - «Salva» (la scelta proposta) le salva e le tiene, da pubblicare.
+  - «Scarta le modifiche» le perde davvero, anche quelle già scritte su disco (per esempio i passi composti nelle
+    viste delle catene): il progetto torna all'ultima versione pubblicata del ramo. Con le spunte si scartano solo
+    quelle scelte, insieme alle modifiche collegate; le altre restano locali.
+  - «Esci senza scartare» chiude senza scartare nulla: le modifiche locali già salvate restano, da pubblicare;
+    quelle non salvate non vengono salvate. Se è già tutto salvato è la scelta proposta, al posto di «Salva».
+  - Un progetto mai pubblicato perde le modifiche non salvate, come prima.
+- **Viste grafiche distinte per tipo negli elenchi delle modifiche** (chiusura del progetto, scarta,
+  pubblica, confronta, ricevi): sotto «Viste grafiche» un gruppo per tipo, con i nomi dei gruppi dell'albero (SA-5 Dataflow funzionali,
+  SA-7 Catene funzionali…). Con le spunte, quella di un gruppo spunta o toglie tutte le sue viste.
+- In «Viste grafiche» il gruppo «SA-2 Funzioni per dominio» si chiama ora «SA-2 Funzioni di sistema».
+- **Una sola vista per catena (SA-7), disegnata come percorso o come scenario.** Il gruppo «SA-7 Scenari di
+  scambio» non c'è più: in «SA-7 Catene funzionali» c'è una voce per catena, con ID, numero di passi e domini
+  attraversati nel suggerimento.
+  - Nella barra della vista, «Percorso» o «Scenario» cambia il disegno senza riaprire nulla. Passi, cicli, livello,
+    scheda «Passi» e passo selezionato restano gli stessi; le posizioni del percorso si conservano. Il disegno
+    scelto si salva con la vista.
+  - Nello scenario i messaggi si selezionano con un clic, come i passi del percorso. La tela dello scenario non
+    compone il percorso: i passi si cambiano dalla scheda «Passi».
+  - «Affianca lo scenario» mostra lo scenario accanto al percorso, ridisegnato a ogni modifica. La scelta è
+    dell'utente e vale per tutte le catene.
+  - All'apertura di un progetto, gli scenari delle versioni precedenti si uniscono alla vista della loro catena
+    quando mostrano gli stessi passi allo stesso livello. Gli altri (per esempio uno scenario per funzione) restano
+    come viste della catena disegnate come scenario, sotto una voce con il nome della catena. Quelli di catene non
+    più nel modello si eliminano. La barra di stato riporta cosa è cambiato; la modifica va salvata e pubblicata
+    come le altre.
+- **I passi di una catena sono collegati solo da uno scambio.** Due passi uno dopo l'altro possono essere azioni
+  indipendenti. Una freccia li unisce solo se lo «Scambio in uscita» del primo è l'«Ingresso» del secondo, o arriva
+  alla sua funzione. Senza scambio, la vista della catena non disegna frecce tra i due passi e lo scenario mostra
+  l'azione sulla linea di vita della sua funzione (o del suo dominio), invece di farla arrivare al passo dopo.
+  L'ordine resta quello del numero del passo. Una funzione rilasciata tra due passi indipendenti va comunque tra di
+  loro.
+- **Pannello di sinistra più stretto** (280 px invece di 420), nel «Modello» e nelle «Viste grafiche». La larghezza
+  salvata in precedenza si azzera una volta; poi il pannello si può di nuovo allargare trascinando il divisore. Nelle «Viste grafiche» la dicitura «tutto il
+  modello» delle viste complessive è passata nel suggerimento, così i nomi delle viste restano leggibili.
+- **Scheda della functional chain (SA-7) come le schede delle catene degli incrementi.** Contiene identificazione,
+  contesto, percorso e scambi usati, e niente dopo: tolti procedura o sezione SRS, capability operativa, decisioni
+  collegate, varianti, decisione sulle metriche, oracolo e caso di test.
+  - «Domini coinvolti» sostituisce dominio responsabile e domini coinvolti. È un'area con i domini delle funzioni
+    del percorso, che entrano da soli mentre si compilano i passi. Con «Seleziona» una finestra con le caselle di
+    spunta aggiunge gli altri domini coinvolti. Quelli delle funzioni del percorso restano sempre.
+  - Nuovo campo: «Avviabilità».
+  - Calcolati dal tool, nel percorso: il numero del passo, il dominio e il nome della funzione.
+  - Il percorso ha la colonna «Ingresso» (lo scambio ricevuto). «Scambio in uscita» sostituisce «Scambio» e la
+    colonna del componente logico è tolta. La natura di un passo può essere «Interno».
+  - La tabella «Scambi usati» si ricava dai passi: ID, produttore, utilizzatore, dato, natura, tipo (tra domini o
+    con attore esterno) e stato di ogni scambio.
+- **Scheda dell'Exchange Item (SA-6) come il dizionario EI.** Ha ID, nome, natura, tipo, elementi, origine o
+  specifica, produttore, utilizzatori, note e stato.
+  - Il tipo è «Dato di interfaccia esterna (ingresso)», «Dato di interfaccia esterna (uscita)» o «Dato logico».
+  - Gli elementi sono un testo. Produttore e utilizzatori si leggono dagli scambi che trasportano il dato.
+  - Tolti il significato e la tabella delle variabili del capitolo 7.
+  - Natura, tipo e stato si scelgono con un pulsante che apre una finestra, senza elenchi a discesa. Nella
+    finestra del «Tipo» c'è una breve guida: forma esterna (ingresso o uscita) e forma logica di un dato, con
+    esempi, e la differenza con la natura. In quella della «Natura» c'è il significato di FLOW, EVENT e OPERATION,
+    con la condizione di produzione attesa e degli esempi.
+- **Scheda dello scambio funzionale (SA-5).**
+  - Tolti accordo del produttore e accordo dell'utilizzatore: lo stato dice se lo scambio è concordato.
+  - «Natura» si chiama «Tipo» e si eredita dall'Exchange Item indicato nel dato di interfaccia. Non si scrive a
+    mano e segue i cambi dell'Exchange Item.
+- **Guida ai campi delle schede SA-1, SA-2, SA-3, SA-5, SA-6 e SA-7.** Ogni campo, ogni tabella e lo stato hanno a sinistra un «?»
+  cerchiato: passandoci sopra, o con un clic, dice che cosa significa e come compilarlo (convenzioni della
+  metodologia, esempi dalle catene dell'incremento I1, controlli che lo riguardano).
+- **Il pannello di sinistra non si restringe più aprendo una vista.** La barra sopra una vista chiedeva tutta la
+  larghezza del suo testo e il divisore schiacciava il pannello «Modello» / «Viste grafiche» al minimo; ora titolo e
+  suggerimento si accorciano (testo intero nel tooltip) e il pannello tiene la sua larghezza.
+- **Viste grafiche allineate alle schede.**
+  - Nelle viste di catena e di scenario i passi hanno il numero della colonna «#» del percorso, e le righe di
+    attesa non sono più disegnate come passi.
+  - Il dominio di un passo si legge anche da una funzione logica.
+  - Lo scenario disegna lo scambio in «Ingresso» di un passo quando non arriva dal passo precedente (per esempio il
+    trigger da un attore esterno). Un dato «Interno» resta sulla linea di vita della sua funzione.
+  - Passando sopra un passo della catena compare la sua riga del percorso, colonna per colonna.
+  - Nel dataflow e nello scenario il dato di uno scambio è indicato con l'ID dell'Exchange Item, come nelle schede.
+- **Documenti e template SA-5, SA-6 e SA-7** con la stessa struttura delle schede.
+- **Eliminazione di un dominio.** Da una functional chain il dominio eliminato si toglie dai domini coinvolti.
+- **Controlli.** Tolti SA6-05 e SA6-06 (variabili del capitolo 7), SA7-14 (componente del passo) e SA7-16 (varianti,
+  oracolo, test). Tolto anche SA5-07 (natura dello scambio diversa da quella dell'Exchange Item), perché ora è la
+  stessa.
+  - SA6-04 segnala gli Exchange Item di interfaccia esterna senza elementi.
+  - SA7-12 cerca le ADR che citano la catena.
+  - SA7-13 segnala una chain senza domini coinvolti.
+  - SA7-15 vale per le chain tra i cui domini coinvolti c'è il dominio delle procedure.
+  - SA5-11 segnala solo gli scambi tra domini non ancora concordati.
+- I valori dei campi tolti, salvati da versioni precedenti, restano nei file.
+- **ID di Exchange Item e functional chain come nella metodologia.** L'ID si forma dal nome (dal titolo per una
+  catena) senza articoli, preposizioni e congiunzioni: «Evento di accensione» → EI-EventoAccensione, «Isolamento
+  dell'EVC» → FC-IsolamentoEVC.
+  - In una scheda nuova l'ID compare mentre si scrive il nome e lo segue fino al primo salvataggio. Prima compariva
+    solo dopo il salvataggio.
+  - Gli ID già assegnati non cambiano.
+  - Exchange Item e functional chain sono indicati con il solo ID (l'ID contiene già il nome): nell'albero, nelle
+    schede, nelle liste e nei documenti.
+- **Il nome che si sta scrivendo in una scheda compare subito** nell'albero dei modelli e nel titolo della scheda,
+  prima di «Salva». Con «Annulla» tornano al nome salvato.
+
+### Corretto
+- **La vista di una catena composta e chiusa senza «Salva vista» non resta più vuota.** I passi entravano subito
+  nella catena e nel suo scenario, ma nella vista della catena solo al salvataggio della vista; chiusa senza
+  salvarla, mostrava «Percorso vuoto» e i passi finivano tra gli elementi da aggiungere. Ora ogni passo aggiunto o
+  tolto va subito anche nella vista; dove è stato posato si salva con «Salva vista». Le viste rimaste vuote così
+  ritrovano i loro passi all'apertura del progetto, disposti dal tool.
+- **Pubblicare solo alcune modifiche non lascia più due elementi con lo stesso identificativo.** Un elemento che
+  ha preso un ID liberato da un altro (es. il nuovo DF02 dopo l'eliminazione del vecchio DF02, o i domini
+  rinumerati) ora si pubblica, e si scarta, insieme alla modifica che ha liberato quell'ID.
+
 ## [0.14.0] - 2026-11-13
 
 ### Modificato
@@ -1199,7 +1391,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.14.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.15.0...main
+[0.15.0]: https://github.com/salvodesi/ATLAS/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/salvodesi/ATLAS/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/salvodesi/ATLAS/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/salvodesi/ATLAS/compare/v0.12.0...v0.13.0

@@ -8,7 +8,7 @@ from arcadia_tool.checks import CHECKS, ERROR, INFO, WARNING, problems, run
 from arcadia_tool.checks.config import ChecksConfig, Profile
 from arcadia_tool.checks.fields import CHECK_FIELDS, SRS_CARD
 from arcadia_tool.model.element import Element, Model
-from arcadia_tool.model.schema import B5_QUESTIONS, B6_SCHEMES
+from arcadia_tool.model.schema import B5_QUESTIONS, B6_SCHEMES, EI_EXTERNAL_IN
 
 Q = {n: B5_QUESTIONS[n - 1] for n in range(1, 7)}
 ALL = {c.code for c in CHECKS}
@@ -69,7 +69,7 @@ def coherent():
                   status="Approvata")
 
     def item(ident, name, nature):
-        return add("exchange_item", id=ident, name=name, type="Dato logico", nature=nature, meaning=name,
+        return add("exchange_item", id=ident, name=name, type="Dato logico", nature=nature, content=name,
                    srs_origin="3.14.4", status="Approvato")
     g.ei_speed = item("EI-Velocita", "Velocità misurata", "FLOW")
     g.ei_mov = item("EI-MovimentoDelTreno", "Movimento del treno", "FLOW")
@@ -80,7 +80,7 @@ def coherent():
         values.setdefault("status", "Approvato")
         return add("functional_exchange", id=ident, name=name, source=source.uuid, target=target.uuid,
                    exchange_item=ei.uuid, nature=ei.get("nature"), production_condition=condition, **values)
-    agreed = dict(status="Approvato", producer_agreement="Dario", consumer_agreement="Anna")
+    agreed = dict(status="Approvato")
     g.fe1 = exchange("FE-OE-01-DF02-01", "Velocità", g.oe01, g.sf02, g.ei_speed, clauses=[g.cl3611.uuid])
     g.fe2 = exchange("FE-DF02-DF06-01", "Movimento del treno", g.sf02, g.sf06, g.ei_mov, clauses=[g.cl3142.uuid],
                      **agreed)
@@ -99,13 +99,13 @@ def coherent():
     g.rec3143 = record(g.cl3143, g.sf06)
     g.rec3611 = record(g.cl3611, g.sf02)
 
-    g.fc = add("functional_chain", id="FC-Standstill", title="Standstill", responsible_domain=g.df06.uuid,
-               trigger="Il treno si muove da fermo", final_effect="Comando del freno", oracle="Freno applicato",
-               integration_test="Movimento oltre la distanza", status="Approvato", steps=[
+    g.fc = add("functional_chain", id="FC-Standstill", title="Standstill", domains=[g.df02.uuid, g.df06.uuid],
+               trigger="Il treno si muove da fermo", final_effect="Comando del freno", status="Approvato",
+               steps=[
                    {"cycle": "C0", "function": g.sf02.uuid, "what": "Determina il movimento", "nature": "FLOW",
-                    "exchange": g.fe2.uuid, "srs": "3.6.1.1", "component": g.lc06.uuid},
+                    "exchange": g.fe2.uuid, "srs": "3.6.1.1"},
                    {"cycle": "C0", "function": g.sf06.uuid, "what": "Comanda il freno", "nature": "FLOW",
-                    "exchange": g.fe3.uuid, "srs": "3.14.4.2", "component": g.lc12.uuid}])
+                    "exchange": g.fe3.uuid, "srs": "3.14.4.2"}])
     g.real = add("chain_realization", chain=g.fc.uuid, outcome="Eseguibile", status="Approvato", steps=[
         {"sa_step": "1", "cycle": "C0", "logical_function": g.lf02.uuid, "component": g.lc06.uuid,
          "out_exchange": g.ce.uuid},
@@ -190,7 +190,7 @@ def ground_item(g):
 
 
 def _sa5_13(g):
-    g.ei_mov.set("type", "Messaggio")
+    g.ei_mov.set("type", EI_EXTERNAL_IN)
     g.params["SA5-13"] = {"coding_domains": [g.df02.uuid]}
 
 
@@ -319,7 +319,6 @@ MUTATIONS = {
     "SA5-05": lambda g: g.add("logical_function", id="LF-DF06-01-03", name="Misurare la distanza",
                               parent=g.lf06a.uuid, component=g.lc12.uuid),
     "SA5-06": lambda g: g.fe3.set("exchange_item", None),
-    "SA5-07": lambda g: g.fe3.set("nature", "EVENT"),
     "SA5-08": lambda g: g.fe3.set("production_condition", "Su evento"),
     "SA5-09": lambda g: g.fe3.set("id", "FE-DF02-OE-01-01"),
     "SA5-10": lambda g: g.add("functional_exchange", **g.fe3.copy().values),
@@ -331,9 +330,7 @@ MUTATIONS = {
                               exchange_item=g.ei_mov.uuid),
     "SA6-02": lambda g: g.add("exchange_item", id="EI-Livello", name="Livello", nature="FLOW"),
     "SA6-03": lambda g: g.ei_mov.set("nature", None),
-    "SA6-04": lambda g: g.ei_mov.set("type", "Messaggio"),
-    "SA6-05": lambda g: g.ei_mov.set("elements", [{"variable": "V_TRAIN"}]),
-    "SA6-06": lambda g: g.ei_mov.set("elements", [dict(variable="D_X", unit="m", range="0-100", resolution="1")] * 2),
+    "SA6-04": lambda g: (g.ei_mov.set("type", EI_EXTERNAL_IN), g.ei_mov.set("content", None)),
     "SA6-07": lambda g: g.ei_mov.set("srs_origin", None),
     "SA6-08": lambda g: g.add("exchange_item", id="EI-Altro", name="Movimento del treno", nature="FLOW"),
     "SA7-01": lambda g: g.fc.set("steps", None),
@@ -348,10 +345,8 @@ MUTATIONS = {
     "SA7-10": lambda g: step(g, 1, srs="3.14.4.2"),
     "SA7-11": lambda g: step(g, 2, cycle="C1"),
     "SA7-12": lambda g: g.fc.set("steps", g.fc.get("steps") + [dict(g.fc.get("steps")[0])]),
-    "SA7-13": lambda g: g.fc.set("responsible_domain", None),
-    "SA7-14": lambda g: step(g, 1, component=g.lc12.uuid),
+    "SA7-13": lambda g: g.fc.set("domains", None),
     "SA7-15": _sa7_15,
-    "SA7-16": lambda g: g.fc.set("oracle", None),
     "SA7-17": lambda g: g.model.remove(g.real.uuid),
     "LA1-01": lambda g: (g.lc06.set("parent", g.lc12.uuid), g.lc12.set("parent", g.lc06.uuid)),
     "LA1-02": lambda g: g.add("functional_exchange", source=g.lf06b.uuid, target=g.oe01.uuid,
@@ -472,7 +467,7 @@ def test_a_finding_names_the_other_sheets_involved():
 
 def test_checks_needing_an_option_are_silent_without_it():
     g = coherent()
-    g.ei_mov.set("type", "Messaggio")
+    g.ei_mov.set("type", EI_EXTERNAL_IN)
     assert findings(g, {"SA5-13"}) == []
 
 

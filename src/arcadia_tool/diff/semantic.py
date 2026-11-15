@@ -8,7 +8,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-from arcadia_tool.model.element import is_empty
+from arcadia_tool.model.element import ROW_KEY, is_empty
 from arcadia_tool.model.schema import (BOOL, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STRLIST, TABLE, TEXT)
 
 ADDED = "added"
@@ -127,8 +127,8 @@ def _diff_rows(before, after, columns):
             rows.append(RowChange(i, REMOVED, b, None))
         else:
             changed = [c.name for c in columns if _norm(b.get(c.name)) != _norm(a.get(c.name))]
-            changed += sorted(k for k in set(a) | set(b)
-                              if k not in {c.name for c in columns} and _norm(a.get(k)) != _norm(b.get(k)))
+            changed += sorted(k for k in set(a) | set(b) if k not in {c.name for c in columns} and k != ROW_KEY
+                              and _norm(a.get(k)) != _norm(b.get(k)))  # the key of a row: kept by the tool
             if changed:
                 rows.append(RowChange(i, MODIFIED, b, a, changed))
     return rows

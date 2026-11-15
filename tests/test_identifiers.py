@@ -1,5 +1,5 @@
 from arcadia_tool.model.element import Model, natural_key
-from arcadia_tool.model.identifiers import camel, missing_context
+from arcadia_tool.model.identifiers import camel, missing_context, name_code
 from arcadia_tool.storage.project import Project
 
 AUTHOR = "Tester <tester@example.com>"
@@ -41,6 +41,12 @@ def test_ids_follow_template_conventions(tmp_path):
     assert p.new_element("exchange_item", name="Train Position Report").get("id") == "EI-TrainPositionReport"
     assert p.new_element("exchange_item", name="Train position report").get("id") == "EI-TrainPositionReport-2"
     assert p.new_element("functional_chain", title="Trip").get("id") == "FC-Trip"
+    # As in the dictionary of the methodology: without articles, prepositions and conjunctions.
+    assert p.new_element("exchange_item", name="Evento di accensione").get("id") == "EI-EventoAccensione"
+    assert p.new_element("exchange_item", name="Stato dell'interfaccia treno").get("id") == "EI-StatoInterfacciaTreno"
+    assert p.new_element("exchange_item", name="Richiesta di chiusura della sessione").get("id") ==         "EI-RichiestaChiusuraSessione"
+    assert p.new_element("functional_chain", title="Isolamento dell'EVC").get("id") == "FC-IsolamentoEVC"
+    assert p.new_element("exchange_item", name="Di").get("id") == "EI-Di"  # nothing else: kept
     p.close()
 
 
@@ -86,5 +92,6 @@ def test_requirements_keep_their_clause_number(tmp_path):
 
 def test_helpers():
     assert camel("Movimento del treno à") == "MovimentoDelTrenoA"
+    assert name_code("Velocità del treno") == "VelocitaTreno"
     assert sorted(["3.10", "3.2", "3.1.5"], key=natural_key) == ["3.1.5", "3.2", "3.10"]
     assert Model().of_kind("domain") == []

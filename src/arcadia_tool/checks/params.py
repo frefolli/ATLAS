@@ -4,7 +4,7 @@ only the values changed."""
 import re
 from dataclasses import dataclass, field
 
-from arcadia_tool.model.schema import ETCS_MODES, KINDS_BY_NAME, NATURES
+from arcadia_tool.model.schema import EI_EXTERNAL_IN, EI_EXTERNAL_OUT, ETCS_MODES, KINDS_BY_NAME, NATURES
 
 INT, BOOL, STRINGS, DOMAIN, DOMAINS, REGEX, MAP_STRINGS, MAP_REGEX = (
     "int", "bool", "strings", "domain", "domains", "regex", "map_strings", "map_regex")
@@ -82,14 +82,15 @@ ID_FORMATS = {
     "clarification": r"CQ-\d{2}",
     "external_actor": r"OE-\d{2}",
 }
+EI_EXTERNAL = (EI_EXTERNAL_IN, EI_EXTERNAL_OUT)  # the types of the data coded as in chapters 7–8
 MAIN_FIELDS = {
     "domain": ["mission", "team"],
     "system_function": ["domain", "description"],
     "trace_record": ["requirement", "b5_question", "outcome"],
     "derived_requirement": ["parent", "obligation", "function", "domain", "b6_scheme"],
-    "exchange_item": ["nature", "meaning", "srs_origin"],
+    "exchange_item": ["nature", "type", "srs_origin"],
     "functional_exchange": ["source", "target", "exchange_item", "nature", "production_condition"],
-    "functional_chain": ["responsible_domain", "trigger", "final_effect", "steps"],
+    "functional_chain": ["domains", "trigger", "final_effect", "steps"],
     "logical_function": ["refines", "description"],
     "logical_component": ["responsibility", "owner"],
     "component_exchange": ["source", "target", "realizes", "exchange_item"],
@@ -132,9 +133,9 @@ PARAMS = {
                      hint="Gli unici domini che trattano le variabili codificate dei capitoli 7–8 (nella guida "
                           "DF01 e DF09)."),
                Param("coded_variable", "Variabile codificata (espressione regolare)", REGEX, CODED_VARIABLE),
-               Param("coded_types", "Tipi di Exchange Item codificati", STRINGS, ["Messaggio", "Pacchetto"])),
-    "SA6-04": (Param("types", "Tipi di Exchange Item che devono avere elementi", STRINGS,
-                     ["Messaggio", "Pacchetto"]),),
+               Param("coded_types", "Tipi di Exchange Item codificati", STRINGS, list(EI_EXTERNAL))),
+    "SA6-04": (Param("types", "Tipi di Exchange Item che devono avere elementi (tutti se vuoto)", STRINGS,
+                     list(EI_EXTERNAL)),),
     "SA7-15": (Param("procedure_domain", "Dominio delle procedure", DOMAIN, None, required=True,
                      hint="Il proprietario del flusso delle procedure del capitolo 5 (nella guida DF08)."),),
     "LA1-05": (Param("max_sentences", "Frasi massime della responsabilità", INT, 3, minimum=1, maximum=10),),

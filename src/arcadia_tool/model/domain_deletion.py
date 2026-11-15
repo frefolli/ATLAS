@@ -27,8 +27,6 @@ GROUPS = (
                 "Senza dominio principale", False),
     OrphanGroup("system_function", "domain", "Funzioni di sistema", "Senza dominio", True),
     OrphanGroup("derived_requirement", "domain", "Requisiti derivati", "Senza dominio", True),
-    OrphanGroup("functional_chain", "responsible_domain", "Functional chain di cui è responsabile",
-                "Senza dominio responsabile", False),
     OrphanGroup("adr", None, "ADR non ancora decise che citano il dominio", "Lascia il riferimento (non più valido)",
                 False),
 )
@@ -95,8 +93,8 @@ def orphans(model, domain_uuid, skip=()):
 
 def second_references(model, domain_uuid):
     """The elements that only lose a mention of the domain (as a contributor, as excluded, among the domains of a
-    team): the reference is removed."""
-    return [e for e in model.of_kind("requirement", "team")
+    team, among the domains involved in a chain): the reference is removed."""
+    return [e for e in model.of_kind("requirement", "team", "functional_chain")
             if domain_uuid in (e.get("contributing_domains") or []) + (e.get("excluded_domains") or [])
             + (e.get("domains") or [])]
 

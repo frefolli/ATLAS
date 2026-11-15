@@ -4,8 +4,10 @@ fields are those of the sheets of ATLAS (model.schema), so that template, sheet 
 from dataclasses import dataclass, field as dataclass_field
 
 from arcadia_tool.model.adr import outcome, principal_of, related_adrs, section_of
-from arcadia_tool.model.schema import B5_QUESTIONS, B6_SCHEMES, KINDS_BY_NAME, NATURES, SHEET_STATES
-from arcadia_tool.documents.values import (by_id, domain_of, end_text, label, plain, short, shorts, table_rows,
+from arcadia_tool.model.chains import STEP_COMPUTED, chain_domains, exchange_nature, used_exchange_rows
+from arcadia_tool.model.schema import (B5_QUESTIONS, B6_SCHEMES, EI_TYPES, INTERNAL, KINDS_BY_NAME, NATURES,
+                                       SHEET_STATES)
+from arcadia_tool.documents.values import (by_id, domain_of, end_text, label, plain, short, shorts,
                                            text_of)
 
 BASELINE = "SUBSET-026 v3.6.0 (B3R2)"
@@ -299,13 +301,13 @@ def write_sa4(w, doc, items):
 # --- SA-5 ----------------------------------------------------------------------------------------------------------
 
 SA5_COLUMNS = [("ID scambio", 1, ()), ("Nome", 1, ()), ("Produttore (funzione, dominio)", 1, ()),
-               ("Utilizzatore (funzione, dominio)", 1, ()), ("Dato di interfaccia", 1, ()), ("Natura", 1, NATURES),
+               ("Utilizzatore (funzione, dominio)", 1, ()), ("Dato di interfaccia", 1, ()), ("Tipo", 1, NATURES),
                ("Condizione di produzione", 1, _f("functional_exchange", "production_condition").options),
-               ("Clausole", 1, ()), ("Chain che lo usano", 1, ()), ("Accordo del produttore", 1, ()),
-               ("Accordo dell'utilizzatore", 1, ()), ("Stato", 1, _f("functional_exchange", "status").options)]
+               ("Clausole", 1, ()), ("Chain che lo usano", 1, ()),
+               ("Stato", 1, _f("functional_exchange", "status").options)]
 SA5_EXAMPLE = ["FE-DF02-DF06-01", "Movimento del treno", "Determinare velocità e standstill (DF02)",
                "Supervisionare lo standstill (DF06)", "EI-movimento_treno", "FLOW", "Sempre", "3.14.4.2",
-               "Calcolato da ATLAS", "Referente DF02, data", "Referente DF06, data", "Proposto"]
+               "Calcolato da ATLAS", "Proposto"]
 
 
 def sa5_items(doc):
@@ -325,24 +327,21 @@ def write_sa5(w, doc, items):
     rows = []
     for fe in items:
         using = [c.get("id") or c.get("title") or "" for c in chains
-                 if any(s.get("exchange") == fe.uuid for s in c.get("steps") or [])]
+                 if any(fe.uuid in (s.get("exchange"), s.get("input")) for s in c.get("steps") or [])]
         rows.append([fe.get("id") or "", fe.get("name") or "", end_text(model, fe.get("source")),
-                     end_text(model, fe.get("target")), short(model, fe.get("exchange_item")), fe.get("nature") or "",
+                     end_text(model, fe.get("target")), short(model, fe.get("exchange_item")), exchange_nature(model, fe),
                      fe.get("production_condition") or "", shorts(model, fe.get("clauses")), ", ".join(using),
-                     fe.get("producer_agreement") or "", fe.get("consumer_agreement") or "", fe.get("status") or ""])
+                     fe.get("status") or ""])
     w.table(SA5_COLUMNS, rows)
 
 
 # --- SA-6 ----------------------------------------------------------------------------------------------------------
 
-SA6_COLUMNS = [("ID", 1, ()), ("Nome", 1, ()), ("Tipo", 1, _f("exchange_item", "type").options),
-               ("Natura", 1, NATURES), ("Significato", 1, ()), ("Origine SRS", 1, ()),
-               ("Elementi (variabili cap. 7): variabile · descrizione · unità · campo · risoluzione", 2, ()),
-               ("Produttore", 1, ()), ("Utilizzatori", 1, ()), ("Note", 1, ()),
+SA6_COLUMNS = [("ID", 1, ()), ("Nome", 1, ()), ("Natura", 1, NATURES), ("Tipo", 1, EI_TYPES), ("Elementi", 2, ()),
+               ("Origine o specifica", 1, ()), ("Produttore", 1, ()), ("Utilizzatori", 1, ()), ("Note", 1, ()),
                ("Stato", 1, SHEET_STATES)]
-SA6_EXAMPLE = ["EI-PositionReport", "Train Position Report", "Messaggio", "EVENT", "Cosa rappresenta il dato",
-               "8.6.4 (messaggio 136)", "NID_ENGINE · identità del bordo · — · 0..16777215 · 1", "Calcolato da ATLAS",
-               "Calcolato da ATLAS", "", "Bozza"]
+SA6_EXAMPLE = ["EI-EventoAccensione", "Evento di accensione", "EVENT", EI_TYPES[0], "Alimentazione dell'EVC inserita",
+               "4.6.3 [4]", "Calcolato da ATLAS", "Calcolato da ATLAS", "", "Bozza"]
 
 
 def _ends(model, item):
@@ -377,29 +376,21 @@ def write_sa6(w, doc, items):
         w.table(SA6_COLUMNS, example=SA6_EXAMPLE, empty=15)
         return
     rows = []
-    elements = KINDS_BY_NAME["exchange_item"].field("elements")
     for item in items:
         producers, users = _ends(model, item)
-        rows.append([item.get("id") or "", item.get("name") or "", item.get("type") or "", item.get("nature") or "",
-                     plain(item.get("meaning")), item.get("srs_origin") or "",
-                     "\n".join(" · ".join(r) for r in table_rows(model, item, elements)), ", ".join(producers),
+        rows.append([item.get("id") or "", item.get("name") or "", item.get("nature") or "", item.get("type") or "",
+                     plain(item.get("content")), item.get("srs_origin") or "", ", ".join(producers),
                      ", ".join(users), plain(item.get("notes")), item.get("status") or ""])
     w.table(SA6_COLUMNS, rows)
 
 
 # --- SA-7 ----------------------------------------------------------------------------------------------------------
 
-STEP_COLUMNS = [("#", 1, ()), ("Ciclo", 1, ()), ("Dominio", 1, ()), ("Funzione SF", 1, ()), ("Cosa fa", 1, ()),
-                ("Dato prodotto", 1, ()), ("Natura", 1, NATURES), ("Scambio", 1, ()), ("Voci SRS", 1, ()),
-                ("Componente logico", 1, ())]
-USED_COLUMNS = [("ID scambio (SA-5)", 2, ()), ("Produttore", 2, ()), ("Utilizzatore", 2, ()),
-                ("Dato e natura", 2, ()), ("Stato", 2, ())]
-DERIVED_COLUMNS = [("ID derivato (SA-4)", 2, ()), ("Voce madre", 2, ()), ("Obbligo", 2, ()),
-                   ("Funzione (dominio)", 2, ()), ("Motivazione", 2, ())]
-METRIC_COLUMNS = [("Attraversamenti", 2, ()), ("Rimbalzi nello stesso ciclo", 2, ()), ("Domini coinvolti", 2, ()),
-                  ("Cicli", 2, ()), ("Decisione (metriche)", 2, ())]
-VARIANT_COLUMNS = [("Variante", 2, ()), ("Tipo", 2, ("Exchange Scenario", "Chain distinta")),
-                   ("Differenza dal nominale", 3, ()), ("Voci SRS", 3, ())]
+STEP_COLUMNS = [("#", 1, ()), ("Ciclo", 1, ()), ("Dominio", 1, ()), ("Funzione SF", 1, ()), ("Nome funzione", 1, ()),
+                ("Cosa fa", 2, ()), ("Ingresso", 1, ()), ("Dato prodotto", 1, ()), ("Natura", 1, (*NATURES, INTERNAL)),
+                ("Scambio in uscita", 1, ()), ("Voci SRS", 1, ())]
+USED_COLUMNS = [("ID scambio", 2, ()), ("Produttore", 1, ()), ("Utilizzatore", 1, ()), ("Dato", 2, ()),
+                ("Natura", 1, ()), ("Tipo", 1, ()), ("Stato", 1, ())]
 
 
 def sa7_items(doc):
@@ -407,22 +398,23 @@ def sa7_items(doc):
     chains = by_id(model.of_kind("functional_chain"))
     if doc.domains is None:
         return chains
-    return [c for c in chains if doc.in_scope(model.get(c.get("responsible_domain") or ""))
+    return [c for c in chains if any(doc.in_scope(model.get(d)) for d in chain_domains(model, c))
             or any(doc.in_scope(domain_of(model, s.get("function"))) for s in c.get("steps") or [])]
 
 
 def write_sa7(w, doc, chain):
+    """The sheet of a chain, as the template SA-7 up to the exchanges used: identification (without the related
+    questions), context, path and exchanges used."""
     model = doc.model
     kind = KINDS_BY_NAME["functional_chain"]
-    responsible = model.get(chain.get("responsible_domain") or "") if chain is not None else None
-    w.document(header(doc, "SA-7", team_of(model, responsible) if responsible else "",
+    domains = chain_domains(model, chain) if chain is not None else []
+    first = model.get(domains[0]) if domains else None  # of the first step
+    w.document(header(doc, "SA-7", team_of(model, first) if first is not None else "",
                       chain.get("status") if chain is not None else ""))
-    hints = {"id": "FC-nome", "capability": "OCn", "responsible_domain": "DFnn", "adrs": "ADR-nnn",
+    hints = {"id": "FC-nome", "startable": "Avviabile / Avviabile completando DFnn / Bloccata",
              "trigger": "Attore esterno e scambio in ingresso",
              "final_effect": "Messaggio, comando o indicazione verso un attore esterno",
-             "preconditions": "Modo, livello, sessione, dati validi", "out_of_scope": "Rami coperti da altre chain, con ID",
-             "oracle": "Righe di tabella e condizioni che definiscono il risultato atteso",
-             "integration_test": "Stimolo, sequenza attesa sugli attori esterni, criterio di superamento"}
+             "preconditions": "Modo, livello, sessione, dati validi", "out_of_scope": "Rami coperti da altre chain, con ID"}
 
     def field(name, tall=False):
         f = kind.field(name)
@@ -431,17 +423,13 @@ def write_sa7(w, doc, chain):
             value = short(model, chain.get(name)) + " " + (model.get(chain.get(name)).get("name") or "")
         w.field(f.label, value.strip(), hint=hints.get(name, ""), tall=tall)
 
-    steps = list(chain.get("steps") or []) if chain is not None else []
+    rows = list(chain.get("steps") or []) if chain is not None else []
     w.heading("1. Identificazione")
-    for name in ("id", "title", "capability", "procedure", "responsible_domain"):
+    for name in ("id", "title"):
         field(name)
-    domains = []
-    for s in steps:
-        d = domain_of(model, s.get("function"))
-        if d is not None and d.get("id") and d.get("id") not in domains:
-            domains.append(d.get("id"))
-    w.field("Domini coinvolti", ", ".join(domains), hint="Calcolato da ATLAS dai passi del percorso")
-    field("adrs")
+    w.field("Domini coinvolti", shorts(model, domains),
+            hint="DFnn, …: quelli delle funzioni del percorso (calcolati da ATLAS) e gli altri coinvolti")
+    field("startable")
     w.field("Stato della chain", (chain.get("status") or "") if chain is not None else "",
             hint=" / ".join(SHEET_STATES), options=SHEET_STATES)
     w.heading("2. Contesto")
@@ -449,57 +437,23 @@ def write_sa7(w, doc, chain):
         field(name)
     w.heading("3. Percorso")
     if chain is None:
-        w.table(STEP_COLUMNS, example=["1", "C0", "DFnn", "SF-DFnn-mm", "", "…", "FLOW", "FE-… / Interno / attore",
-                                       "3.x.y.z", "LC-nn"], empty=12)
+        w.table(STEP_COLUMNS, example=["1", "C0", "DFnn", "SF-DFnn-mm", "Calcolato da ATLAS", "…", "FE-… / —",
+                                       "EI-… / dato interno", "FLOW", "FE-… / Interno", "3.x.y.z"], empty=12)
     else:
-        rows = []
-        for i, s in enumerate(steps, 1):
-            d = domain_of(model, s.get("function"))
-            rows.append([str(i), s.get("cycle") or "", d.get("id") if d is not None else "",
-                         short(model, s.get("function")), s.get("what") or "", s.get("data") or "",
-                         s.get("nature") or "", short(model, s.get("exchange")) or "", s.get("srs") or "",
-                         short(model, s.get("component"))])
-        w.table(STEP_COLUMNS, rows)
+        table = []
+        for i, s in enumerate(rows):
+            computed = {name: compute(model, rows, i) for name, compute in STEP_COMPUTED.items()}
+            table.append([computed["step_number"], s.get("cycle") or "", computed["step_domain"],
+                          short(model, s.get("function")), computed["function_name"], s.get("what") or "",
+                          short(model, s.get("input")), s.get("data") or "", s.get("nature") or "",
+                          short(model, s.get("exchange")), s.get("srs") or ""])
+        w.table(STEP_COLUMNS, table)
     w.heading("4. Scambi usati")
-    exchanges = [model.get(s.get("exchange")) for s in steps if s.get("exchange")]
-    exchanges = list({fe.uuid: fe for fe in exchanges if fe is not None}.values())
     if chain is None:
-        w.table(USED_COLUMNS, example=["Calcolato da ATLAS dai passi", "", "", "", ""], empty=2)
+        w.table(USED_COLUMNS, example=["Calcolato da ATLAS dai passi", "", "", "", "", "", ""], empty=2)
     else:
-        w.table(USED_COLUMNS, [[fe.get("id") or "", end_text(model, fe.get("source")), end_text(model, fe.get("target")),
-                                " ".join(t for t in (short(model, fe.get("exchange_item")), fe.get("nature")) if t),
-                                fe.get("status") or ""] for fe in exchanges])
-    w.heading("5. Requisiti derivati")
-    cited = " ".join(s.get("srs") or "" for s in steps)
-    derived = [d for d in by_id(model.of_kind("derived_requirement"))
-               if short(model, d.get("parent")) and short(model, d.get("parent")) in cited] if chain is not None else []
-    if chain is None:
-        w.table(DERIVED_COLUMNS, example=["Calcolato da ATLAS: i derivati delle voci SRS dei passi", "", "", "", ""],
-                empty=2)
-    else:
-        w.table(DERIVED_COLUMNS, [[d.get("id") or "", short(model, d.get("parent")), plain(d.get("obligation")),
-                                   " ".join(t for t in (short(model, d.get("function")),
-                                                        f"({short(model, d.get('domain'))})" if d.get("domain") else "")
-                                            if t), text_of(model, d, _f("derived_requirement", "b6_scheme"))]
-                                  for d in derived])
-    w.heading("6. Metriche di validazione")
-    if chain is None:
-        w.table(METRIC_COLUMNS, example=["Calcolato da ATLAS", "Calcolato da ATLAS", "Calcolato da ATLAS",
-                                         "Calcolato da ATLAS", "Accettata / rimbalzo motivato con ADR"], empty=0)
-    else:
-        from arcadia_tool.checks.context import Context
-        from arcadia_tool.checks.sa import chain_metrics
-        m = chain_metrics(Context(model), chain)
-        w.table(METRIC_COLUMNS, [[str(m["crossings"]), str(m["bounces"]), str(m["domains"]), str(m["cycles"]),
-                                  plain(chain.get("decision"))]])
-    w.heading("7. Varianti, oracolo e test")
-    if chain is None:
-        w.table(VARIANT_COLUMNS, example=["", "Exchange Scenario", "", ""], empty=4)
-    else:
-        w.table(VARIANT_COLUMNS, table_rows(model, chain, kind.field("variants")))
-    w.row += 1
-    for name in ("oracle", "integration_test"):
-        field(name, tall=True)
+        w.table(USED_COLUMNS, [[r["exchange"], r["source"], r["target"], r["data"], r["nature"], r["type"],
+                                r["status"]] for r in used_exchange_rows(model, chain)])
 
 
 # --- the artefacts --------------------------------------------------------------------------------------------------

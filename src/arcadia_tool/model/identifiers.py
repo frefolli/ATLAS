@@ -42,6 +42,29 @@ def camel(text):
     return "".join(w[:1].upper() + w[1:] for w in re.findall(r"[A-Za-z0-9]+", ascii_text))
 
 
+# Articles, prepositions and conjunctions left out of a named identifier, as in the dictionary of the methodology
+# («Evento di accensione» → EI-EventoAccensione, «Stato dell'interfaccia treno» → EI-StatoInterfacciaTreno).
+FUNCTION_WORDS = frozenset("""
+    il lo la i gli le l un uno una
+    di del dello della dei degli delle dell d
+    a al allo alla ai agli alle all ad
+    da dal dallo dalla dai dagli dalle dall
+    in nel nello nella nei negli nelle nell
+    su sul sullo sulla sui sugli sulle sull
+    con col per tra fra verso
+    e ed o od che
+""".split())
+
+
+def name_code(text):
+    """The name in an identifier: its words in CamelCase, without articles, prepositions and conjunctions (all of
+    them when it has no other word)."""
+    ascii_text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    words = re.findall(r"[A-Za-z0-9]+", ascii_text)
+    kept = [w for w in words if w.lower() not in FUNCTION_WORDS] or words
+    return "".join(w[:1].upper() + w[1:] for w in kept)
+
+
 def _ref_id(model, element, field):
     target = model.get(element.get(field))
     return target.get("id") if target else None
@@ -66,7 +89,7 @@ def _numbered(prefix, width):
 
 
 def _named(prefix, text):
-    return ("name", prefix, camel(text or ""))
+    return ("name", prefix, name_code(text))
 
 
 def rule(element, model):
@@ -91,9 +114,9 @@ def rule(element, model):
         parent = _ref_id(model, element, "parent")
         return _numbered(f"{parent}-D", 1) if parent else None
     if k == "exchange_item":
-        return _named("EI-", element.get("name")) if camel(element.get("name") or "") else None
+        return _named("EI-", element.get("name")) if name_code(element.get("name")) else None
     if k == "functional_chain":
-        return _named("FC-", element.get("title")) if camel(element.get("title") or "") else None
+        return _named("FC-", element.get("title")) if name_code(element.get("title")) else None
     if k == "logical_component":
         return _numbered("LC-", 2)
     if k == "team":

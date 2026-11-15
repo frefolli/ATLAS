@@ -9,19 +9,21 @@ import math
 from PySide6.QtCore import QMimeData, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QIcon, QImage, QKeySequence, QPainter,
                            QPainterPath, QPainterPathStroker, QPen, QPixmap, QPolygonF, QShortcut)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                               QFrame, QGraphicsItem, QGraphicsLineItem, QGraphicsScene, QGraphicsView, QHBoxLayout,
-                               QLabel, QLineEdit,
-                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QTabWidget, QTreeWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
+                               QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGraphicsItem, QGraphicsLineItem, QGraphicsScene,
+                               QGraphicsView, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPlainTextEdit, QPushButton, QRadioButton, QSizePolicy, QSplitter, QTabWidget, QTreeWidget,
                                QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
+from arcadia_tool.model import chains
 from arcadia_tool.model import diagrams as dg
-from arcadia_tool.model.element import Element, natural_key
+from arcadia_tool.model.element import ROW_KEY, Element, natural_key
 from arcadia_tool.model.domain_deletion import delete_domain
-from arcadia_tool.model.identifiers import DOMAIN_DEPENDENT, compute_id
-from arcadia_tool.model.schema import (DIAGRAM_BREAKDOWN, DIAGRAM_CHAIN, DIAGRAM_DATAFLOW, DIAGRAM_FUNCTIONS,
-                                       DIAGRAM_LEVELS, DIAGRAM_SCENARIO, NATURES)
+from arcadia_tool.model.identifiers import DOMAIN_DEPENDENT, compute_id, name_code
+from arcadia_tool.model.schema import (CHAIN_DRAWINGS, DIAGRAM_BREAKDOWN, DIAGRAM_CHAIN, DIAGRAM_DATAFLOW,
+                                       DIAGRAM_FUNCTIONS, DIAGRAM_LEVELS, DIAGRAM_SCENARIO, DATAFLOW_DRAWINGS, GRAPH,
+                                       INTERNAL, NATURES, SCENARIO, SWIMLANES)
 from arcadia_tool.storage.project import local_change
 from arcadia_tool.ui.activity_bar import ActivityBar
 from arcadia_tool.ui.dialogs import settings
@@ -29,6 +31,10 @@ from arcadia_tool.ui.theme import ACCENT, ACCENT_SOFT, ARROW, BG, BORDER, MUTED,
 
 BAD, BAD_SOFT = "#B42318", "#FEE4E2"
 WARN, WARN_SOFT = "#9A6700", "#FFF8C5"
+OPEN = "#C4320A"  # an exchange still to agree between the teams (see model.interfaces)
+LEGEND = (f"<span style='background:{ARROW}'>&nbsp;&nbsp;&nbsp;&nbsp;</span> scambio concordato &nbsp;·&nbsp; "
+          f"<span style='background:{OPEN}'>&nbsp;&nbsp;&nbsp;&nbsp;</span> da concordare &nbsp;·&nbsp; "
+          f"<span style='color:{MUTED}'>(dato da definire)</span>: senza Exchange Item")
 MIME = "application/x-atlas-view-element"
 NORMAL, SELECTED, PROBLEM, ACTOR, BOUNCE = "normal", "selected", "problem", "actor", "bounce"
 # The line of an exchange for the nature of its datum: continuous, dashed, dash-dot.
@@ -385,7 +391,9 @@ def _clip(rect, inside, outside):
     return QPointF(inside.x() + dx * t, inside.y() + dy * t)
 
 
-SIDE_ICONS = ("mdi6.vector-line", "mdi6.playlist-plus")  # the tabs of the panel at the right: tools, elements
+# The tabs of the panel at the right: tools, elements, the steps of the chain.
+SIDE_ICONS = ("mdi6.vector-line", "mdi6.playlist-plus", "mdi6.format-list-numbered")
+STEP_KEY_ROLE = Qt.UserRole + 7
 HANDLE = 5  # half the side of the handles on the ends of an arrow
 HANDLES_KEY = "views/connector_handles"  # the handles of every arrow shown, or only of the one selected
 
@@ -409,6 +417,8 @@ class Arrow(QGraphicsItem):
         self.on_open = self.on_menu = None
         self.movable_ends = False  # a dataflow: its two ends, shown as handles, moved to other anchor points
         self.handles_always = True  # the handles also when not selected (the choice of the user)
+        self.grip = 8  # how wide the line is to the pointer
+        self.hovered = False
         self.setZValue(-1)
         self._points = [QPointF(), QPointF()]
         self._label = QRectF()
@@ -468,13 +478,13 @@ class Arrow(QGraphicsItem):
         path = QPainterPath()
         path.addRect(self._label)
         outline = QPainterPathStroker()
-        outline.setWidth(8)
+        outline.setWidth(self.grip)
         return path.united(outline.createStroke(self._path()))
 
     def paint(self, painter, _option, _widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
-        color = ACCENT if self.isSelected() else self.color
-        pen = QPen(QColor(color), 2.4 if self.isSelected() else 1.4)
+        color = ACCENT if self.isSelected() or self.hovered else self.color
+        pen = QPen(QColor(color), 2.4 if self.isSelected() else 2 if self.hovered else 1.4)
         if self.nature in LINES:
             pen.setStyle(LINES[self.nature])
         elif self.dashed:
@@ -514,6 +524,25 @@ class Arrow(QGraphicsItem):
             if abs(point.x() - pos.x()) <= HANDLE + 3 and abs(point.y() - pos.y()) <= HANDLE + 3:
                 return end
         return None
+
+    def clickable(self, tip):
+        """Selected with a click, coloured under the pointer, with a hint of its menu (e.g. between two steps)."""
+        self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(tip)
+        self.prepareGeometryChange()
+        self.grip = 16
+
+    def hoverEnterEvent(self, event):
+        self.hovered = True
+        self.update()
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.hovered = False
+        self.update()
+        super().hoverLeaveEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if self.on_open is not None and self.key:
@@ -1023,6 +1052,15 @@ def export_image(parent, scene, name):
     return path
 
 
+def _shrinkable(label):
+    """A label of the bar above a view: it gives way (cut, the whole text in its tooltip) when the area is narrow,
+    so that a view does not widen the tab area and narrow the panel at the left of the window."""
+    label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    label.setMinimumWidth(60)
+    label.setToolTip(label.text())
+    return label
+
+
 def _toolbar_button(text, icon_name, slot, tip=""):
     button = QPushButton(icon(icon_name), text)
     button.setToolTip(tip or text)
@@ -1401,7 +1439,7 @@ class NewExchangeDialog(QDialog):
         form.addRow("ID", QLabel(f"{ident} (assegnato da ATLAS)" if ident else "assegnato da ATLAS"))
         form.addRow("Natura", QLabel(nature))
         form.addRow("Dato di interfaccia", self.item)
-        self.name_label, self.meaning_label = QLabel("Nome del dato"), QLabel("Significato")
+        self.name_label, self.meaning_label = QLabel("Nome del dato"), QLabel("Elementi")
         form.addRow(self.name_label, self.name)
         form.addRow(self.meaning_label, self.meaning)
         form.addRow("Condizione di produzione", self.condition)
@@ -1443,7 +1481,7 @@ class NewExchangeDialog(QDialog):
         item = self.item.currentData()
         if item == NEW_ITEM:
             new = project.new_element("exchange_item", name=self.name.text().strip(), nature=self.nature,
-                                      meaning=self.meaning.toPlainText().strip())
+                                      content=self.meaning.toPlainText().strip())
             created.append(new)
             item = new.uuid
         name = self.model.get(item).get("name") or ""  # it recalls the information carried, not the action (B4)
@@ -1453,6 +1491,128 @@ class NewExchangeDialog(QDialog):
             values["production_condition"] = self.condition.currentText()
         created.append(project.new_element("functional_exchange", **values))
         return created
+
+
+class NewChainDialog(QDialog):
+    """«Nuova catena funzionale…» from the views: the chain (its title; the ID given by ATLAS, shown while it is
+    written) and its two views, the chain and the scenario of exchange, where the path is composed."""
+
+    def __init__(self, model, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self.setWindowTitle("Nuova catena funzionale")
+        self.title = QLineEdit(placeholderText="es. Isolamento dell'EVC")
+        self.ident = QLabel(objectName="muted")
+        self.level = QComboBox()
+        self.level.addItems(DIAGRAM_LEVELS)
+        self.problem = QLabel(objectName="muted", wordWrap=True)
+        self.problem.setStyleSheet(f"color: {BAD};")
+        form = QFormLayout()
+        form.addRow("Titolo", self.title)
+        form.addRow("ID", self.ident)
+        form.addRow("Passi e linee di vita", self.level)
+        note = QLabel("Si creano la functional chain (SA-7) e le sue due viste, «Catena funzionale» e «Scenario di "
+                      "scambio». Nella vista della catena componi il percorso: trascina sulla tela le funzioni di "
+                      "sistema, una per passo, e collegale con gli scambi.", objectName="muted", wordWrap=True)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Crea la catena")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addWidget(self.problem)
+        layout.addWidget(buttons)
+        self.title.textChanged.connect(self._title_changed)
+        self._title_changed()
+        self.resize(QSize(520, 0))
+
+    def _title_changed(self, _text=""):
+        probe = Element("functional_chain")
+        probe.set("title", self.title.text().strip())
+        ident = compute_id(probe, self.model) or ""
+        self.ident.setText(f"{ident} (assegnato da ATLAS)" if ident else "dal titolo, assegnato da ATLAS")
+
+    def values(self):
+        return self.title.text().strip(), self.level.currentText()
+
+    def accept(self):
+        if not name_code(self.title.text().strip()):
+            self.problem.setText("Dai un titolo alla catena: da lui ATLAS ricava l'ID (FC-…).")
+            return
+        super().accept()
+
+
+class StepDialog(QDialog):
+    """A step of the path: its function (dropped on the canvas), what it does there («Cosa fa») and its cycle."""
+
+    def __init__(self, model, function, what="", cycle="", parent=None, title="Nuovo passo della catena"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        element = model.get(function) if function else None
+        domain = chains.domain_of(model, function) if function else None
+        self.what = QPlainTextEdit(what)
+        self.what.setPlaceholderText("es. Rileva l'accensione e avvia il test dei sottosistemi")
+        self.what.setFixedHeight(70)
+        self.cycle = QLineEdit(cycle, placeholderText="es. 1 (vuoto: nessun ciclo)")
+        self.problem = QLabel(objectName="muted", wordWrap=True)
+        self.problem.setStyleSheet(f"color: {BAD};")
+        form = QFormLayout()
+        form.addRow("Funzione SF", QLabel(" ".join(dg.ident_and_name(element)).strip() if element else ""))
+        form.addRow("Dominio", QLabel(" ".join(dg.ident_and_name(domain)).strip() if domain else "—"))
+        form.addRow("Cosa fa", self.what)
+        form.addRow("Ciclo", self.cycle)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self.problem)
+        layout.addWidget(buttons)
+        self.resize(QSize(520, 0))
+
+    def values(self):
+        return self.what.toPlainText().strip(), self.cycle.text().strip()
+
+    def accept(self):
+        if not self.what.toPlainText().strip():
+            self.problem.setText("Scrivi che cosa fa la funzione in questo passo.")
+            return
+        super().accept()
+
+
+class ExchangeChoiceDialog(QDialog):
+    """A connector drawn between two steps (or with an external actor): an exchange already in the model between
+    their functions, reused, or a new one."""
+
+    def __init__(self, model, exchanges, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Scambio tra i passi")
+        self.buttons = QButtonGroup(self)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Tra queste funzioni ci sono già degli scambi: riusane uno (uno scambio si registra "
+                                "una volta e si riusa) o creane uno nuovo.", wordWrap=True))
+        for fe in exchanges:
+            item = model.get(fe.get("exchange_item") or "")
+            nature = chains.exchange_nature(model, fe)
+            text = " · ".join(p for p in (fe.get("id"), dg.data_label(item, fe.get("name")), nature) if p)
+            button = QRadioButton(text)
+            button.setProperty("choice", fe.uuid)
+            self.buttons.addButton(button)
+            layout.addWidget(button)
+        new = QRadioButton("Nuovo scambio…")
+        new.setProperty("choice", NEW_ITEM)
+        self.buttons.addButton(new)
+        layout.addWidget(new)
+        self.buttons.buttons()[0].setChecked(True)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        layout.addWidget(box)
+        self.resize(QSize(480, 0))
+
+    def choice(self):
+        return self.buttons.checkedButton().property("choice")
 
 
 UNDO_DEPTH = 100
@@ -1506,6 +1666,9 @@ class _Undo:
         for element in [*entry["add"], *restore]:
             self.project.update(element.copy())
             changed = True
+        current = self.project.model.get(self.view.uuid) if getattr(self, "view", None) is not None else None
+        if current is not None:  # put back as a copy (e.g. its steps, by a change of the path): the one in the model
+            self.view = current
         self._restore_state(entry["state"])
         if changed:  # saved with the project, the other views drawn again
             self.model_edited.emit(message)
@@ -1625,6 +1788,7 @@ class _NewFunctions:
             return
         where = f" in {domain.get('id')}" if domain.get("id") else ""
         menu.addAction(icon("mdi6.open-in-app"), "Apri la scheda", lambda: self.open_requested.emit(uuid))
+        menu.addAction(icon("mdi6.target"), "Apri la vista di contesto", lambda: self.context_requested.emit(uuid))
         self._view_actions(menu, uuid)
         menu.addSeparator()
         menu.addAction(icon("mdi6.function-variant"), f"Nuova funzione di sistema{where}…",
@@ -1781,6 +1945,7 @@ class BreakdownPage(_Toggles, _NewFunctions, _Undo, QWidget):
     """The overview of the whole model: SA-1 only the domains, SA-2 (with the functions) every domain open on its
     functions, to be closed and opened again."""
     open_requested = Signal(str)
+    context_requested = Signal(str)  # the view of the context of a domain
     delete_requested = Signal(str)  # a function, from the model (after a confirmation)
     element_created = Signal(str)  # a new system function: in the model (to be saved), in the views
     model_edited = Signal(str)  # elements deleted, or a creation undone: to be saved
@@ -1803,7 +1968,7 @@ class BreakdownPage(_Toggles, _NewFunctions, _Undo, QWidget):
                       "la scheda · clic destro: nuova funzione di sistema", objectName="muted")
         bar = QHBoxLayout()
         bar.addWidget(caption)
-        bar.addWidget(hint, 1)
+        bar.addWidget(_shrinkable(hint), 1)
         if functions:
             bar.addWidget(_toolbar_button("Nuova funzione…", "mdi6.function-variant", self.new_function,
                                           "Nuova funzione di sistema in un dominio (anche: clic destro sul dominio)"))
@@ -1897,18 +2062,66 @@ class ElementList(QTreeWidget):
         return data
 
 
+CYCLE_ROLE = Qt.UserRole + 8  # a group of «Passi»: its cycle
+WAIT_KEY_ROLE = Qt.UserRole + 9  # a wait of «Passi»: the key of its row
+
+
+class StepsTree(QTreeWidget):
+    """«Passi» of a chain view: a step dragged before or after another (in its cycle), or on a cycle (at its end).
+    moved(key, target, after, cycle): the step (its key) goes before (after: False) or after the row of target (a
+    key; None: at the end), in that cycle. The tree is drawn again by the page."""
+    moved = Signal(str, object, bool, str)
+
+    def dropEvent(self, event):
+        source = self.currentItem()
+        key = source.data(0, STEP_KEY_ROLE) if source is not None else None
+        target = self.itemAt(event.position().toPoint())
+        event.setDropAction(Qt.IgnoreAction)
+        event.accept()  # the rows change in the model: the tree is drawn again from them
+        if not key or target is None or target is source:
+            return
+        where = self.dropIndicatorPosition()
+        placement = self._placement(target, where)
+        if placement is not None:
+            self.moved.emit(key, *placement)
+
+    def _placement(self, target, where):
+        """(target key, after, cycle) for a drop on the item."""
+        step = target.data(0, STEP_KEY_ROLE)
+        if step:
+            cycle = target.parent().data(0, CYCLE_ROLE) if target.parent() is not None else ""
+            return step, where == QAbstractItemView.BelowItem, cycle or ""
+        tops = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
+        i = tops.index(target) if target in tops else -1
+        if target.data(0, CYCLE_ROLE) is not None:  # a cycle: at its end
+            last = target.child(target.childCount() - 1) if target.childCount() else None
+            return (last.data(0, STEP_KEY_ROLE) if last else target.data(0, WAIT_KEY_ROLE)), True, \
+                target.data(0, CYCLE_ROLE)
+        wait = target.data(0, WAIT_KEY_ROLE)
+        if wait is None:
+            return None
+        if where == QAbstractItemView.AboveItem:  # at the end of the cycle before the wait
+            group = tops[i - 1] if i > 0 else None
+            return wait, False, (group.data(0, CYCLE_ROLE) if group is not None else "") or ""
+        group = tops[i + 1] if i + 1 < len(tops) else None  # after the wait: at the start of the cycle after it
+        return wait, True, (group.data(0, CYCLE_ROLE) if group is not None else "") or ""
+
+
 class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
     """A view composed by the user: the drawing, and at its side the elements of the model to add."""
     open_requested = Signal(str)
+    context_requested = Signal(str)  # the view of the context of a domain
     saved = Signal()
     dirty_changed = Signal(bool)
     delete_requested = Signal(str)  # a function of a breakdown, from the model (after a confirmation)
     element_created = Signal(str)  # a new domain, function or exchange, in the model and in the view
     model_edited = Signal(str)  # elements deleted from the view (a dataflow: exchanges, data): to be saved
 
-    def __init__(self, project, view, findings_for=None):
+    def __init__(self, project, view, findings_for=None, generated=None):
         super().__init__()
         self.project, self.view, self.findings_for = project, view, findings_for
+        self.generated = generated  # a function giving the view again from the model (see regenerate), or None
+        self.companion = None  # a chain drawn as its path: its scenario at its side (see _sync_companion)
         self.dirty = False
         self.opened = set()  # a breakdown: its domains shown open
         self.anchors = {}  # a dataflow: {exchange: "R500 L250"}, where its arrow leaves and reaches its elements
@@ -1942,6 +2155,25 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         self.level.addItems(DIAGRAM_LEVELS)
         self.level.setToolTip("Passi e linee di vita per dominio o per funzione di sistema")
         self.level.currentTextChanged.connect(self._level_changed)
+        # A dataflow: as a graph, or as swimlanes with the data exchanged on the arrows between them. A chain: its
+        # path, or its scenario of exchange (the same steps, the same view).
+        self.drawing = QComboBox()
+        if self.chain_view:
+            self.drawing.addItems(CHAIN_DRAWINGS)
+            self.drawing.setToolTip("Disegno della catena: il percorso dei passi, o lo scenario di scambio (le linee "
+                                    "di vita dei domini o delle funzioni, i messaggi dall'alto in basso). I passi, i "
+                                    "cicli e il livello sono gli stessi")
+        else:
+            self.drawing.addItems(DATAFLOW_DRAWINGS)
+            self.drawing.setToolTip("Disegno del dataflow: il grafo delle funzioni, o le swimlane dei domini (o delle "
+                                    "funzioni) con i dati scambiati sulle frecce tra loro")
+        self.drawing.currentTextChanged.connect(self._drawing_changed)
+        # The path, with its scenario at its side (a preference of the user, not of the view).
+        self.side_by_side = QPushButton(icon("mdi6.view-split-vertical"), "Affianca lo scenario")
+        self.side_by_side.setCheckable(True)
+        self.side_by_side.setToolTip("Mostra lo scenario di scambio accanto al percorso, aggiornato a ogni modifica")
+        self.side_by_side.setChecked(str(settings().value("views/side_by_side", "false")).lower() == "true")
+        self.side_by_side.toggled.connect(self._side_by_side_toggled)
         self.arrange_button = _toolbar_button("Riordina", "mdi6.auto-fix", self.arrange,
                                               "Dispone gli elementi in automatico")
         self.function_button = _toolbar_button("Nuova funzione…", "mdi6.function-variant", self.new_function,
@@ -1956,17 +2188,19 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         self.save_button.setProperty("primary", True)
         self.save_button.setToolTip("Salva la vista nel modello (Ctrl+S)")
         self.save_button.clicked.connect(self.save_view)
+        self.save_button.setVisible(generated is None)
         bar = QHBoxLayout()
         bar.setContentsMargins(0, 0, 12, 0)
-        bar.addWidget(self.title)
-        bar.addWidget(self.unsaved)
-        bar.addStretch(1)
-        for w in (self.level, self.domain_button, self.function_button, self.arrange_button, export,
-                  self.save_button):
+        bar.addWidget(_shrinkable(self.title), 1)
+        bar.addWidget(self.unsaved)  # the title takes the free space
+        for w in (self.drawing, self.side_by_side, self.level, self.domain_button, self.function_button,
+                  self.arrange_button, export, self.save_button):
             bar.addWidget(w)
         self.notice = QLabel(objectName="muted", wordWrap=True)
         self.notice.setStyleSheet(f"color: {WARN};")
         self.notice.hide()
+        self.legend = QLabel(LEGEND, objectName="muted", wordWrap=True)
+        self.legend.setContentsMargins(0, 2, 0, 2)
 
         self.search = QLineEdit(placeholderText="Cerca per ID o nome", objectName="search")
         self.search.setClearButtonEnabled(True)
@@ -1995,12 +2229,17 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
             button.toggled.connect(lambda on, n=nature: self.set_connector(n if on else None))
             connectors_layout.addWidget(button)
             self.connector_buttons[nature] = button
-        connectors_layout.addWidget(QLabel("Con la mano: trascina gli elementi per spostarli, uno spazio vuoto "
-                                           "per muoverti sulla tela, Maiusc + trascina per selezionarne più di uno. "
-                                           "Scegli un connettore e trascina da una funzione di sistema a un'altra "
-                                           "(o a un attore esterno). La mano, o Esc, per tornare a spostare gli "
-                                           "elementi.",
-                                           objectName="muted", wordWrap=True))
+        self.dataflow_hint = QLabel("Con la mano: trascina gli elementi per spostarli, uno spazio vuoto per "
+                                    "muoverti sulla tela, Maiusc + trascina per selezionarne più di uno. Scegli un "
+                                    "connettore e trascina da una funzione di sistema a un'altra (o a un attore "
+                                    "esterno). La mano, o Esc, per tornare a spostare gli elementi.",
+                                    objectName="muted", wordWrap=True)
+        connectors_layout.addWidget(self.dataflow_hint)
+        self.chain_hint = QLabel("Scegli un connettore e trascina da un passo al successivo: lo scambio (uno già "
+                                 "nel modello o uno nuovo) diventa lo «Scambio in uscita» del primo e l'«Ingresso» "
+                                 "del secondo. Da un attore esterno a un passo: il trigger. La mano, o Esc, per "
+                                 "tornare a spostare i passi.", objectName="muted", wordWrap=True)
+        connectors_layout.addWidget(self.chain_hint)
         connectors_layout.addStretch(1)
         # The panel at the side: two tabs, the tools (a dataflow) and the elements of the model.
         listing = QFrame()
@@ -2017,6 +2256,25 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         self.side_tabs.setTabToolTip(0, "La mano e i connettori")
         self.side_tabs.addTab(listing, icon("mdi6.playlist-plus"), "Elementi")
         self.side_tabs.setTabToolTip(1, "Gli elementi del modello da aggiungere alla vista")
+        # The steps of the chain, by cycle: a click selects the step in the view.
+        self.steps_list = StepsTree()
+        self.steps_list.moved.connect(self.move_step_to)
+        self.steps_list.setHeaderHidden(True)
+        self.steps_list.setIndentation(12)
+        self.steps_list.setWordWrap(True)
+        self.steps_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.steps_list.itemClicked.connect(lambda item, _c: self._step_chosen(item))
+        self.steps_list.itemDoubleClicked.connect(lambda item, _c: self._step_opened(item))
+        self.steps_list.customContextMenuRequested.connect(self._steps_list_menu)
+        self.steps_hint = QLabel(objectName="muted", wordWrap=True)
+        steps_panel = QFrame()
+        steps_layout = QVBoxLayout(steps_panel)
+        steps_layout.setContentsMargins(8, 8, 8, 8)
+        steps_layout.addWidget(self.steps_list, 1)
+        steps_layout.addWidget(self.steps_hint)
+        self.steps_panel = steps_panel
+        self.side_tabs.addTab(steps_panel, icon("mdi6.format-list-numbered"), "Passi")
+        self.side_tabs.setTabToolTip(2, "I passi della catena, per ciclo")
         self.side_tabs.tabBar().hide()  # chosen from the bar of icons at the right (ActivityBar)
         caption = QLabel(objectName="sectionCaption")
         caption.setContentsMargins(8, 8, 8, 0)
@@ -2033,6 +2291,7 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         split.addWidget(side)
         split.setStretchFactor(0, 1)
         split.setSizes([900, 280])
+        self.split = split
         # The panel closed towards the right and opened again from its icons, as the one at the left of the window.
         self.activity = ActivityBar(side, self.side_tabs, split, SIDE_ICONS, settings(), side="right",
                                     key="views/panel", width=280, shortcut="Ctrl+Alt+B")
@@ -2045,23 +2304,40 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         work.addWidget(self.activity)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 0, 0)  # the canvas and the panel down to the bottom, the icons to the edge
-        layout.addLayout(bar)
-        layout.addWidget(self.notice)
+        self.header = QWidget()  # hidden in a companion (see as_companion)
+        header = QVBoxLayout(self.header)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.addLayout(bar)
+        header.addWidget(self.notice)
+        header.addWidget(self.legend)
+        layout.addWidget(self.header)
         layout.addLayout(work, 1)
         QShortcut(QKeySequence.Delete, self.canvas, activated=self.delete_selected)
         QShortcut(QKeySequence(Qt.Key_Escape), self.canvas, activated=lambda: self.set_connector(None))
         QShortcut(QKeySequence.SelectAll, self, activated=self.select_all, context=Qt.WidgetWithChildrenShortcut)
         self.set_connector(None)  # the hand
         self.discard_changes(remember=False)
-        # An empty view starts from the elements to add; one with elements, from the tools.
+        # An empty view starts from the elements to add; one with elements, from the tools (a dataflow) or from its
+        # steps (a chain, a scenario).
+        has_steps = bool(dg.chain_steps(self.project.model, self.view)) if self.view.get("chain") else False
         self.side_tabs.setCurrentWidget(self.connectors if self.diagram_type == DIAGRAM_DATAFLOW and self.placed
-                                        else self.listing)
+                                        else self.steps_panel if has_steps and self.diagram_type in (
+                                            DIAGRAM_CHAIN, DIAGRAM_SCENARIO) else self.listing)
         self.side_caption.setText(self.side_tabs.tabText(self.side_tabs.currentIndex()).upper())
 
     # --- state -------------------------------------------------------------------------------------
 
     @property
+    def chain_view(self):
+        """A view of a chain (drawn as its path or as its scenario; a view of the scenario of an earlier version)."""
+        return self.view.get("diagram_type") in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO)
+
+    @property
     def diagram_type(self):
+        """The type of the drawing shown: a view of a chain is DIAGRAM_SCENARIO while drawn as its scenario."""
+        if self.chain_view:
+            drawing = self.drawing.currentText() if hasattr(self, "drawing") else dg.drawing(self.view)
+            return DIAGRAM_SCENARIO if drawing == SCENARIO else DIAGRAM_CHAIN
         return self.view.get("diagram_type")
 
     def working(self):
@@ -2075,9 +2351,21 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
             view.set("opened", sorted(k for k in self.opened if k in self.placed))
         else:
             view.set("level", self.level.currentText())
+        if self.diagram_type == DIAGRAM_DATAFLOW:
+            view.set("drawing", self.drawing.currentText() if self.swimlanes else None)
+        elif self.chain_view:  # one view for the chain (a scenario of an earlier version too, see _migrate)
+            view.set("diagram_type", DIAGRAM_CHAIN)
+            view.set("drawing", SCENARIO if self.diagram_type == DIAGRAM_SCENARIO else None)
         return view
 
+    @property
+    def swimlanes(self):
+        """A dataflow drawn as swimlanes (see model.diagrams.dataflow_lanes)."""
+        return self.diagram_type == DIAGRAM_DATAFLOW and self.drawing.currentText() == SWIMLANES
+
     def _set_dirty(self, dirty):
+        if self.generated is not None:  # generated: nothing to save
+            dirty = False
         if dirty != self.dirty:
             self.dirty = dirty
             self.unsaved.setVisible(dirty)
@@ -2094,6 +2382,10 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         self.level.setCurrentText(dg.level(self.view))
         self.level.blockSignals(False)
         self._level_shown = self.level.currentText()
+        self.drawing.blockSignals(True)
+        self.drawing.setCurrentText(dg.drawing(self.view))
+        self.drawing.blockSignals(False)
+        self._drawing_shown = self.drawing.currentText()
         self._set_dirty(False)
         self.refresh()
         self._clean = self._view_state()  # as saved (with the places given to the elements not placed yet)
@@ -2101,6 +2393,8 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
     @local_change
     def save_view(self):
         """«Salva vista»: what the view shows and where goes into the model, and the project is saved."""
+        if self.generated is not None:
+            return
         previous = self.view.copy()
         current = self.working()
         self.view.values = current.values
@@ -2112,15 +2406,20 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
     # --- undo ----------------------------------------------------------------------------------------
 
     def _view_state(self):
-        return dict(self.placed), set(self.opened), self.level.currentText(), dict(self.anchors)
+        return (dict(self.placed), set(self.opened), self.level.currentText(), dict(self.anchors),
+                self.drawing.currentText())
 
     def _restore_state(self, state):
-        placed, opened, level, anchors = state
+        placed, opened, level, anchors, drawing = state
         self.placed, self.opened, self.anchors = dict(placed), set(opened), dict(anchors)
         self.level.blockSignals(True)
         self.level.setCurrentText(level)
         self.level.blockSignals(False)
         self._level_shown = level
+        self.drawing.blockSignals(True)
+        self.drawing.setCurrentText(drawing)
+        self.drawing.blockSignals(False)
+        self._drawing_shown = drawing
         self.refresh()
         self._set_dirty(self._view_state() != self._clean)
 
@@ -2134,15 +2433,42 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
 
     # --- building ---------------------------------------------------------------------------------
 
+    def regenerate(self):
+        """A generated view: given again from the model (e.g. a new exchange of the domain), the elements moved by
+        the user kept where they are. False when it can no longer be given (e.g. its domain deleted)."""
+        view = self.generated()
+        if view is None:
+            return False
+        placed = dg.positions(view)
+        self.view = view
+        self.placed = {k: self.placed.get(k) or p for k, p in placed.items()}
+        self.refresh()
+        return True
+
     def refresh(self):
         """Draw the view again from the model (names, exchanges and steps may have changed)."""
         model = self.project.model
         self.title.setText(self.view.get("name") or "(vista senza nome)")
-        self.level.setVisible(self.diagram_type in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO))
-        self.arrange_button.setVisible(self.diagram_type in (DIAGRAM_DATAFLOW, DIAGRAM_CHAIN))
+        self.title.setToolTip(self.title.text())
+        self.drawing.setVisible(self.diagram_type == DIAGRAM_DATAFLOW or self.chain_view)
+        path = self.diagram_type == DIAGRAM_CHAIN
+        self.side_by_side.setVisible(path and self.generated is None)
+        self.legend.setVisible(self.diagram_type in (DIAGRAM_DATAFLOW, DIAGRAM_SCENARIO) or
+                               (path and self.side_by_side.isChecked()))
+        self.level.setVisible(self.diagram_type in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO) or self.swimlanes)
+        self.arrange_button.setVisible(self.diagram_type in (DIAGRAM_DATAFLOW, DIAGRAM_CHAIN)
+                                       and not self.swimlanes)
         self.domain_button.setVisible(self.diagram_type == DIAGRAM_BREAKDOWN)
         self.function_button.setVisible(self.diagram_type == DIAGRAM_FUNCTIONS)
-        self.side_tabs.setTabVisible(0, self.diagram_type == DIAGRAM_DATAFLOW)  # the tools: only a dataflow
+        composing = self.path_chain() is not None
+        # The tools: a dataflow, and the view of a chain (its path composed there).
+        tools = (self.diagram_type == DIAGRAM_DATAFLOW and not self.swimlanes) or composing
+        self.side_tabs.setTabVisible(0, tools)
+        self.side_tabs.setTabVisible(1, self.generated is None)  # generated: its elements are given
+        self.dataflow_hint.setVisible(self.diagram_type == DIAGRAM_DATAFLOW)
+        self.chain_hint.setVisible(composing)
+        self.side_tabs.setTabVisible(2, self.diagram_type in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO))
+        self._fill_steps_list()
         self.activity.show_state()
         gone = dg.missing(model, self.working())
         if gone:
@@ -2164,6 +2490,8 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         self._guides = []
         if self.diagram_type in dg.BREAKDOWN_TYPES:
             self._draw_breakdown()
+        elif self.swimlanes:
+            self._draw_lanes(dg.dataflow_lanes(model, self.working()), lambda m: m.exchange)
         elif self.diagram_type == DIAGRAM_DATAFLOW:
             self._draw_dataflow()
         elif self.diagram_type == DIAGRAM_CHAIN:
@@ -2171,15 +2499,59 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         elif self.diagram_type == DIAGRAM_SCENARIO:
             self._draw_scenario()
         if not self.items and not self.arrows:
-            empty = self.scene.addSimpleText("Vista vuota: aggiungi gli elementi dall'elenco a destra, trascinandoli "
-                                             "qui o con un doppio clic.", _font(9.5))
+            empty = self.scene.addSimpleText(
+                "Percorso vuoto: trascina qui le funzioni di sistema dall'elenco a destra, una per passo (o fai "
+                "doppio clic),\npoi collegale con i connettori di «Strumenti»." if composing else
+                "Vista vuota: aggiungi gli elementi dall'elenco a destra, trascinandoli qui o con un doppio clic.",
+                _font(9.5))
             empty.setBrush(QColor(MUTED))
             empty.setPos(30, 30)
         self.canvas.grow()
         self._fill_list()
+        self._sync_companion()
+
+    # --- the scenario at the side of the path ----------------------------------------------------------
+
+    def _side_by_side_toggled(self, on):
+        settings().setValue("views/side_by_side", "true" if on else "false")
+        self.refresh()
+
+    def _companion_view(self):
+        view = self.working()
+        view.set("drawing", SCENARIO)
+        return view
+
+    def _sync_companion(self):
+        """A chain drawn as its path, «Affianca lo scenario» checked: its scenario at its side, drawn again from
+        the view as it is in the page (not saved yet) at each change."""
+        wanted = self.diagram_type == DIAGRAM_CHAIN and self.generated is None and self.side_by_side.isChecked()
+        if wanted and self.companion is None:
+            self.companion = DiagramPage(self.project, self._companion_view(), self.findings_for,
+                                         generated=self._companion_view)
+            self.companion.as_companion()
+            self.companion.open_requested.connect(self.open_requested)
+            sizes = self.split.sizes()
+            self.split.insertWidget(1, self.companion)
+            total = sizes[0] or 900
+            self.split.setSizes([total // 2, total - total // 2] + sizes[1:])
+        if self.companion is None:
+            return
+        self.companion.setVisible(wanted)
+        if wanted:
+            self.companion.level.blockSignals(True)
+            self.companion.level.setCurrentText(self.level.currentText())
+            self.companion.level.blockSignals(False)
+            self.companion.regenerate()
+
+    def as_companion(self):
+        """Drawn at the side of another page: the drawing only (no bar, no panel)."""
+        self.header.hide()
+        self.side.hide()
+        self.activity.hide()
+        self.layout().setContentsMargins(0, 0, 0, 0)  # aligned with the canvas at its side
 
     def _box(self, key, w, h, pos, **kwargs):
-        box = Box(key, w, h, movable=self.diagram_type != DIAGRAM_SCENARIO, **kwargs)
+        box = Box(key, w, h, movable=self.diagram_type != DIAGRAM_SCENARIO and not self.swimlanes, **kwargs)
         box.setPos(*pos)
         box.on_move = self._moved  # after it is placed: only the moves of the user change the view
         box.on_open = self._open
@@ -2247,7 +2619,7 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
         for e in df.edges:
             lines = []
             for x in e.exchanges:
-                lines += [x.data or "(senza dato)", x.ident or ""]
+                lines += [x.data, " · ".join(p for p in (x.ident, "" if x.agreed else "da concordare") if p)]
             source, target = self.items[e.source], self.items[e.target]
             offset = 14 if (e.target, e.source) in pairs else 0
             lane = len(self.arrows) % 5 - 2
@@ -2255,7 +2627,8 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
             arrow = Arrow(_between(source, target, offset),
                           [line for line in lines if line != ""] if len(e.exchanges) == 1 else lines,
                           dashed=e.event, key=e.exchanges[0].uuid, nature=e.nature,
-                          exchanges=[x.uuid for x in e.exchanges],
+                          exchanges=[x.uuid for x in e.exchanges], color=ARROW if e.agreed else OPEN,
+                          label_color=TEXT if all(x.defined for x in e.exchanges) else MUTED,
                           route=_routed(source, target, lambda s=source, t=target: self._obstacles(s, t), offset,
                                         lane, anchors))
             arrow.setFlag(QGraphicsItem.ItemIsSelectable)  # Canc or right click: deleted from the model
@@ -2284,31 +2657,177 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
                 box.anchor_ids = anchor_ids(box.used_anchors)
         self._refresh_arrows()  # the labels, once every arrow has its path
 
+    def _fill_steps_list(self):
+        """«Passi»: the rows of the path in order, grouped by cycle (a new group where the cycle changes); a wait
+        between them; the steps not in the view, in grey."""
+        tree = self.steps_list
+        tree.clear()
+        if self.diagram_type not in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO):
+            return
+        composing = self.steps_chain() is not None  # the steps dragged to another place, or cycle
+        tree.setDragDropMode(QAbstractItemView.InternalMove if composing else QAbstractItemView.NoDragDrop)
+        tree.setDropIndicatorShown(composing)
+        model = self.project.model
+        steps = dg.chain_steps(model, self.view)
+        shown = set(dg.positions(self.working()))
+        muted, accent = QBrush(QColor(MUTED)), QBrush(QColor(ACCENT))
+        bold = QFont(tree.font())
+        bold.setBold(True)
+        group, cycle = None, object()
+        for s in steps:
+            if s.wait:
+                item = QTreeWidgetItem(tree, [s.what])
+                item.setIcon(0, icon("mdi6.timer-sand", MUTED))
+                item.setForeground(0, muted)
+                item.setData(0, WAIT_KEY_ROLE, s.key)
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsDropEnabled)
+                group, cycle = None, object()
+                continue
+            if group is None or s.cycle != cycle:
+                cycle = s.cycle
+                group = QTreeWidgetItem(tree, [f"Ciclo {s.cycle}" if s.cycle else "Senza ciclo"])
+                group.setFont(0, bold)
+                group.setForeground(0, accent)
+                group.setIcon(0, icon("mdi6.sync", ACCENT))
+                group.setData(0, CYCLE_ROLE, s.cycle)
+                group.setFlags(Qt.ItemIsEnabled | Qt.ItemIsDropEnabled)
+                group.setExpanded(True)
+            ident, name = self._step_text(s)
+            head = " · ".join(p for p in (s.number, ident) if p)
+            item = QTreeWidgetItem(group, [f"{head}  {s.what or name}".strip()])
+            item.setData(0, STEP_KEY_ROLE, s.key)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+            tip = self._step_tooltip(s)
+            if s.key not in shown:
+                item.setForeground(0, muted)
+                tip = "Non nella vista: aggiungilo da «Elementi».\n\n" + tip
+            item.setToolTip(0, tip)
+        total = sum(1 for s in steps if not s.wait)
+        cycles = len({s.cycle for s in steps if not s.wait})
+        self.steps_hint.setText(
+            (f"{total} {'passo' if total == 1 else 'passi'} in {cycles} {'ciclo' if cycles == 1 else 'cicli'}. "
+             "Clic: il passo nella vista; doppio clic: modificalo; clic destro: il suo menu. Trascinalo per "
+             "cambiarne l'ordine o, su un altro ciclo, il ciclo.") if total else
+            "Nessun passo: trascina le funzioni di sistema sulla tela.")
+
+    def _step_chosen(self, item):
+        """A step of «Passi» clicked: selected in the view (its box, or its message in a scenario), and brought
+        into sight."""
+        key = item.data(0, STEP_KEY_ROLE)
+        if key:
+            self.select_steps([key])
+
+    def selected_steps(self):
+        """The keys of the steps selected: their boxes (the path), their messages (the scenario)."""
+        keys = []
+        for item in self.scene.selectedItems():
+            if isinstance(item, Box):
+                key = item.key
+            elif isinstance(item, Arrow):
+                key = getattr(item, "step", None)
+            else:
+                key = None
+            if key and key.startswith(dg.STEP) and key not in keys:
+                keys.append(key)
+        return keys
+
+    def select_steps(self, keys):
+        """Those steps selected (their boxes, or their messages), the first brought into sight."""
+        found = [self.items[k] for k in keys if k in self.items]
+        found += [a for a in self.arrows if getattr(a, "step", None) in keys]
+        if not found:
+            return
+        self.scene.clearSelection()
+        for item in found:
+            item.setSelected(True)
+        self.canvas.ensureVisible(found[0])
+
+    def _step_opened(self, item):
+        key = item.data(0, STEP_KEY_ROLE)
+        if not key:
+            return
+        if self.steps_chain() is not None:
+            self.edit_step(key)
+        else:
+            self._open(key)
+
+    def _steps_list_menu(self, pos):
+        item = self.steps_list.itemAt(pos)
+        key = item.data(0, STEP_KEY_ROLE) if item is not None else None
+        if key and self.steps_chain() is not None:
+            from types import SimpleNamespace
+            self._step_menu(SimpleNamespace(key=key), self.steps_list.viewport().mapToGlobal(pos))
+
     def _step_text(self, s):
         by = self.level.currentText()
         if by == dg.BY_DOMAIN and s.domain_ident:
             return s.domain_ident, s.domain_name
         return s.function_ident, s.function_name
 
+    def _step_tooltip(self, s):
+        """The row of the path of the sheet, column by column."""
+        model = self.project.model
+
+        def ident(uuid):
+            e = model.get(uuid) if uuid else None
+            return (e.get("id") or model.label(e)) if e is not None else ""
+        rows = [("Ciclo", s.cycle), ("Dominio", s.domain_ident), ("Funzione SF", " ".join(
+            p for p in (s.function_ident, s.function_name) if p)), ("Cosa fa", s.what), ("Ingresso", ident(s.input)),
+                ("Dato prodotto", s.data), ("Natura", s.nature), ("Scambio in uscita", ident(s.exchange)),
+                ("Voci SRS", s.srs)]
+        text = f"Passo {s.number}\n" + "\n".join(f"{label}: {value}" for label, value in rows if value)
+        if s.bounce:
+            text += "\nRitorno a un dominio già percorso: rimbalzo (regola D4)"
+        return text
+
     def _draw_chain(self):
-        steps = dg.shown_steps(self.project.model, self.working())
-        laid = dg.chain_layout(steps, self.placed)
-        self.placed.update({s.key: laid[s.key] for s in steps})
+        model = self.project.model
+        view = self.working()
+        steps = dg.shown_steps(model, view)
+        actors = dg.chain_actors(model, view)
+        laid = dg.chain_layout(steps, self.placed, actors)
+        self.placed.update({k: laid[k] for k in [s.key for s in steps] + actors})
+        self._kinds = {s.key: "step" for s in steps}
+        for key in actors:
+            actor = model.get(key)
+            box = self._box(key, dg.NODE_W, dg.NODE_H, laid[key], ident=actor.get("id") or "attore esterno",
+                            text=actor.get("name") or "", style=ACTOR, badge="attore esterno" if actor.get("id") else "")
+            box.on_menu = self._actor_menu
+            self._kinds[key] = "external_actor"
         for s in steps:
             ident, name = self._step_text(s)
             data = " · ".join(p for p in (s.data, s.nature) if p)
             style = PROBLEM if self._has_problems(s.function) else BOUNCE if s.bounce else NORMAL
-            box = self._box(s.key, dg.STEP_W, dg.STEP_H, laid[s.key], ident=f"{s.index + 1} · {ident}".strip(" ·"),
+            box = self._box(s.key, dg.STEP_W, dg.STEP_H, laid[s.key], ident=f"{s.number} · {ident}".strip(" ·"),
                             text=f"{name}\n\n{s.what}".strip(), note=data, style=style,
                             badge=f"ciclo {s.cycle}" if s.cycle else "")
-            box.setToolTip(f"Passo {s.index + 1}: {s.what}" + ("\nRitorno a un dominio già percorso: rimbalzo "
-                                                              "(regola D4)" if s.bounce else ""))
+            box.setToolTip(self._step_tooltip(s))
+            box.on_menu = self._step_menu if self.path_chain() is not None else None
         for a, b in zip(steps, steps[1:]):
+            if not dg.linked_steps(model, a, b):  # no exchange between them: independent actions, no arrow
+                continue
             arrow = Arrow(_between(self.items[a.key], self.items[b.key]), dashed=a.nature == "EVENT",
-                          color=WARN if b.bounce else ARROW, key=a.exchange)
+                          color=WARN if b.bounce else ARROW, key=a.exchange)  # its datum: in the box of the step
             arrow.on_open = self._open
+            arrow.steps = (a.key, b.key)
+            arrow.on_menu = self._link_menu if self.path_chain() is not None else None
+            if arrow.on_menu is not None:
+                arrow.clickable("Dal passo " + a.number + " al passo " + b.number + " · clic destro: inverti il verso, "
+                                "apri lo scambio o toglilo dal percorso")
             self.scene.addItem(arrow)
             self.arrows.append(arrow)
+        for s in steps:  # with the external actors: the trigger (its «Ingresso»), an output to an actor
+            for name, outgoing in (("input", False), ("exchange", True)):
+                fe = model.get(getattr(s, name)) if getattr(s, name) else None
+                actor = (fe.get("target") if outgoing else fe.get("source")) if fe is not None else None
+                if self._kinds.get(actor) != "external_actor":
+                    continue
+                ends = (self.items[s.key], self.items[actor]) if outgoing else (self.items[actor], self.items[s.key])
+                arrow = Arrow(_between(*ends), [fe.get("id") or ""],
+                              dashed=chains.exchange_nature(model, fe) == "EVENT", key=fe.uuid)
+                arrow.on_open = self._open
+                self.scene.addItem(arrow)
+                self.arrows.append(arrow)
         if any(s.bounce for s in steps):
             unit = "dominio" if self.level.currentText() == dg.BY_DOMAIN else "funzione"
             legend = self.scene.addSimpleText(f"In giallo: ritorno a un {unit} già percorso dalla catena, dopo "
@@ -2318,7 +2837,13 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
             legend.setPos(min(self.items[s.key].pos().x() for s in steps), bottom)
 
     def _draw_scenario(self):
-        sc = dg.scenario(self.project.model, self.working())
+        keys = {s.index: s.key for s in dg.chain_steps(self.project.model, self.working())}
+        self._draw_lanes(dg.scenario(self.project.model, self.working()), lambda m: self._exchange_of(m.step),
+                         lambda m: keys.get(m.step))
+
+    def _draw_lanes(self, sc, exchange_of, step_of=None):
+        """Lifelines (or swimlanes) side by side, the messages between them from top to bottom (in bands by cycle,
+        when they have one); exchange_of(message): the exchange a double click opens."""
         x0, dx, head_w, head_h, top, dy = 40, 190, 160, 62, 124, 48
         x_of = {l.key: x0 + i * dx + head_w / 2 for i, l in enumerate(sc.lifelines)}
         bottom = top + max(len(sc.messages), 1) * dy + 10
@@ -2349,9 +2874,14 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
             if a == b:  # a step that stays on its lifeline: a short loop
                 b = a + 40
             ends = (lambda a=a, b=b, y=y: (QPointF(a, y), QPointF(b, y)))
-            arrow = Arrow(ends, [m.label] + ([m.ident] if m.ident else []), dashed=m.nature == "EVENT",
-                          key=self._exchange_of(m.step), label_above=True)
+            ident = " · ".join(p for p in (m.ident, "da concordare" if m.agreed is False else "") if p)
+            arrow = Arrow(ends, [m.label] + ([ident] if ident else []), dashed=m.nature == "EVENT",
+                          key=exchange_of(m), label_above=True, color=OPEN if m.agreed is False else ARROW,
+                          label_color=TEXT if m.defined else MUTED)
             arrow.on_open = self._open
+            arrow.step = step_of(m) if step_of is not None else None  # the step of the message (a scenario)
+            if arrow.step:  # selected with a click, as the box of its step in the path
+                arrow.clickable(f"Passo: {m.label}" + (" · doppio clic per aprire lo scambio" if arrow.key else ""))
             self.scene.addItem(arrow)
             self.arrows.append(arrow)
 
@@ -2405,10 +2935,14 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
     def add(self, key, pos=None):
         """Add an element of the model (or a step of the chain) to the view: where it was dropped, or in a free
         place."""
+        function = self.project.model.get(key) if self.path_chain() is not None else None
+        if function is not None and function.kind == "system_function":  # composing the path: a new step
+            return self.add_step(key, pos)
         if key in self.placed or key not in {a.key for a in dg.addable(self.project.model, self.working())}:
             return
         self.remember()
-        movable = self.diagram_type in (DIAGRAM_DATAFLOW, DIAGRAM_CHAIN)  # a breakdown is laid out in its grid
+        # A breakdown is laid out in its grid; swimlanes: placed in the graph by the tool.
+        movable = self.diagram_type in (DIAGRAM_DATAFLOW, DIAGRAM_CHAIN) and not self.swimlanes
         self.placed[key] = (round(pos.x() - dg.NODE_W / 2), round(pos.y() - dg.NODE_H / 2)) \
             if pos is not None and movable else None
         if self.diagram_type == DIAGRAM_FUNCTIONS:
@@ -2536,12 +3070,15 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
     connector = None
 
     def _connectable(self, key):
-        return getattr(self, "_kinds", {}).get(key) in dg.CONNECTABLE
+        return getattr(self, "_kinds", {}).get(key) in (*dg.CONNECTABLE, "step")
 
     @local_change
     def connect_elements(self, source, target, source_anchor=None, target_anchor=None):
         """A connector drawn from an element to another (from an anchor point to another): the functional exchange,
-        with its datum (asked); the anchors kept in the view. Returns the exchange created, or None."""
+        with its datum (asked); the anchors kept in the view. Returns the exchange created, or None. In the view of a
+        chain: the exchange between two steps (see _connect_steps)."""
+        if self.diagram_type == DIAGRAM_CHAIN:
+            return self._connect_steps(source, target) if self.connector and self.path_chain() is not None else None
         kinds = {self._kinds.get(source), self._kinds.get(target)}
         if self.connector is None or not kinds <= set(dg.CONNECTABLE) or kinds == {"external_actor"}:
             return None
@@ -2664,8 +3201,9 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
             self.delete_exchanges([u for a in arrows for u in a.exchanges])
         keys = self._selected_keys()
         model = self.project.model
-        elements = [k for k in keys if model.get(k) is not None]
-        steps = [k for k in keys if model.get(k) is None]
+        chain = self.diagram_type in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO)  # steps and actors: out of the view only
+        elements = [k for k in keys if model.get(k) is not None and not chain]
+        steps = [k for k in keys if model.get(k) is None or chain]
         if steps:
             self.remove(steps)
         if elements:
@@ -2707,6 +3245,18 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
             self.placed = dg.chain_layout(dg.shown_steps(self.project.model, self.working()), {})
         self._set_dirty(True)
         self.refresh()
+
+    def _drawing_changed(self, text):
+        """A dataflow drawn as a graph or as swimlanes, a chain as its path or its scenario: the elements and their
+        places stay, the steps selected too."""
+        selected = self.selected_steps()
+        state = list(self._view_state())
+        state[4] = getattr(self, "_drawing_shown", dg.drawing(self.view))  # as it was before the change
+        self.remember(state=tuple(state))
+        self._drawing_shown = text
+        self._set_dirty(True)
+        self.refresh()
+        self.select_steps(selected)
 
     def _level_changed(self, text):
         state = list(self._view_state())
@@ -2801,12 +3351,324 @@ class DiagramPage(_Toggles, _NewFunctions, _Undo, QWidget):
                 arrow.place_label(taken)
                 taken.append(arrow._label)
 
+    # --- the path of the chain, composed in its view ------------------------------------------------------
+
+    def path_chain(self):
+        """The chain whose path this view composes (a view of a chain), or None."""
+        if self.diagram_type != DIAGRAM_CHAIN:
+            return None
+        chain = self.project.model.get(self.view.get("chain") or "")
+        return chain if chain is not None and chain.kind == "functional_chain" else None
+
+    def steps_chain(self):
+        """The chain whose steps this view shows (a view of a chain, or its scenario of exchange): its steps are
+        changed from «Passi» (dragged, their menu); the canvas composes the path only in the view of the chain."""
+        if self.diagram_type not in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO):
+            return None
+        chain = self.project.model.get(self.view.get("chain") or "")
+        return chain if chain is not None and chain.kind == "functional_chain" else None
+
+    @staticmethod
+    def _row_key(key):
+        return key[len(dg.STEP):] if key and key.startswith(dg.STEP) else None
+
+    @local_change
+    def _edit_path(self, change, message, created=(), placed=None, gone=()):
+        """A change of the path of the chain: change(rows) changes the rows (False: nothing to do). In the model at
+        once, with the elements created for it (to be undone together); placed: {key: position} the steps added,
+        in this view (where they were dropped) and in the other views of the chain; gone: the keys of the steps
+        taken out of the path, out of the views (this one too, as saved: the steps are in it also if the view is
+        closed without saving it; where they were dropped is saved with «Salva vista»)."""
+        model = self.project.model
+        chain = self.steps_chain()
+        if chain is None:
+            return False
+        state = self._view_state()
+        previous = chain.copy()
+        rows = [dict(r) for r in chain.get("steps") or []]
+        if change(rows) is False:
+            return False
+        chain.set("steps", rows)
+        others = []
+        for diagram_type in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO):  # the views of the chain follow
+            for view in dg.views_of(model, diagram_type):
+                if view.get("chain") != chain.uuid:
+                    continue
+                layout = dict(view.get("layout") or {})
+                keyed = {**{k: v for k, v in layout.items() if k not in gone}, **{k: "" for k in placed or {}
+                                                                                  if k not in layout}}
+                if keyed != layout:
+                    others.append(view.copy())
+                    view.set("layout", keyed)
+                    self.project.update(view)
+        self.project.update(chain, previous)
+        self.remember(remove=created, state=state, restore=[previous, *others])
+        for key in gone:
+            self.placed.pop(key, None)
+        for key, pos in (placed or {}).items():
+            self.placed[key] = pos
+        self._set_dirty(self._view_state() != self._clean)
+        self.refresh()
+        self.model_edited.emit(message)
+        return True
+
+    def _arrow_at(self, pos):
+        """The step after which a function dropped at pos goes: the first step of the arrow under it, or None."""
+        if pos is None:
+            return None
+        for item in self.scene.items(QRectF(pos.x() - 10, pos.y() - 10, 20, 20)):
+            if isinstance(item, Arrow) and getattr(item, "steps", None):
+                return self._row_key(item.steps[0])
+        # Two steps one after the other without an arrow (independent): on the line between their middles.
+        steps = dg.shown_steps(self.project.model, self.working())
+        for a, b in zip(steps, steps[1:]):
+            box_a, box_b = self.items.get(a.key), self.items.get(b.key)
+            if box_a is None or box_b is None:
+                continue
+            p, q = box_a.sceneBoundingRect().center(), box_b.sceneBoundingRect().center()
+            d = q - p
+            length2 = d.x() ** 2 + d.y() ** 2
+            if not length2:
+                continue
+            t = ((pos.x() - p.x()) * d.x() + (pos.y() - p.y()) * d.y()) / length2
+            near = p + d * t
+            if 0.2 < t < 0.8 and abs(near.x() - pos.x()) + abs(near.y() - pos.y()) < 24:
+                return self._row_key(a.key)
+        return None
+
+    def add_step(self, function, pos=None):
+        """A function dropped on the canvas (or chosen with a double click): a new step of the path, at the end or,
+        dropped on the arrow between two steps, between them. What it does is asked."""
+        model = self.project.model
+        dialog = StepDialog(model, function, parent=self)
+        if not dialog.exec():
+            return None
+        what, cycle = dialog.values()
+        row = chains.new_step(function, what, cycle)
+        after = self._arrow_at(pos)
+        key = dg.step_key(row)
+        position = (round(pos.x() - dg.STEP_W / 2), round(pos.y() - dg.STEP_H / 2)) if pos is not None else None
+        label = " ".join(dg.ident_and_name(model.get(function))).strip()
+        self._edit_path(lambda rows: chains.insert_row(rows, row, after) and None, f"Nuovo passo: {label}",
+                        placed={key: position})
+        return key
+
+    def _path_row(self, key):
+        chain = self.steps_chain()
+        rows = (chain.get("steps") or []) if chain is not None else []
+        i = chains.row_index(rows, self._row_key(key))
+        return (rows[i], i, len(rows)) if i is not None else (None, None, len(rows))
+
+    def _step_menu(self, box, pos):
+        """Right click on a step of the view of a chain."""
+        row, i, count = self._path_row(box.key)
+        if row is None:
+            return
+        key = box.key
+        menu = QMenu()
+        menu.addAction(icon("mdi6.open-in-app"), "Apri la funzione", lambda: self._open(key))
+        menu.addSeparator()
+        menu.addAction(icon("mdi6.pencil-outline"), "Modifica «Cosa fa» e ciclo…", lambda: self.edit_step(key))
+        internal = row.get("nature") == INTERNAL
+        menu.addAction(icon("mdi6.home-import-outline"),
+                       "Il dato non resta nel dominio (togli «Interno»)" if internal else
+                       "Il dato resta nel dominio («Interno»)", lambda: self.set_internal(key, not internal))
+        menu.addAction(icon("mdi6.timer-sand"), "Inserisci un'attesa dopo questo passo…",
+                       lambda: self.insert_wait(key))
+        menu.addSeparator()
+        menu.addAction(icon("mdi6.arrow-left"), "Sposta prima", lambda: self.move_step(key, -1)).setEnabled(i > 0)
+        menu.addAction(icon("mdi6.arrow-right"), "Sposta dopo",
+                       lambda: self.move_step(key, 1)).setEnabled(i < count - 1)
+        menu.addSeparator()
+        menu.addAction(icon("mdi6.eye-off-outline"), "Togli dalla vista", lambda: self.remove([key]))
+        menu.addAction(icon("mdi6.trash-can-outline"), "Togli dal percorso…", lambda: self.remove_step(key))
+        menu.exec(pos)
+
+    def edit_step(self, key):
+        row, _i, _count = self._path_row(key)
+        if row is None:
+            return False
+        dialog = StepDialog(self.project.model, row.get("function"), row.get("what") or "", row.get("cycle") or "",
+                            self, title="Passo della catena")
+        if not dialog.exec():
+            return False
+        what, cycle = dialog.values()
+        rk = self._row_key(key)
+
+        def change(rows):
+            r = rows[chains.row_index(rows, rk)]
+            r["what"] = what
+            if cycle:
+                r["cycle"] = cycle
+            else:
+                r.pop("cycle", None)
+        return self._edit_path(change, "Passo modificato")
+
+    def set_internal(self, key, internal):
+        rk = self._row_key(key)
+
+        def change(rows):
+            r = rows[chains.row_index(rows, rk)]
+            if internal:
+                r["nature"] = INTERNAL
+            elif r.get("nature") == INTERNAL:
+                r.pop("nature")
+        return self._edit_path(change, "Dato del passo interno al dominio" if internal else "Passo modificato")
+
+    def insert_wait(self, key):
+        event, ok = QInputDialog.getText(self, "Attesa", "Evento atteso prima del ciclo successivo:")
+        if not ok:
+            return False
+        wait = chains.new_wait(event)
+        return self._edit_path(lambda rows: chains.insert_row(rows, wait, self._row_key(key)) and None,
+                               "Attesa inserita nel percorso")
+
+    def move_step_to(self, key, target, after, cycle):
+        """A step dragged in «Passi»: before or after the row of target (a key of the view; None: at the end), in
+        that cycle ("" none). Its exchanges stay: an exchange joins two steps only one after the other (see
+        model.diagrams.linked_steps)."""
+        row_key, target_key = self._row_key(key), self._row_key(target) if target else None
+
+        def change(rows):
+            i = chains.row_index(rows, row_key)
+            if i is None or row_key == target_key:
+                return False
+            before = [r.get(ROW_KEY) for r in rows], rows[i].get("cycle") or ""
+            row = rows.pop(i)
+            j = chains.row_index(rows, target_key) if target_key else None
+            rows.insert(len(rows) if j is None else j + 1 if after else j, row)
+            if cycle:
+                row["cycle"] = cycle
+            else:
+                row.pop("cycle", None)
+            if ([r.get(ROW_KEY) for r in rows], cycle) == before:
+                return False
+        moved = self._edit_path(change, f"Passo spostato{f' nel ciclo {cycle}' if cycle else ''}")
+        return moved is not False
+
+    def move_step(self, key, delta):
+        return self._edit_path(lambda rows: chains.move_row(rows, self._row_key(key), delta), "Passo spostato")
+
+    def remove_step(self, key, ask=True):
+        row, i, _count = self._path_row(key)
+        if row is None:
+            return False
+        if ask and QMessageBox.question(
+                self, "Togli dal percorso", "Togliere il passo dal percorso della catena? Le viste della catena non "
+                "lo mostrano più; la funzione e gli scambi restano nel modello.") != QMessageBox.Yes:
+            return False
+        return self._edit_path(lambda rows: chains.remove_row(rows, self._row_key(key)) and None,
+                               "Passo tolto dal percorso", gone=[key])
+
+    def _actor_menu(self, box, pos):
+        menu = QMenu()
+        menu.addAction(icon("mdi6.open-in-app"), "Apri la scheda", lambda: self._open(box.key))
+        menu.addSeparator()
+        menu.addAction(icon("mdi6.eye-off-outline"), "Togli dalla vista", lambda: self.remove([box.key]))
+        menu.exec(pos)
+
+    def _link_menu(self, arrow, pos):
+        """Right click on the arrow between two steps: its exchange opened, or out of the path."""
+        model = self.project.model
+        first, second = arrow.steps
+        row, _i, _count = self._path_row(first)
+        nxt, _j, _count = self._path_row(second)
+        sent = model.get(row.get("exchange") or "") if row is not None else None
+        menu = QMenu()
+        if sent is not None:
+            menu.addAction(icon("mdi6.open-in-app"), f"Apri {model.label(sent)}",
+                           lambda: self.open_requested.emit(sent.uuid))
+            menu.addSeparator()
+            menu.addAction(icon("mdi6.link-variant-off"), "Togli lo scambio dal percorso",
+                           lambda: self._edit_path(lambda rows: chains.unlink(rows, self._row_key(first),
+                                                                              self._row_key(second)),
+                                                   "Scambio tolto dal percorso"))
+        else:
+            hint = menu.addAction("Per collegarli con uno scambio: scegli un connettore in «Strumenti» e trascina "
+                                  "da un passo all'altro")
+            hint.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(icon("mdi6.swap-horizontal"), "Inverti il verso (il secondo passo prima del primo)",
+                       lambda: self.reverse_steps(first, second))
+        menu.exec(pos)
+
+    def reverse_steps(self, first, second):
+        """The arrow from a step to the next one turned round: the two steps in the opposite order. The exchanges
+        that no longer join two steps one after the other leave the path; then, if they were joined by an exchange,
+        the one in the opposite direction is asked (as when a connector is drawn: «Annulla» leaves them without)."""
+        model = self.project.model
+        chain = self.path_chain()
+        if chain is None:
+            return False
+        a, b = self._row_key(first), self._row_key(second)
+        trial = [dict(r) for r in chain.get("steps") or []]
+        gone = chains.reverse(trial, a, b)  # what leaves the path, to say so
+        if gone is False:
+            return False
+        rows = chain.get("steps") or []
+        i = chains.row_index(rows, a)
+        joined = rows[i].get("exchange") and rows[i].get("exchange") in gone  # the two steps had an exchange
+        names = ", ".join(model.label(model.get(u)) for u in gone if model.get(u) is not None)
+        message = "Passi invertiti" + (f" · tolti dal percorso, non più nel verso dei passi: {names}" if names else "")
+        if self._edit_path(lambda rows_: chains.reverse(rows_, a, b) and None, message) is False:
+            return False
+        if joined and self._step_functions(second, first):
+            self._connect_steps(second, first)  # the exchange in the new direction, if the user wants one
+        return True
+
+    def _step_functions(self, source, target):
+        """The functions of two steps, both known and different (an exchange can join them)."""
+        model = self.project.model
+        a, b = dg.step_of(model, self.view, source), dg.step_of(model, self.view, target)
+        return a is not None and b is not None and a.function and b.function and a.function != b.function
+
+    def _connect_steps(self, source, target):
+        """A connector drawn in the view of a chain: from a step to another, from an external actor to a step (the
+        trigger) or from a step to an actor. The exchange between their functions: one already in the model,
+        chosen, or a new one; it becomes «Scambio in uscita» of the first and «Ingresso» of the second."""
+        model = self.project.model
+        kinds = getattr(self, "_kinds", {})
+
+        def end(key):
+            if kinds.get(key) == "step":
+                step = dg.step_of(model, self.view, key)
+                return self._row_key(key), (step.function if step is not None else None)
+            return None, key
+        (rs, fs), (rt, ft) = end(source), end(target)
+        if rs is None and rt is None:  # two actors: no step
+            return None
+        if not fs or not ft:
+            QMessageBox.information(self, "Scambio", "Il passo non ha una funzione: sceglila prima nella scheda.")
+            return None
+        if fs == ft:
+            QMessageBox.information(self, "Stessa funzione",
+                                    "I due passi sono della stessa funzione: lo scambio non serve. Se il dato resta "
+                                    "nel dominio, segna il passo come interno (clic destro sul passo).")
+            return None
+        existing = chains.exchanges_between(model, fs, ft)
+        choice = NEW_ITEM
+        if existing:
+            dialog = ExchangeChoiceDialog(model, existing, self)
+            if not dialog.exec():
+                return None
+            choice = dialog.choice()
+        created = []
+        if choice == NEW_ITEM:
+            dialog = NewExchangeDialog(model, fs, ft, self.connector or "FLOW", None, self)
+            if not dialog.exec():
+                return None
+            created = dialog.create(self.project)
+            choice = created[-1].uuid
+        fe = model.get(choice)
+        self._edit_path(lambda rows: chains.link(model, rows, rs, rt, choice),
+                        f"Scambio nel percorso: {model.label(fe)}", created=created)
+        return fe
+
     def _open(self, key):
         uuid = key
-        index = dg.step_index(key) if key else None
-        if index is not None:  # a step: its function
-            steps = dg.chain_steps(self.project.model, self.view)
-            uuid = steps[index].function if index < len(steps) else None
+        step = dg.step_of(self.project.model, self.view, key) if key else None
+        if step is not None:  # a step: its function
+            uuid = step.function
         if uuid and self.project.model.get(uuid) is not None:
             self.open_requested.emit(uuid)
 

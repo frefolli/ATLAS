@@ -6,10 +6,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QGraphicsItem, QPushButton
 
 from arcadia_tool.model import diagrams as dg
-from arcadia_tool.model.schema import DIAGRAM_CHAIN, DIAGRAM_DATAFLOW, DIAGRAM_SCENARIO
+from arcadia_tool.model.schema import DIAGRAM_CHAIN, DIAGRAM_DATAFLOW, DIAGRAM_SCENARIO, PATH, SCENARIO
 from arcadia_tool.storage.project import Project
 from arcadia_tool.ui import model_tree
 from arcadia_tool.ui.diagrams import CELL_H, CELL_W, TITLE_H, BreakdownPage, DiagramPage, breakdown_layout
@@ -216,7 +216,7 @@ def test_a_dataflow_draws_the_exchanges_between_the_elements_added(tmp_path):
     assert set(edges) == {(f[(5, 1)].uuid, f[(6, 6)].uuid), (f[(6, 6)].uuid, d[11].uuid),
                           (d[11].uuid, f[(6, 4)].uuid)}
     request = edges[(f[(5, 1)].uuid, f[(6, 6)].uuid)]
-    assert request.event and request.exchanges[0].data == "Richiesta di frenatura"
+    assert request.event and request.exchanges[0].data == "EI-Richiesta di frenatura"  # by the ID of the Exchange Item
     assert request.exchanges[0].ident == "FE-DF05-DF06-01"
     # Exchanges with elements not in the view: counted on the element (DF02 → standstill, RBC → MRSP).
     assert df.nodes[f[(6, 4)].uuid].outside == 1 and df.nodes[f[(5, 1)].uuid].outside == 1
@@ -245,7 +245,8 @@ def test_a_connector_between_two_functions_creates_the_exchange_and_its_datum(ap
     other = DiagramPage(p, view(p, DIAGRAM_BREAKDOWN, [d[6].uuid]))
     assert not other.side_tabs.isTabVisible(0) and other.side_tabs.currentWidget() is other.listing  # no tools
     # The tabs chosen from the bar of icons at the right, as the panel of the window: no tools icon without tools.
-    assert page.side_tabs.tabBar().isHidden() and len(page.activity.buttons) == 2
+    assert page.side_tabs.tabBar().isHidden() and len(page.activity.buttons) == 3
+    assert not page.activity.buttons[2].isVisibleTo(page)  # «Passi»: only in the views of a chain
     assert page.side_caption.text() == "STRUMENTI" and other.side_caption.text() == "ELEMENTI"
     assert not other.activity.buttons[0].isVisibleTo(other) and other.activity.buttons[1].isChecked()
     assert not hasattr(page, "add_button") and not hasattr(page, "remove_button") and not hasattr(page, "undo_button")
@@ -274,7 +275,7 @@ def test_a_connector_between_two_functions_creates_the_exchange_and_its_datum(ap
     fe = page.connect_elements(a, b)
     item = p.model.get(fe.get("exchange_item"))
     assert fe.get("id") == "FE-DF02-DF05-01" and fe.get("nature") == "OPERATION" and fe.get("name") == item.get("name")
-    assert item.get("id") == "EI-RichiestaDiPosizione" and item.get("nature") == "OPERATION"
+    assert item.get("id") == "EI-RichiestaPosizione" and item.get("nature") == "OPERATION"
     assert created == [item.uuid, fe.uuid]
     arrow = next(i for i in page.scene.items() if isinstance(i, Arrow) and fe.uuid in i.exchanges)
     assert arrow.nature == "OPERATION"
@@ -740,9 +741,10 @@ def test_a_chain_marks_the_return_to_a_domain_already_passed(tmp_path):
     assert not any(s.bounce for s in dg.shown_steps(p.model, v))  # function by function: no return
     # A step taken out of the view can be added again from the list.
     layout = dict(v.get("layout"))
-    layout.pop(dg.step_key(2))
+    third = dg.step_key(chain.get("steps")[2])
+    layout.pop(third)
     v.set("layout", layout)
-    assert [a.key for a in dg.addable(p.model, v)] == [dg.step_key(2)]
+    assert [a.key for a in dg.addable(p.model, v) if a.kind == "step"] == [third]
 
 
 def test_a_scenario_has_a_lifeline_for_each_domain_and_the_exchanges_in_order(tmp_path):
@@ -751,8 +753,8 @@ def test_a_scenario_has_a_lifeline_for_each_domain_and_the_exchanges_in_order(tm
     sc = dg.scenario(p.model, v)
     assert [l.ident for l in sc.lifelines] == ["DF05", "DF06", "DF11"]
     assert [(m.label, m.ident, m.cycle) for m in sc.messages][:3] == [
-        ("Richiesta di frenatura", "FE-DF05-DF06-01", "1"), ("Comando dei freni", "FE-DF06-DF11-01", "1"),
-        ("Ingressi dal treno", "FE-DF11-DF06-01", "2")]
+        ("EI-Richiesta di frenatura", "FE-DF05-DF06-01", "1"), ("EI-Comando dei freni", "FE-DF06-DF11-01", "1"),
+        ("EI-Ingressi dal treno", "FE-DF11-DF06-01", "2")]
     last = sc.messages[-1]  # the last step has no exchange and no next step: it stays on its lifeline
     assert last.source == last.target == d[6].uuid and last.label == "Standstill"
     v.set("level", dg.BY_FUNCTION)  # the brake command reaches SF-DF11-01, the inputs come from SF-DF11-02
@@ -802,7 +804,9 @@ def test_the_bar_of_icons_chooses_the_tab_and_closes_and_opens_the_panel(app, tm
 def test_the_left_panel_has_the_elements_and_the_views_in_two_tabs(app, tmp_path):
     p, d, f, x, chain, *_ = build(tmp_path)
     flow = view(p, DIAGRAM_DATAFLOW, [f[(5, 1)].uuid], name="Comando dei freni")
-    view(p, DIAGRAM_SCENARIO, chain=chain, name="Frenatura")
+    scenario = view(p, DIAGRAM_CHAIN, chain=chain, name="Frenatura")
+    scenario.set("drawing", SCENARIO)
+    p.update(scenario)
     tree = model_tree.ModelTree()
     tree.set_project(p)
     assert [tree.tabs.tabText(i) for i in range(tree.tabs.count())] == ["Modello", "Viste grafiche"]
@@ -816,32 +820,52 @@ def test_the_left_panel_has_the_elements_and_the_views_in_two_tabs(app, tmp_path
     functions = view(p, DIAGRAM_FUNCTIONS, [d[5].uuid], name="Funzioni di DF05")
     tree.reload()
     groups = [tree.views.topLevelItem(i) for i in range(tree.views.topLevelItemCount())]
-    assert [g.text(0) for g in groups] == ["SA-1 Domini funzionali", "SA-2 Funzioni per dominio",
-                                           "SA-5 Dataflow funzionali", "SA-7 Catene funzionali",
-                                           "SA-7 Scenari di scambio"]
+    assert [g.text(0) for g in groups] == ["SA-1 Domini funzionali", "SA-2 Funzioni di sistema",
+                                           "SA-5 Dataflow funzionali", "SA-7 Catene funzionali"]
     assert [groups[0].child(i).text(0) for i in range(2)] == ["Vista complessiva", "Solo DF06"]
     assert [groups[1].child(i).text(0) for i in range(2)] == ["Vista complessiva", "Funzioni di DF05"]
     assert groups[0].child(1).data(0, model_tree.UUID_ROLE) == mine.uuid and groups[0].text(1) == "1"
     assert groups[1].child(1).data(0, model_tree.UUID_ROLE) == functions.uuid
-    groups = groups[:1] + groups[2:]  # below: SA-1, then the dataflows, the chains and the scenarios
-    assert groups[1].child(0).text(0) == "Comando dei freni" and groups[1].text(1) == "1"
-    assert "nessuna vista" in groups[2].child(0).text(0)
-    assert groups[3].child(0).text(0) == "Frenatura"
+    groups = groups[:1] + groups[2:]  # below: SA-1, then the dataflows and the chains
+    # SA-5: first the views generated from the model, the matrix and the context of each domain.
+    # Then the views of the users, in a group of their own.
+    assert [groups[1].child(i).text(0) for i in range(3)] == ["Matrice delle interfacce", "Contesto di un dominio",
+                                                               "Viste utente"]
+    assert groups[1].text(1) == "1" and groups[1].child(1).childCount() == 4
+    assert groups[1].child(1).child(0).data(0, model_tree.BREAKDOWN_ROLE) == dg.CONTEXT + d[2].uuid
+    users = groups[1].child(2)
+    assert users.text(1) == "1" and users.child(0).text(0) == "Comando dei freni" and users.isExpanded()
+    # SA-7: one view for each chain, its steps and domains in its tooltip.
+    assert groups[2].child(0).text(0) == "Frenatura" and groups[2].childCount() == 1
+    assert "passi · domini: " in groups[2].child(0).toolTip(0) and "scenario" in groups[2].child(0).toolTip(0)
     # A double click on the breakdown asks for it; on a view it opens its page; a click only selects.
     asked, selected = [], []
     tree.breakdown_requested.connect(asked.append)
     tree.element_selected.connect(selected.append)
-    tree.views.setCurrentItem(groups[1].child(0))
+    tree.views.setCurrentItem(groups[1].child(2))
     assert not selected
     tree.views.itemDoubleClicked.emit(groups[0].child(0), 0)
+    tree.views.itemDoubleClicked.emit(users.child(0), 0)
     tree.views.itemDoubleClicked.emit(groups[1].child(0), 0)
-    assert asked == ["domain"] and selected == [flow]
+    assert asked == ["domain", dg.INTERFACES] and selected == [flow]
     # Selecting a view shows its tab; each tab searches its own items.
     tree.tabs.setCurrentIndex(0)
     tree.select(flow.uuid)
     assert tree.tabs.currentIndex() == 1 and tree.pages.currentIndex() == 1
     tree.views_filter.setText("fren")  # «Comando dei freni», «Frenatura»
-    assert not groups[1].isHidden() and groups[2].isHidden() and not groups[3].isHidden()
+    assert not groups[1].isHidden() and not groups[2].isHidden() and groups[0].isHidden()
+    # Inside SA-5: the user views shown (a view found), the matrix and the contexts hidden.
+    assert not users.isHidden() and not users.child(0).isHidden() and groups[1].child(0).isHidden()
+    assert groups[1].child(1).isHidden()
+    tree.views_filter.setText("DF06")  # the context of DF06, in its nested group
+    contexts = groups[1].child(1)
+    assert not contexts.isHidden() and contexts.isExpanded() and users.isHidden()
+    assert [contexts.child(i).isHidden() for i in range(4)].count(False) == 1
+    tree.views_filter.setText("")
+    # Collapsed, it stays so when the tree is built again.
+    users.setExpanded(False)
+    tree.reload()
+    assert not tree._user_views.isExpanded()
     tree.filter.setText("freni")
     assert not tree._kind_items["domain"].isHidden()  # the kinds stay, their elements are filtered
 
@@ -1143,7 +1167,8 @@ def test_the_main_window_opens_creates_and_saves_the_views(app, tmp_path, monkey
     assert isinstance(page, DiagramPage) and page.view is created and len(page.items) == 4
     assert window.tree._view_items[created.uuid].text(0) == "Frenatura"
     assert window.tree.tabs.currentIndex() == 1  # the new view is shown in «Viste grafiche»
-    page.remove([dg.step_key(0)])
+    first = dg.step_key(chain.get("steps")[0])
+    page.remove([first])
     assert window.pages.tabText(window.pages.indexOf(page)).startswith("●")
     # Closing it with changes not saved asks first: cancelled, it stays.
     monkeypatch.setattr(mw, "resolve_unsaved_view", lambda page, parent: False)
@@ -1151,7 +1176,7 @@ def test_the_main_window_opens_creates_and_saves_the_views(app, tmp_path, monkey
     assert window.pages.indexOf(page) >= 0
     assert p.is_modified is False and window.save_action.isEnabled()  # the changes of the tab: Ctrl+S works
     window.save_action.trigger()  # Ctrl+S on a view: «Salva vista»
-    assert not page.dirty and dg.step_key(0) not in created.get("layout") and not p.is_modified
+    assert not page.dirty and first not in created.get("layout") and not p.is_modified
     assert not window.save_action.isEnabled()
     assert not window.pages.tabText(window.pages.indexOf(page)).startswith("●")
     # The view deleted from the tree: its tab closes.
@@ -1232,3 +1257,60 @@ def test_the_save_of_a_page_writes_only_its_changes_and_the_toolbar_saves_everyt
     assert not p.is_modified and not page.dirty and not window.editor.dirty
     assert p.model.get(d[5].uuid).get("name") == "Supervisione" and not v.get("layout")
     assert not window.save_action.isEnabled()
+
+
+def test_an_open_view_does_not_narrow_the_panel_at_the_left(app, tmp_path):
+    """The bar above a view gives way (its title and hint cut, the whole text in their tooltip): a long name or
+    hint does not make the tab area ask for more room, narrowing the panel of the model and of the views."""
+    from PySide6.QtWidgets import QLabel, QSizePolicy
+    p = Project.create(tmp_path / "p", "Prova")
+    for kind in (DIAGRAM_DATAFLOW, DIAGRAM_CHAIN, DIAGRAM_SCENARIO):
+        short = DiagramPage(p, p.new_element("diagram", name="V", diagram_type=kind))
+        long = DiagramPage(p, p.new_element("diagram", name="Una vista dal nome piuttosto lungo " * 6,
+                                            diagram_type=kind))
+        assert long.minimumSizeHint().width() == short.minimumSizeHint().width(), kind
+        assert long.title.toolTip() == long.view.get("name")
+    for page in (BreakdownPage(p), BreakdownPage(p, functions=True)):
+        hints = [w for w in page.findChildren(QLabel) if w.objectName() == "muted"]
+        assert hints and all(w.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored and w.toolTip() == w.text()
+                             for w in hints)
+
+
+def test_a_dataflow_as_swimlanes_with_the_data_exchanged(app, tmp_path):
+    from arcadia_tool.model.schema import DIAGRAM_DATAFLOW, GRAPH, SWIMLANES
+    p, d, f, x, chain, rbc, alone = build(tmp_path)
+    keys = [f[(2, 1)].uuid, f[(6, 4)].uuid, f[(6, 6)].uuid, f[(11, 1)].uuid, f[(11, 2)].uuid, f[(5, 1)].uuid,
+            rbc.uuid]
+    v = view(p, DIAGRAM_DATAFLOW, keys)
+    v.set("drawing", SWIMLANES)
+    lanes = dg.dataflow_lanes(p.model, v)
+    # A lane for each domain and the actor; an arrow for each exchange, with its datum and ID, in the order of the IDs.
+    assert sorted(lane.ident for lane in lanes.lifelines) == ["DF02", "DF05", "DF06", "DF11", "OE-01"]
+    assert [(m.ident, m.label) for m in lanes.messages] == [
+        ("FE-DF02-DF06-01", "EI-Velocità"), ("FE-DF05-DF06-01", "EI-Richiesta di frenatura"),
+        ("FE-DF06-DF11-01", "EI-Comando dei freni"), ("FE-DF11-DF06-01", "EI-Ingressi dal treno"),
+        ("FE-RBC-DF05-01", "EI-MA")]
+    brake = lanes.messages[2]
+    assert (brake.source, brake.target, brake.exchange) == (d[6].uuid, d[11].uuid, x["brake"].uuid)
+    # The lanes from left to right as the elements in the graph.
+    placed = {k: (100.0 * i, 0.0) for i, k in enumerate(reversed(keys))}
+    dg.set_positions(v, placed)
+    assert [lane.key for lane in dg.dataflow_lanes(p.model, v).lifelines][0] == rbc.uuid
+    # By function: a lane for each function.
+    v.set("level", dg.BY_FUNCTION)
+    assert len(dg.dataflow_lanes(p.model, v).lifelines) == 7
+    # In the page: the drawing chosen, saved with the view; no tools, no «Riordina», the lanes not moved.
+    v.set("level", None)
+    v.set("drawing", None)
+    page = DiagramPage(p, v)
+    assert page.drawing.currentText() == GRAPH and not page.swimlanes
+    page.drawing.setCurrentText(SWIMLANES)
+    assert page.swimlanes and page.dirty and not page.side_tabs.isTabVisible(0)
+    assert page.arrange_button.isHidden() and not page.level.isHidden()
+    assert not page.items[d[6].uuid].flags() & QGraphicsItem.ItemIsMovable
+    arrow = next(a for a in page.arrows if a.key == x["brake"].uuid)
+    assert arrow.lines == ["EI-Comando dei freni", "FE-DF06-DF11-01 · da concordare"]  # no state yet
+    page.save_view()
+    assert p.model.get(v.uuid).get("drawing") == SWIMLANES
+    assert DiagramPage(p, p.model.get(v.uuid)).swimlanes
+    assert page.undo() and not page.swimlanes  # Ctrl+Z: as a graph again

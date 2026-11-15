@@ -7,6 +7,35 @@ from arcadia_tool.model.schema import KINDS_BY_NAME, REF, REFS, TABLE
 LABEL_TEXT_LENGTH = 70
 # Referred to by their ID only; their short name is shown where they are chosen (see Element.choice_label).
 REFERRED_BY_ID = ("derived_requirement",)
+# Named by their ID only, everywhere: the ID is made of their name (EI-EventoAccensione, FC-TestAvvio), which
+# would be repeated next to it.
+NAMED_BY_ID = ("exchange_item", "functional_chain")
+
+
+ROW_KEY = "key"  # the stable identifier of a row of a table (see Field.row_key)
+
+
+def new_row_key():
+    """Never made of digits only: a key of an earlier format was the position of the row."""
+    return "r" + uuidlib.uuid4().hex[:7]
+
+
+def ensure_row_keys(element):
+    """Every row of the tables of the element with row keys gets one (a new row, a row of an earlier version, a
+    copy of another row). True when one was given."""
+    changed = False
+    for f in element.schema.fields:
+        if not f.row_key:
+            continue
+        seen = set()
+        for row in element.values.get(f.name) or []:
+            if not isinstance(row, dict):
+                continue
+            if not row.get(ROW_KEY) or row[ROW_KEY] in seen:
+                row[ROW_KEY] = new_row_key()
+                changed = True
+            seen.add(row[ROW_KEY])
+    return changed
 
 
 def is_empty(value):
@@ -42,7 +71,7 @@ class Element:
     def label(self):
         """How the element is referred to elsewhere (lists of references, table cells, diff…)."""
         ident = self.get("id", "")
-        if ident and self.kind in REFERRED_BY_ID:
+        if ident and self.kind in REFERRED_BY_ID + NAMED_BY_ID:
             return ident
         name = self.get("name") or self.get("title") or ""
         if not name and self.kind == "requirement" and self.get("text"):

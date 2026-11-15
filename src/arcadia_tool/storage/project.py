@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 from dulwich import porcelain
 
-from arcadia_tool.model.element import Element, Model, natural_key
+from arcadia_tool.model.element import Element, Model, ensure_row_keys, natural_key
 from arcadia_tool.model.identifiers import compute_id, is_automatic, matches_context
 from arcadia_tool.model.links import keep_in_step
 from arcadia_tool.model.teams import member_rows
@@ -424,6 +424,8 @@ class Project:
         # not have to read thousands of files back.
         self._saved = saved or {}
         self._pending_assets = {}
+        from arcadia_tool.storage.journal import Journal
+        self.journal = Journal(self)  # the local changes in order, to discard and restore one at a time
 
     @property
     def name(self):
@@ -652,6 +654,7 @@ class Project:
         _remove_temporary_files(path)
         model, saved = cls._load_model(path, repository, progress)
         project = cls(path, settings, repository, model, saved)
+        project.journal.load()  # before the migrations: they are the next entry
         project._migrate()
         return project
 
@@ -672,7 +675,45 @@ class Project:
         - The ADR of a reallocation had one SRS item («Sezione o clausola da riallocare»): now a list, one or
           more items («Sezioni o clausole da riallocare»).
         - The system functions had «Disponibilità nei modi (X / O)»: removed from the sheet, its values too.
-        - An SA-3 record had one «Funzione primaria»: now a list, one or more («Funzioni primarie»)."""
+        - An SA-3 record had one «Funzione primaria»: now a list, one or more («Funzioni primarie»).
+        - The steps of a chain had no identifier, and its views knew a step by its position («step:3»): each step
+          gets its key, and the views refer to it by that key (see model.diagrams.rekey_layout).
+        - A chain had two views, its path and its scenario of exchange (up to 0.14): one view now, drawn either
+          way. A scenario showing what a view of its chain shows already is deleted; another one becomes a view of
+          the chain drawn as a scenario; one of a chain no longer in the model is deleted (see
+          model.diagrams.merge_scenarios and migration_notes)."""
+        from arcadia_tool.model import chains
+        from arcadia_tool.model import diagrams as dg
+        for chain in self.model.of_kind("functional_chain"):
+            if ensure_row_keys(chain):
+                self.update(chain)
+        for view in self.model.of_kind("diagram"):
+            chain = self.model.get(view.get("chain") or "")
+            layout = view.get("layout") or {}
+            if chain is not None and chain.kind == "functional_chain":
+                keyed = dg.rekey_layout(layout, chain.get("steps") or [])
+                # Composed in the view and closed without saving it (up to 0.14): the steps were in the chain but
+                # none in its view, shown empty. They come back, placed by the tool.
+                steps = [dg.step_key(r) for r in chain.get("steps") or [] if not chains.is_wait(r)]
+                if steps and not any(k in keyed for k in steps):
+                    keyed = {**keyed, **{k: "" for k in steps}}
+                if keyed != layout:
+                    view.set("layout", keyed)
+                    self.update(view)
+        gone, turned, orphans = dg.merge_scenarios(self.model)
+        for view in turned:
+            view.set("diagram_type", dg.DIAGRAM_CHAIN)
+            view.set("drawing", dg.SCENARIO)
+            self.update(view)
+        for view in gone + orphans:
+            self.delete_element(view.uuid)
+        self.migration_notes = []
+        if gone or turned or orphans:
+            parts = [f"{len(gone)} unite alla vista della loro catena" if gone else "",
+                     f"{len(turned)} diventate viste della catena disegnate come scenario" if turned else "",
+                     f"{len(orphans)} di catene non più nel modello eliminate" if orphans else ""]
+            self.migration_notes.append("Viste «Scenario di scambio»: " + ", ".join(p for p in parts if p) +
+                                        ". Salva per confermare.")
         by_id = {}
         for item in self.model.of_kind("requirement"):
             by_id.setdefault(item.get("id"), item.uuid)
@@ -789,6 +830,36 @@ class Project:
     def element_file(self, element):
         return self.path / MODEL_DIR / KINDS_BY_NAME[element.kind].folder / f"{element.uuid}.yaml"
 
+    def saved_text(self, uuid, element=None):
+        """The text of the element as saved on disk; None if it is not there (new, or its deletion saved)."""
+        element = element or self.model.get(uuid)
+        if element is not None:
+            rel = self._relative(self.element_file(element))
+        elif uuid in self._deleted:
+            rel = self._relative(self._deleted[uuid])
+        else:
+            return None
+        data = self._saved.get(rel)
+        return data.decode("utf-8") if data is not None else None
+
+    def put_text(self, uuid, text):
+        """The element back as the text says (None: removed), as it is, with nothing else changed with it (see
+        storage.journal: the other elements changed with it are put back by the same entry)."""
+        current = self.model.get(uuid)
+        if text is None:
+            if current is None:
+                return
+            self.model.remove(uuid)
+            self._modified.discard(uuid)
+            if not self.is_new(current):
+                self._deleted[uuid] = self.element_file(current)
+            self._stamp(uuid)
+            return
+        element = loads(text)
+        self.model.add(element)
+        self._deleted.pop(uuid, None)
+        self._touch(uuid)
+
     def is_new(self, element):
         """True for an element never saved to disk (e.g. just created)."""
         return self._relative(self.element_file(element)) not in self._saved
@@ -807,6 +878,7 @@ class Project:
         self.model.add(element)
         self._touch(element.uuid)
         self._deleted.pop(element.uuid, None)
+        ensure_row_keys(element)  # e.g. a step added to the path of a chain: its key, by which the views know it
         if element.kind == "adr":  # the date of the decision: set when it is decided (see model.adr)
             from arcadia_tool.model.adr import decision_date_of
             element.set("decision_date", decision_date_of(element))
@@ -814,6 +886,9 @@ class Project:
             element.set("id", compute_id(element, self.model))
         if element.kind == "domain":
             self._default_referent(element, previous)
+        if element.kind == "functional_chain":  # the domains of the functions of its path are always involved
+            from arcadia_tool.model.chains import chain_domains
+            element.set("domains", chain_domains(self.model, element) or None)
         changed = {}
         for other in keep_in_step(self.model, element, previous):
             if other.kind == "domain":  # e.g. assigned in the sheet of a team: its referent proposed
@@ -993,6 +1068,9 @@ class Project:
             for other in [m for m in self.model.of_kind("message", "reading")
                           if uuid in (m.get("subject"), m.get("adr"))]:
                 self.delete_element(other.uuid)
+        if element.kind == "functional_chain":  # its views (the chain, the scenario) go with it
+            for view in self.views_of_chain(uuid):
+                self.delete_element(view.uuid)
         if element.kind == "derived_requirement":
             self._forget_derived(element)
         if element.kind == "requirement":  # who had analysed it goes with it
@@ -1002,6 +1080,8 @@ class Project:
             self._realigned = [*self._realigned, *self.realign_domains(element.get("id"))]
 
     _realigned = ()
+
+    migration_notes = ()  # what the migrations of the last opening changed, to be told to the user
 
     def take_realigned(self):
         """The identifiers changed by the deletions of domains since the last call: [(element, old, new)], each
@@ -1099,6 +1179,10 @@ class Project:
                 derived.set("system_function", [u for u in derived_functions(derived) if u != element.uuid])
                 self._touch(derived.uuid)
 
+    def views_of_chain(self, uuid):
+        """The graphic views of a functional chain (its chain and its scenario of exchange)."""
+        return [v for v in self.model.of_kind("diagram") if v.get("chain") == uuid]
+
     def delete_elements(self, uuids):
         for uuid in list(uuids):
             self.delete_element(uuid)
@@ -1178,6 +1262,7 @@ class Project:
         self._save_assets()
         if changed:
             ModelCache.write(self.path, self._saved)
+        self.journal.write()
         if self.is_modified:
             self.write_recovery()  # the changes still to be saved
         else:
@@ -1534,6 +1619,20 @@ class Project:
         if head:
             self.repository.move_to(head, files)
         self.discard_recovery()
+        self.journal.clear()
+
+    def discard_some(self, uuids):
+        """Only the changes of these elements (uuids, with those that need them: see storage.selective) go back to
+        the last published version; the others, and the settings, stay local, to publish. The project must then be
+        opened again."""
+        from arcadia_tool.storage.selective import files_discarding
+        self.save()
+        working = self._version_files()
+        files = files_discarding(self.repository.files_at(self.repository.head()), working, self.published_model(),
+                                 self.model, set(uuids))
+        self._write_files(files, working)
+        self.discard_recovery()
+        self.journal.clear()  # «Modifiche precedenti» again, with what is left
 
     @staticmethod
     def _selected_names(receive):

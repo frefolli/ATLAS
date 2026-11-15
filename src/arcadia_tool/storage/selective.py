@@ -5,6 +5,8 @@ element it does not have.
 - An element added or changed that refers to an element added: it needs that element (published with it).
 - An element removed: it needs the changes of the elements that referred to it in the last version (they no longer
   do, or they are removed too): else the version would still refer to it.
+- An element added or changed whose identifier another element had in the last version (removed, or renumbered):
+  it needs that change, else the identifier would be twice.
 
 Leaving a change out leaves out the changes that need it; choosing one chooses those it needs. What is not
 published stays as a local change, to publish later."""
@@ -43,10 +45,17 @@ def dependencies(before, after, changed):
     for e in before.elements.values():
         for r in references(e, known):
             referring.setdefault(r, set()).add(e.uuid)
+    held = {e.get("id"): e.uuid for e in before.elements.values() if e.get("id")}  # the identifiers in the version
     for uuid in changed:
         now = after.get(uuid)
         if now is not None:  # added or changed: the elements added it refers to
             needs[uuid] |= {r for r in references(now, known) if r in changed and before.get(r) is None}
+            # Its identifier was another's, removed or renumbered (e.g. DF02 given again after DF02 was deleted):
+            # without that change the identifier would be twice in the model.
+            other = held.get(now.get("id"))
+            if other is not None and other != uuid and other in changed and (
+                    after.get(other) is None or after.get(other).get("id") != now.get("id")):
+                needs[uuid].add(other)
         else:  # removed: the changes of the elements that referred to it
             needs[uuid] |= {e for e in referring.get(uuid, ()) if e in changed}
     return needs
@@ -101,6 +110,42 @@ def files_to_publish(base, working, before, after, chosen, settings, tracked):
             result[path] = working[path]
         elif path in base:
             result[path] = base[path]
+    return result
+
+
+def linked_to_discard(needs):
+    """{uuid of a change: the changes that go with it when it is discarded}: those that need it (what is kept must be
+    publishable as it is, see `dependencies`). Ticking one to discard ticks them; keeping one keeps what it needs."""
+    users = {u: set() for u in needs}
+    for u, required_ in needs.items():
+        for r in required_:
+            users.setdefault(r, set()).add(u)
+    return users
+
+
+def files_discarding(base, working, before, after, discarded):
+    """The project content with only the changes discarded (uuids) back as in the last version (base, {path: bytes}),
+    the rest as now (working), the settings too. The files of the project (assets): those of the elements back taken
+    from the last version; those only the elements discarded used, and not in the last version, go."""
+    def discarded_path(path):
+        return path.startswith(MODEL_DIR + "/") and _uuid_of(path) in discarded
+
+    result = {p: d for p, d in working.items() if not discarded_path(p)}
+    result.update({p: d for p, d in base.items() if discarded_path(p)})
+    used, dropped = set(), set()
+    for uuid in set(before.elements) | set(after.elements):
+        element = (before if uuid in discarded else after).get(uuid)
+        gone = after.get(uuid) if uuid in discarded else None
+        for e, into in ((element, used), (gone, dropped)):
+            for name in ASSET_FIELDS:
+                value = e.values.get(name) if e is not None else None
+                into |= set(value) if isinstance(value, list) else {value} if value else set()
+    for path in used:
+        if path not in result and path in base:
+            result[path] = base[path]
+    for path in dropped - used:
+        if path not in base:
+            result.pop(path, None)
     return result
 
 

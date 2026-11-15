@@ -9,15 +9,16 @@ the data exchanged) is read from the model every time, so the view cannot contra
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from arcadia_tool.model.element import natural_key
+from arcadia_tool.model.chains import domain_of, is_wait, step_number
+from arcadia_tool.model.element import ROW_KEY, Element, natural_key
 from arcadia_tool.model.schema import (DIAGRAM_BREAKDOWN, DIAGRAM_CHAIN, DIAGRAM_DATAFLOW, DIAGRAM_FUNCTIONS,
-                                       DIAGRAM_LEVELS, DIAGRAM_SCENARIO)
+                                       DIAGRAM_LEVELS, DIAGRAM_SCENARIO, GRAPH, INTERNAL, PATH, SCENARIO, SWIMLANES)
 
 DIAGRAM = "diagram"
-# The groups of the «Viste grafiche» tab of the left panel, one for each type of view, each with its SA.
-VIEW_GROUPS = (("SA-1 Domini funzionali", DIAGRAM_BREAKDOWN), ("SA-2 Funzioni per dominio", DIAGRAM_FUNCTIONS),
-               ("SA-5 Dataflow funzionali", DIAGRAM_DATAFLOW),
-               ("SA-7 Catene funzionali", DIAGRAM_CHAIN), ("SA-7 Scenari di scambio", DIAGRAM_SCENARIO))
+# The groups of the «Viste grafiche» tab of the left panel, one for each type of view, each with its SA. A chain has
+# one view, drawn as its path or as its scenario of exchange (see drawing).
+VIEW_GROUPS = (("SA-1 Domini funzionali", DIAGRAM_BREAKDOWN), ("SA-2 Funzioni di sistema", DIAGRAM_FUNCTIONS),
+               ("SA-5 Dataflow funzionali", DIAGRAM_DATAFLOW), ("SA-7 Catene funzionali", DIAGRAM_CHAIN))
 # Domains and their functions: SA-1 (the domains opened one by one) and SA-2 (the domains open on their functions).
 BREAKDOWN_TYPES = (DIAGRAM_BREAKDOWN, DIAGRAM_FUNCTIONS)
 # The breakdown of the whole model, first in the group of its SA: {kind of the SA: (name, with the functions, type)}.
@@ -45,6 +46,13 @@ def ident_and_name(element):
     return element.get("id") or "", element.get("name") or element.get("title") or ""
 
 
+def data_label(item, fallback=""):
+    """The data carried by an exchange, as the sheets name it: the ID of its Exchange Item (EI-Nome)."""
+    if item is None:
+        return fallback or ""
+    return item.get("id") or item.get("name") or fallback or ""
+
+
 # --- what a view shows, and where ---------------------------------------------------------------------
 
 def positions(view):
@@ -64,12 +72,29 @@ def set_positions(view, placed):
     view.set("layout", {key: (f"{round(p[0])},{round(p[1])}" if p else "") for key, p in sorted(placed.items())})
 
 
-def step_key(index):
-    return f"{STEP}{index}"
+def step_key(row, index=None):
+    """The key of a step of the path in a view: by the stable key of its row (by its position only for a row without
+    one, not saved yet)."""
+    key = row.get(ROW_KEY) if isinstance(row, dict) else None
+    return f"{STEP}{key or index}"
 
 
-def step_index(key):
-    return int(key[len(STEP):]) if key.startswith(STEP) and key[len(STEP):].isdigit() else None
+def rekey_layout(layout, rows):
+    """A layout of an earlier version, its steps by position («step:3»): by the keys of their rows. A position past
+    the end stays as it is (no longer in the chain, see missing)."""
+    result = {}
+    for key, value in (layout or {}).items():
+        position = key[len(STEP):] if key.startswith(STEP) else ""
+        if position.isdigit() and int(position) < len(rows) and isinstance(rows[int(position)], dict) and \
+                rows[int(position)].get(ROW_KEY):
+            key = step_key(rows[int(position)])
+        result[key] = value
+    return result
+
+
+def step_of(model, view, key):
+    """The step of the chain of the view with that key, or None."""
+    return next((s for s in chain_steps(model, view) if s.key == key), None)
 
 
 def missing(model, view):
@@ -80,8 +105,10 @@ def missing(model, view):
     if view.get("diagram_type") in BREAKDOWN_TYPES:
         return [k for k in positions(view)
                 if model.get(k) is None or model.get(k).kind not in ("domain", "system_function")]
-    steps = len(chain_steps(model, view))
-    return [k for k in positions(view) if step_index(k) is None or step_index(k) >= steps]
+    keys = {s.key for s in chain_steps(model, view)}
+    if view.get("diagram_type") == DIAGRAM_CHAIN:  # the external actors of its triggers and outputs
+        keys |= {a.uuid for a in model.of_kind("external_actor")}
+    return [k for k in positions(view) if k not in keys]
 
 
 # --- functional breakdown (SA-1, SA-2) ---------------------------------------------------------------
@@ -184,6 +211,8 @@ class Exchange:
     ident: str
     data: str  # the exchange item, or the name of the exchange
     nature: str
+    agreed: bool = True  # «Concordato» or «Approvato» (see model.interfaces)
+    defined: bool = True  # with its Exchange Item
 
 
 @dataclass
@@ -195,6 +224,11 @@ class Edge:
     @property
     def event(self):
         return bool(self.exchanges) and all(x.nature == "EVENT" for x in self.exchanges)
+
+    @property
+    def agreed(self):
+        """Every exchange of the arrow agreed between the teams."""
+        return all(x.agreed for x in self.exchanges)
 
     @property
     def nature(self):
@@ -253,15 +287,24 @@ def dataflow(model, view):
             return domain
         return None
 
+    from arcadia_tool.model.interfaces import UNDEFINED, agreed
+    focus = view.get("focus")  # a view of the context of a domain: only the exchanges of its functions
+
+    def outside(key):
+        node = result.nodes.get(key)
+        return node is None or node.container != focus
+
     edges = {}
     for fe in model.of_kind("functional_exchange"):
         s, t = end(fe.get("source")), end(fe.get("target"))
+        if s and t and s != t and focus and outside(s) and outside(t):
+            continue
         if s and t and s != t:
             item = model.get(fe.get("exchange_item")) if fe.get("exchange_item") else None
-            data = (item.get("name") or item.get("id")) if item is not None else fe.get("name")
+            data = data_label(item, "") or UNDEFINED
             nature = fe.get("nature") or (item.get("nature") if item is not None else None)
             edges.setdefault((s, t), Edge(s, t)).exchanges.append(
-                Exchange(fe.uuid, fe.get("id") or "", data or "", nature or ""))
+                Exchange(fe.uuid, fe.get("id") or "", data, nature or "", agreed(fe), item is not None))
         elif s and not t and s in result.nodes:
             result.nodes[s].outside += 1
         elif t and not s and t in result.nodes:
@@ -341,6 +384,61 @@ def _unit(df, key):
     return node.container or key
 
 
+CONTEXT = "context:"  # the key of the view of the context of a domain (see context_view)
+INTERFACES = "interfaces"  # the key of the matrix of the interfaces (see model.interfaces)
+
+
+def context_view(model, domain):
+    """The context of a domain, generated (not in the model): its functions, in its block, and the domains and the
+    external actors that exchange with them (a domain alone stands for its functions); only the exchanges of the
+    domain. Those that send to it on the left, those that only receive from it on the right."""
+    own = {f.uuid for f in model.of_kind("system_function") if f.get("domain") == domain.uuid}
+    neighbours = []
+    for fe in model.of_kind("functional_exchange"):
+        for here, there in ((fe.get("source"), fe.get("target")), (fe.get("target"), fe.get("source"))):
+            e = model.get(there) if here in own and there not in own else None
+            if e is None:
+                continue
+            outer = domain_of(model, e.uuid) if e.kind in ("system_function", "logical_function") else None
+            neighbours.append(outer.uuid if outer is not None else e.uuid)
+    view = Element(DIAGRAM)
+    view.set("name", f"Contesto di {' '.join(p for p in ident_and_name(domain) if p)}")
+    view.set("diagram_type", DIAGRAM_DATAFLOW)
+    view.set("focus", domain.uuid)
+    keys = sorted(own, key=lambda u: natural_key(model.get(u).get("id") or ""))
+    keys += [k for k in dict.fromkeys(neighbours) if k != domain.uuid and model.get(k) is not None]
+    set_positions(view, {k: None for k in keys})
+    set_positions(view, context_layout(dataflow(model, view), domain.uuid))
+    return view
+
+
+def context_layout(df, focus):
+    """The domain in the middle (its functions one below the other), on the left what sends to it, on the right
+    what only receives from it."""
+    members = df.containers[focus].members if focus in df.containers else []
+    into, out = set(), set()
+    for e in df.edges:
+        if e.target in members and e.source not in members:
+            into.add(e.source)
+        if e.source in members and e.target not in members:
+            out.add(e.target)
+    left = sorted(into, key=lambda k: natural_key(df.nodes[k].ident or df.nodes[k].name))
+    right = sorted(out - into, key=lambda k: natural_key(df.nodes[k].ident or df.nodes[k].name))
+    others = [k for k in df.nodes if k not in members and k not in into and k not in out]
+    step = NODE_H + 3 * GAP
+    height = max(len(members), len(left), len(right) + len(others), 1) * step
+    placed = {}
+    middle = round(1.5 * COLUMN_W)  # room for the labels of the arrows on both sides of the domain
+    for x, keys in ((0, left), (middle + NODE_W + 2 * PAD + round(0.8 * COLUMN_W), right + others)):
+        top = (height - len(keys) * step) / 2
+        for i, k in enumerate(keys):
+            placed[k] = (x, top + i * step)
+    top = (height - len(members) * step) / 2
+    for i, k in enumerate(members):
+        placed[k] = (middle + PAD, top + HEADER_H + i * step)
+    return placed
+
+
 def _layered(df):
     units = list(dict.fromkeys(_unit(df, k) for k in df.nodes))
     links = {(_unit(df, e.source), _unit(df, e.target)) for e in df.edges}
@@ -403,29 +501,40 @@ class Step:
     what: str
     data: str
     nature: str
-    exchange: str
+    exchange: str  # «Scambio in uscita»
     bounce: bool = False  # back to a domain (or function) already passed, after another one (rule D4)
+    number: str = ""  # «#» of the sheet: the position among the steps that are not waiting rows ("" for those)
+    wait: bool = False  # a row «Attesa: …» between two cycles: not a step, not drawn
+    input: str = None  # «Ingresso»: the exchange received
+    srs: str = ""
 
     def unit(self, level):
         return self.function if level == BY_FUNCTION or not self.domain else self.domain
 
 
 def chain_steps(model, view):
-    """Every step of the chain of the view («Percorso» of its sheet), in order."""
+    """Every row of the path of the chain of the view («Percorso» of its sheet), in order, the waiting rows
+    included (their keys are the positions of the rows)."""
     chain = model.get(view.get("chain")) if view.get("chain") else None
     if chain is None:
         return []
     steps = []
-    for i, row in enumerate(chain.get("steps") or []):
+    rows = chain.get("steps") or []
+    for i, row in enumerate(rows):
         function = model.get(row.get("function")) if row.get("function") else None
-        domain = model.get(function.get("domain")) if function is not None and function.get("domain") else None
+        domain = domain_of(model, function.uuid) if function is not None else None  # also of a logical function
         f_ident, f_name = ident_and_name(function) if function is not None else ("", "")
         d_ident, d_name = ident_and_name(domain) if domain is not None else ("", "")
-        steps.append(Step(i, step_key(i), str(row.get("cycle") or ""),
+
+        def exchange(name, row=row):
+            fe = model.get(row.get(name) or "")
+            return fe.uuid if fe is not None and fe.kind == "functional_exchange" else None
+        steps.append(Step(i, step_key(row, i), str(row.get("cycle") or ""),
                           function.uuid if function is not None else None, f_ident, f_name,
                           domain.uuid if domain is not None else None, d_ident, d_name,
                           row.get("what") or "", row.get("data") or "", row.get("nature") or "",
-                          row.get("exchange") if model.get(row.get("exchange") or "") is not None else None))
+                          exchange("exchange"), number=step_number(model, rows, i), wait=is_wait(row),
+                          input=exchange("input"), srs=row.get("srs") or ""))
     return steps
 
 
@@ -433,11 +542,47 @@ def level(view):
     return view.get("level") or BY_DOMAIN
 
 
+def drawing(view):
+    """A dataflow: drawn as a graph (the default) or as swimlanes. A chain: its path (the default) or its scenario
+    of exchange (a view of the scenario of an earlier version, too)."""
+    if view.get("diagram_type") in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO):
+        scenario = view.get("diagram_type") == DIAGRAM_SCENARIO or view.get("drawing") == SCENARIO
+        return SCENARIO if scenario else PATH
+    return SWIMLANES if view.get("drawing") == SWIMLANES else GRAPH
+
+
+def is_scenario(view):
+    """A view of a chain drawn as its scenario of exchange."""
+    return view.get("diagram_type") in (DIAGRAM_CHAIN, DIAGRAM_SCENARIO) and drawing(view) == SCENARIO
+
+
+def merge_scenarios(model):
+    """The views of the scenario of exchange of an earlier version (a view of their own, DIAGRAM_SCENARIO), in the
+    views of their chains: the scenario is a drawing of the view of the chain. Returns (gone, turned, orphans): the
+    scenarios that showed what a view of their chain shows already (the same steps, at the same level), to be
+    deleted; those that showed something else, to become views of the chain drawn as a scenario (with their name,
+    steps and level); those of a chain no longer in the model, to be deleted."""
+    gone, turned, orphans = [], [], []
+    for view in model.of_kind(DIAGRAM):
+        if view.get("diagram_type") != DIAGRAM_SCENARIO:
+            continue
+        chain = model.get(view.get("chain") or "")
+        if chain is None or chain.kind != "functional_chain":
+            orphans.append(view)
+            continue
+        steps = {k for k in positions(view) if k.startswith(STEP)}
+        same = any(v.get("diagram_type") == DIAGRAM_CHAIN and v.get("chain") == chain.uuid and
+                   level(v) == level(view) and {k for k in positions(v) if k.startswith(STEP)} == steps
+                   for v in model.of_kind(DIAGRAM))
+        (gone if same else turned).append(view)
+    return gone, turned, orphans
+
+
 def shown_steps(model, view):
     """The steps the view shows, in the order of the chain, with the returns to a domain (or function) already
     passed marked (rule D4)."""
     keys = set(positions(view))
-    steps = [s for s in chain_steps(model, view) if s.key in keys]
+    steps = [s for s in chain_steps(model, view) if s.key in keys and not s.wait]
     seen, previous = set(), None
     for s in steps:
         unit = s.unit(level(view))
@@ -450,15 +595,26 @@ def shown_steps(model, view):
 STEP_W, STEP_H, STEP_DX = 170, 190, 220
 
 
-def chain_layout(steps, placed=None):
-    """Positions of the steps of a chain: those placed stay, the others in a row after them."""
+def chain_layout(steps, placed=None, actors=()):
+    """Positions of the steps of a chain: those placed stay, the others in a row after them; the external actors
+    (keys) not placed, in a row below the steps."""
     placed = {k: p for k, p in (placed or {}).items() if p}
     x = max((p[0] for p in placed.values()), default=40 - STEP_DX) + STEP_DX
     for s in steps:
         if s.key not in placed:
             placed[s.key] = (x, 60)
             x += STEP_DX
+    x = 40
+    for key in actors:
+        if key not in placed:
+            placed[key] = (x, 60 + STEP_H + 90)
+            x += STEP_DX
     return placed
+
+
+def chain_actors(model, view):
+    """The external actors in a view of a chain (its keys that are actors), in the order of the view."""
+    return [k for k in positions(view) if model.get(k) is not None and model.get(k).kind == "external_actor"]
 
 
 @dataclass
@@ -467,6 +623,18 @@ class Lifeline:
     ident: str
     name: str
     actor: bool = False
+
+
+def linked_steps(model, a, b):
+    """The two steps (one after the other) are joined: the exchange the first sends («Scambio in uscita») is the one
+    the second receives («Ingresso»), or goes to its function (a path written before «Ingresso»). Without an exchange
+    they are actions one after the other, independent: no arrow between them."""
+    if not a.exchange:
+        return False
+    if b.input:
+        return b.input == a.exchange
+    fe = model.get(a.exchange)
+    return fe is not None and bool(b.function) and fe.get("target") == b.function
 
 
 @dataclass
@@ -478,6 +646,9 @@ class Message:
     nature: str
     cycle: str
     step: int
+    exchange: str = None  # a dataflow in swimlanes: the exchange of the arrow
+    agreed: bool = None  # an exchange: agreed between the teams (None: not an exchange, an action of a step)
+    defined: bool = True  # an exchange: with its Exchange Item
 
 
 @dataclass
@@ -488,8 +659,10 @@ class Scenario:
 
 def scenario(model, view):
     """The exchanges of the steps shown, in order: one lifeline for each domain (or function) and external actor.
-    A step with its exchange is a message from the producer to the user of the exchange; without one, from the
-    step to the next one, with the data it produces."""
+    The exchange a step receives («Ingresso»), when it is not the one sent by the step before, is a message first
+    (e.g. the trigger from an actor). A step with its exchange («Scambio in uscita») is a message from the producer
+    to the user of the exchange; without one, it is an action on its own lifeline (its data, or what it does): the
+    steps are not joined without an exchange (see linked_steps)."""
     by = level(view)
     steps = shown_steps(model, view)
     lifelines = {}
@@ -504,23 +677,79 @@ def scenario(model, view):
             lifelines[e.uuid] = Lifeline(e.uuid, *ident_and_name(e), actor=e.kind == "external_actor")
         return e.uuid
 
+    from arcadia_tool.model.interfaces import UNDEFINED, agreed
+
+    def message(fe, s, nature=""):
+        source, target = lifeline(fe.get("source")), lifeline(fe.get("target"))
+        item = model.get(fe.get("exchange_item")) if fe.get("exchange_item") else None
+        label = data_label(item, "") or UNDEFINED
+        nature = nature or fe.get("nature") or (item.get("nature") if item is not None else "") or ""
+        return source, target, label, nature, fe.get("id") or ""
+
+    def state(fe):
+        return {"exchange": fe.uuid, "agreed": agreed(fe), "defined": bool(fe.get("exchange_item"))}
+
     result = Scenario()
+    sent = None  # the exchange of the step before
     for i, s in enumerate(steps):
+        received = model.get(s.input) if s.input else None
+        if received is not None and s.input != sent:  # the exchange that starts the step (e.g. from an actor)
+            source, target, label, nature, ident = message(received, s)
+            if source is not None:
+                result.messages.append(Message(source, target or source, label, ident, nature, s.cycle, s.index,
+                                               **state(received)))
+        sent = s.exchange
         fe = model.get(s.exchange) if s.exchange else None
+        extra = {}
         if fe is not None:
-            source, target = lifeline(fe.get("source")), lifeline(fe.get("target"))
-            item = model.get(fe.get("exchange_item")) if fe.get("exchange_item") else None
-            label = (item.get("name") if item is not None else None) or fe.get("name") or s.data
-            nature = s.nature or fe.get("nature") or ""
-            ident = fe.get("id") or ""
+            source, target, label, nature, ident = message(fe, s, s.nature if s.nature != INTERNAL else "")
+            extra = state(fe)
         else:
-            source = lifeline(s.function)
-            target = lifeline(steps[i + 1].function) if i + 1 < len(steps) else None
+            source = target = lifeline(s.function)
             label, nature, ident = s.data, s.nature, ""
         if source is None:
             continue
-        result.messages.append(Message(source, target or source, label or s.what, ident, nature, s.cycle, s.index))
+        result.messages.append(Message(source, target or source, label or s.what, ident, nature, s.cycle, s.index,
+                                       **extra))
     result.lifelines = list(lifelines.values())  # in the order they enter the scenario
+    return result
+
+
+def dataflow_lanes(model, view):
+    """A dataflow as swimlanes: a lane for each domain (or function, see level) and external actor of the view, in
+    the order they have from left to right in the graph; an arrow for each exchange between them, with its datum
+    (the Exchange Item) and its ID, in the order of the IDs. An exchange inside a lane: a loop on it."""
+    flow = dataflow(model, view)
+    by = level(view)
+    placed = positions(view)
+    lanes = {}
+
+    def lane_of(key):
+        node = flow.nodes.get(key)
+        if node is None:
+            return None
+        if by == BY_DOMAIN and node.container in flow.containers:
+            c = flow.containers[node.container]
+            lanes.setdefault(c.key, Lifeline(c.key, c.ident, c.name))
+            return c.key
+        lanes.setdefault(key, Lifeline(key, node.ident, node.name, actor=node.kind == "external_actor"))
+        return key
+
+    for key in flow.nodes:
+        lane_of(key)
+    messages = []
+    for edge in flow.edges:
+        source, target = lane_of(edge.source), lane_of(edge.target)
+        for x in edge.exchanges:
+            messages.append(Message(source, target or source, x.data, x.ident, x.nature, "", -1, exchange=x.uuid,
+                                    agreed=x.agreed, defined=x.defined))
+    messages.sort(key=lambda m: natural_key(m.ident or m.label))
+
+    def left(lane):
+        keys = [lane.key] + (flow.containers[lane.key].members if lane.key in flow.containers else [])
+        xs = [placed[k][0] for k in keys if placed.get(k)]
+        return (min(xs) if xs else float("inf"), natural_key(lane.ident or lane.name))
+    result = Scenario(sorted(lanes.values(), key=left), messages)
     return result
 
 
@@ -564,10 +793,18 @@ def addable(model, view):
                     result.append(Addable(f.uuid, "system_function", f.ident, f.name, heading))
         return result
     for s in chain_steps(model, view):
-        if s.key not in keys:
+        if s.key not in keys and not s.wait:  # a waiting row is not a step
             what = s.domain_ident if level(view) == BY_DOMAIN and s.domain_ident else s.function_ident
-            result.append(Addable(s.key, "step", f"Passo {s.index + 1}", f"{what} · {s.what}".strip(" ·"),
+            result.append(Addable(s.key, "step", f"Passo {s.number}", f"{what} · {s.what}".strip(" ·"),
                                   "Passi della catena"))
+    if view.get("diagram_type") == DIAGRAM_CHAIN and not is_scenario(view) and             model.get(view.get("chain") or "") is not None:
+        # The path composed in the view: a function dropped is a new step; an actor, the source of a trigger.
+        for actor in model.of_kind("external_actor"):
+            if actor.uuid not in keys:
+                result.append(Addable(actor.uuid, actor.kind, *ident_and_name(actor), "Attori esterni"))
+        for d in breakdown(model):
+            heading = "Nuovo passo · " + (" · ".join(p for p in (d.ident, d.name) if p) or "senza dominio")
+            result += [Addable(f.uuid, "system_function", f.ident, f.name, heading) for f in d.functions]
     return result
 
 
@@ -577,4 +814,5 @@ def new_view_layout(model, diagram_type, chain=None):
     if diagram_type in (*BREAKDOWN_TYPES, DIAGRAM_DATAFLOW) or chain is None:
         return {}
     element = model.get(chain)
-    return {step_key(i): "" for i in range(len(element.get("steps") or []))} if element is not None else {}
+    return {step_key(row, i): "" for i, row in enumerate(element.get("steps") or []) if not is_wait(row)} \
+        if element is not None else {}

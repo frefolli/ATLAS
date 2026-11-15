@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
                                QListWidgetItem,
                                QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QStyle,
-                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit,
-                               QVBoxLayout, QWidget)
+                               QStyledItemDelegate, QTableWidget, QTableWidgetItem, QTextEdit, QToolButton,
+                               QToolTip, QVBoxLayout, QWidget)
 
 from arcadia_tool.checks import CHECKS_BY_CODE, count
 from arcadia_tool.checks.fields import SRS_CARD
@@ -24,7 +24,7 @@ from arcadia_tool.model.teams import DA_FIELD, MEMBERS, da_teams, member_rows
 from arcadia_tool.model.adr import (approval_problems, approve_new_domain, approve_reallocation, can_approve,
                                     decided_reallocations, open_reallocations, reallocation_pending,
                                     reallocation_preview, reallocation_problems, sections_taken)
-from arcadia_tool.model.element import is_empty, natural_key
+from arcadia_tool.model.element import ROW_KEY, is_empty, natural_key, new_row_key
 from arcadia_tool.model.required import save_refusal
 from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_SECTION, ADR_SHARED, ADR_UNMAPPED, BOOL, DA_DECISION, ENUM,
                                        IMAGE, INT, KINDS_BY_NAME, MAP, MULTIENUM, REF, REFS, STR, STRLIST, TABLE, TEXT, enum_option)
@@ -43,8 +43,12 @@ TRACE_CARDS = ("domain", "system_function", "logical_function", "derived_require
 FINDINGS_SHOWN = 8  # findings of the checks listed in the header of a sheet; the others are in the panel
 # Kinds whose sheet has the sections in another order: an ADR shows first what it is about (SRS items, ADR).
 # Their references are chosen in a window with search and ticks (see _picker_widget), not from a drop-down list.
-PICKER_KINDS = ("domain", "system_function", "adr")
-SECTION_ORDER = {"adr": ("Identificazione", ADR_DETAILS, "Relazioni", "Descrizione", DA_DECISION)}
+PICKER_KINDS = ("domain", "system_function", "adr", "exchange_item")
+# Sheets whose fields have a «?» on the left with what they mean (Field.guide): SA-1 … SA-3, SA-5 … SA-7.
+HELP_KINDS = ("domain", "system_function", "trace_record", "functional_exchange", "exchange_item",
+              "functional_chain")
+SECTION_ORDER = {"adr": ("Identificazione", ADR_DETAILS, "Relazioni", "Descrizione", DA_DECISION),
+                 "functional_chain": ("Identificazione", "Contesto")}
 # The texts of the SRS items are those of the specification, imported: plain text, no styles.
 PLAIN_TEXT_KINDS = ("requirement",)
 HEADER = "@header"  # the header card of the sheet, in ElementEditor.widgets
@@ -240,15 +244,21 @@ class TableWidget(QWidget):
     def __init__(self, model, field, choices=None):
         super().__init__()
         self.model, self.columns = model, field.columns
+        self.row_keys = field.row_key  # each row with its stable key (see Field.row_key)
+        self.read_only = False
         # function(column) → [(value, label)]: the list of a column whose choices depend on the element
         self.choices = choices
         self.table = QTableWidget(0, len(self.columns))
         self.table.setHorizontalHeaderLabels([c.label for c in self.columns])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # readable headers
+        for c, col in enumerate(self.columns):
+            if col.computed == "step_number":  # a number: no wider than it
+                self.table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeToContents)
         self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setAlternatingRowColors(True)
         self.table.setMinimumHeight(180)
         self.table.itemChanged.connect(lambda _: self.changed.emit())
+        self.changed.connect(self._refresh_computed)  # the columns computed from the row follow it
         add = QPushButton(icon("mdi6.plus"), "Aggiungi riga")
         remove = QPushButton(icon("mdi6.trash-can-outline"), "Elimina riga")
         add.clicked.connect(self._add_clicked)
@@ -272,13 +282,32 @@ class TableWidget(QWidget):
         self.table.insertRow(r)
         for c, col in enumerate(self.columns):
             value = row.get(col.name, "")
-            if col.choices or col.type in (ENUM, REF):
+            if col.computed or self.read_only:  # computed from the row (or a table only shown): not edited
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if col.computed:
+                    item.setForeground(QColor(MUTED))
+                    item.setToolTip("Calcolato dal tool")
+                self.table.setItem(r, c, item)
+            elif col.choices or col.type in (ENUM, REF):
                 combo = compact_combo()
                 self._fill_combo(combo, col, value)
                 combo.currentIndexChanged.connect(lambda _: self.changed.emit())
                 self.table.setCellWidget(r, c, combo)
             else:
                 self.table.setItem(r, c, QTableWidgetItem(str(value)))
+        # What the row has besides its columns (its key; values of an earlier version) goes with it.
+        names = {col.name for col in self.columns}
+        extra = {k: v for k, v in row.items() if k not in names}
+        if self.row_keys and not extra.get(ROW_KEY):
+            extra[ROW_KEY] = new_row_key()
+        if extra:
+            item = self.table.item(r, 0)
+            if item is None:  # a list in the first cell
+                item = QTableWidgetItem()
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r, 0, item)
+            item.setData(Qt.UserRole, extra)
         self.table.blockSignals(False)
 
     def _column_choices(self, col):
@@ -318,12 +347,46 @@ class TableWidget(QWidget):
         self.table.setRowCount(0)
         for row in rows or []:
             self._add_row(row)
+        self._refresh_computed()
+        if self.read_only:
+            self._fit()
+
+    def set_read_only(self, tip):
+        """Only shown (e.g. computed by the tool): no buttons, no editing, as high as its rows."""
+        self.read_only = True
+        for button in self.findChildren(QPushButton):
+            button.hide()
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setToolTip(tip)
+        self._fit()
+
+    def _fit(self):
+        rows = max(1, self.table.rowCount())
+        self.table.setMinimumHeight(0)
+        self.table.setFixedHeight(self.table.horizontalHeader().sizeHint().height() + rows * 30 + 4)
+
+    def _refresh_computed(self):
+        computed = [(c, col) for c, col in enumerate(self.columns) if col.computed]
+        if not computed:
+            return
+        from arcadia_tool.model.chains import STEP_COMPUTED
+        rows = self.value()
+        self.table.blockSignals(True)
+        for r in range(len(rows)):
+            for c, col in computed:
+                item = self.table.item(r, c)
+                if item is not None:
+                    item.setText(STEP_COMPUTED[col.computed](self.model, rows, r))
+        self.table.blockSignals(False)
 
     def value(self):
         rows = []
         for r in range(self.table.rowCount()):
-            row = {}
+            first = self.table.item(r, 0)
+            row = dict((first.data(Qt.UserRole) if first is not None else None) or {})
             for c, col in enumerate(self.columns):
+                if col.computed:  # not saved: read again from the row
+                    continue
                 widget = self.table.cellWidget(r, c)
                 item = self.table.item(r, c)
                 value = widget.currentData() if widget else (item.text().strip() if item else "")
@@ -333,13 +396,47 @@ class TableWidget(QWidget):
         return rows
 
 
+def help_button(guide, label):
+    """The «?» in a circle on the left of a field: what it means, on the pointer and with a click."""
+    button = QToolButton(objectName="fieldHelp", autoRaise=True)
+    button.setIcon(icon("mdi6.help-circle-outline", color=MUTED))
+    button.setIconSize(QSize(16, 16))
+    button.setCursor(Qt.WhatsThisCursor)
+    text = f"<div style='max-width:460px'><b>{escape(label)}</b><br>{guide}</div>"
+    button.setToolTip(text)
+    button.clicked.connect(lambda: QToolTip.showText(button.mapToGlobal(button.rect().bottomLeft()), text, button))
+    return button
+
+
+def with_help(label, guide, text, left=False):
+    """A label with the «?» on its left (aligned on the right, as the labels of a form, or on the left)."""
+    w = QWidget()
+    row = QHBoxLayout(w)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(4)
+    if not left:
+        row.addStretch()
+    row.addWidget(help_button(guide, text))
+    row.addWidget(label)
+    if left:
+        row.addStretch()
+    return w
+
+
+def guide_label(text):
+    """What a field means (Field.guide), in the window to choose its value."""
+    label = QLabel(text, wordWrap=True, textFormat=Qt.RichText)
+    label.setObjectName("fieldGuide")
+    return label
+
+
 class ChoiceDialog(QDialog):
     """One value among a list (a state, the type of an ADR…), in a window with search: chosen, the value."""
 
-    def __init__(self, title, options, current=None, parent=None, coloured=False):
+    def __init__(self, title, options, current=None, parent=None, coloured=False, guide=""):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(560, 460)
+        self.resize(QSize(880, 540) if guide else QSize(560, 460))  # a guide: wide, to read it in few lines
         self.search = QLineEdit(placeholderText="Cerca", objectName="search")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
@@ -361,6 +458,8 @@ class ChoiceDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
+        if guide:  # what the values mean (e.g. the types of an Exchange Item)
+            layout.addWidget(guide_label(guide))
         layout.addWidget(self.search)
         layout.addWidget(self.list, 1)
         layout.addWidget(buttons)
@@ -382,9 +481,9 @@ class ValuePicker(QWidget):
     [(value, label)]."""
     changed = Signal()
 
-    def __init__(self, title, options, current=None):
+    def __init__(self, title, options, current=None, guide=""):
         super().__init__()
-        self.title, self.options, self.current = title, options, current
+        self.title, self.options, self.current, self.guide = title, options, current, guide
         self.shown = QLineEdit(readOnly=True, objectName="readonly")
         self.shown.setPlaceholderText("Non indicato")
         self.button = QPushButton(icon("mdi6.format-list-checks"), "Scegli…")
@@ -411,7 +510,7 @@ class ValuePicker(QWidget):
             self.changed.emit()
 
     def choose(self):
-        dialog = ChoiceDialog(self.title, self.options(self.current), self.current, self)
+        dialog = ChoiceDialog(self.title, self.options(self.current), self.current, self, guide=self.guide)
         if dialog.exec():
             self.set_value(dialog.chosen)
 
@@ -545,6 +644,8 @@ class ElementEditor(QScrollArea):
     saved = Signal()  # «Salva»: the changes are in the model, the project is to be saved
     abandoned = Signal(object)  # «Annulla» on an element just created and never saved: it is to be removed
     discussion_changed = Signal()  # a message of the discussion of the sheet written, changed or hidden (saved)
+    # The draft as it is being typed (its name, its ID…): the tree and the tab show it before «Salva».
+    draft_renamed = Signal(object)
 
     def __init__(self, srs_edit_mode=None):
         super().__init__()
@@ -976,7 +1077,8 @@ class ElementEditor(QScrollArea):
             self._build_page()
         finally:
             self._building = False
-
+        if self.project is not None:
+            self._announce_label()  # e.g. back to the saved name with «Annulla»
     def _build_page(self):
         element = self.draft
         self.getters, self.widgets, self.field_labels = {}, {}, {}
@@ -1047,6 +1149,8 @@ class ElementEditor(QScrollArea):
                 if f.type == TABLE:  # a table in a section (e.g. the details of an ADR): the whole width
                     form.addRow(label)
                     form.addRow(widget)
+                elif element.kind in HELP_KINDS and f.guide:  # «?» on the left: what the field means
+                    form.addRow(with_help(label, f.guide, f.label_for(element)), widget)
                 else:
                     form.addRow(label, widget)
             layout.addLayout(form)
@@ -1086,8 +1190,13 @@ class ElementEditor(QScrollArea):
     def _field_card(self, f, element):
         """A field shown in a card of its own (a table, a map, an image)."""
         frame, layout = card(f.label)
+        if element.kind in HELP_KINDS and f.guide:  # «?» on the left of its title
+            caption = layout.itemAt(0).widget()
+            layout.removeWidget(caption)
+            layout.addWidget(with_help(caption, f.guide, f.label, left=True))
         widget, getter = self._make_widget(f, element.values.get(f.name))
-        self.getters[f.name] = getter
+        if f.stored:  # not a table computed by the tool (e.g. the exchanges used by a chain)
+            self.getters[f.name] = getter
         self.widgets[f.name] = frame  # its card (shown by reveal)
         for name, refresh in self._choice_sources:
             if name == f.name and hasattr(widget, "changed"):
@@ -1128,6 +1237,8 @@ class ElementEditor(QScrollArea):
                 chooser.currentIndexChanged.connect(self._changed)
                 self.getters["status"] = chooser.currentData
             self.widgets["status"] = chooser
+            if element.kind in HELP_KINDS and status_field.guide:
+                top.addWidget(help_button(status_field.guide, status_field.label))
             top.addWidget(QLabel("Stato", objectName="muted"))
             top.addWidget(chooser)
         if element.kind in READ_ONLY_KINDS:
@@ -2002,6 +2113,10 @@ class ElementEditor(QScrollArea):
                 w.set_value(COMPUTED[f.computed](model, self.draft))
                 w.set_read_only("Calcolato dal tool · doppio clic su una riga per leggerla o aprirla")
                 w.open_item = self.show_reference
+            elif f.type == TABLE:  # rows (e.g. the exchanges used by the steps of a chain)
+                w = TableWidget(model, f)
+                w.set_read_only("Calcolato dal tool dal percorso")
+                w.set_value(COMPUTED[f.computed](model, self.draft))
             elif f.type == REF:  # an element (e.g. the principal domain an SRS item has now)
                 uuid = COMPUTED[f.computed](model, self.draft)
                 w = QLineEdit(readOnly=True, objectName="readonly")
@@ -2015,7 +2130,7 @@ class ElementEditor(QScrollArea):
                 w.setProperty("keepEnabled", True)
                 w.setToolTip("Letto dalla scheda del dominio")
             self._computed.append((f, w))
-            return w, (w.value if f.type == REFS else w.markdown)
+            return w, (w.value if f.type in (REFS, TABLE) else w.markdown)
         if f.type == STR and f.name == "id" and is_automatic(self.element.kind):
             return self._id_widget()
         if f.derived_from:
@@ -2053,7 +2168,8 @@ class ElementEditor(QScrollArea):
             w.toggled.connect(self._changed)
             return w, w.isChecked
         if f.type == ENUM and self.element.kind in PICKER_KINDS:
-            w = ValuePicker(f.label, lambda _current, field=f: [(o, o) for o in field.options], enum_option(f, value))
+            w = ValuePicker(f.label, lambda _current, field=f: [(o, o) for o in field.options], enum_option(f, value),
+                            guide=f.guide)
             w.changed.connect(self._changed)
             if any(o.when and o.when[0] == f.name for o in self.element.schema.fields) or \
                     (self.element.kind == "trace_record" and f.name == "outcome"):
@@ -2247,11 +2363,18 @@ class ElementEditor(QScrollArea):
         for name in names:
             if not schema.field(name) or not schema.field(name).computed:
                 self.draft.set(name, self.getters[name]())
+        if self.draft.kind == "functional_chain" and "domains" in self.widgets:  # those of the steps, always
+            from arcadia_tool.model.chains import chain_domains
+            domains = chain_domains(self.project.model, self.draft)
+            if domains != (self.draft.get("domains") or []):
+                self.draft.set("domains", domains or None)
+                self.widgets["domains"].set_value(domains)
         for f, widget in getattr(self, "_computed", []):  # follow the fields they are computed from
             from arcadia_tool.model.adr import COMPUTED
             value = COMPUTED[f.computed](self.project.model, self.draft)
-            if f.type == REFS:
-                widget.set_value(value)
+            if f.type in (REFS, TABLE):
+                if value != widget.value():
+                    widget.set_value(value)
             elif f.type == REF:
                 self._show_computed_ref(f, widget, value)
             elif value != widget.markdown():
@@ -2259,8 +2382,20 @@ class ElementEditor(QScrollArea):
         for table in getattr(self, "_dynamic_tables", []):  # the lists of their cells follow the element
             table.refresh_choices()
         if is_automatic(self.draft.kind) and hasattr(self, "id_edit"):
+            if not self.element.get("id"):  # not assigned yet (e.g. EI-Nome): it follows the name as it is typed
+                self.draft.set("id", compute_id(self.draft, self.project.model))
             self._refresh_id()
         self.title.setText(self.project.model.choice_label(self.draft))
+        self._announce_label()
+
+    def _announce_label(self):
+        """The tree and the tab follow the name of the draft (and its ID, e.g. EI-Nome) as it is typed."""
+        if self.draft is None:
+            return
+        label = self.project.model.choice_label(self.draft)
+        if label != getattr(self, "_announced", None):
+            self._announced = label
+            self.draft_renamed.emit(self.draft)
 
 
 class ElementWindow(QDialog):

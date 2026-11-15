@@ -69,14 +69,14 @@ def build(tmp_path):
     sf2 = p.new_element("system_function", name="Comandare i freni", domain=d2.uuid, sections=[c1.uuid])
     lf = p.new_element("logical_function", name="Calcolare la frenata", refines=sf2.uuid)  # of DF02
     ei = p.new_element("exchange_item", id="EI-velocita", name="Velocità stimata", type="Dato logico", nature="FLOW",
-                       elements=[{"variable": "V_TRAIN", "unit": "km/h"}])
+                       content="V_TRAIN (km/h)")
     fe = p.new_element("functional_exchange", name="Velocità", source=sf1.uuid, target=sf2.uuid,
                        exchange_item=ei.uuid, nature="FLOW", production_condition="Sempre", clauses=[c1.uuid])
     derived = p.new_element("derived_requirement", name="Frenare", parent=c1.uuid, obligation="Il treno frena.",
                             function=lf.uuid, domain=d2.uuid)
     p.new_element("trace_record", requirement=c1.uuid, primary_functions=[sf1.uuid], secondary_functions=[sf2.uuid],
                   exchange_items=[derived.uuid], outcome="Tracciata a funzione", status="Proposto")
-    chain = p.new_element("functional_chain", id="FC-frenatura", title="Frenatura", responsible_domain=d2.uuid,
+    chain = p.new_element("functional_chain", id="FC-frenatura", title="Frenatura",
                           steps=[{"cycle": "C0", "function": sf1.uuid, "what": "Stima", "data": "Velocità",
                                   "nature": "FLOW", "exchange": fe.uuid, "srs": "3.4.1.1"},
                                  {"cycle": "C0", "function": sf2.uuid, "what": "Frena"}])
@@ -137,9 +137,9 @@ def test_the_artefacts_are_filled_in_from_the_model(tmp_path):
     assert find(df01, "Missione") == "Stimare la velocità."
     assert find(df01, "Referente") == "Anna Bianchi"
     assert find(df01, "Funzioni di sistema").startswith("SF-DF01-01 Stimare la velocità")
-    assert find(df01, "Dati prodotti/posseduti dal dominio") == "EI-velocita Velocità stimata"
+    assert find(df01, "Dati prodotti/posseduti dal dominio") == "EI-velocita"
     assert find(df02, "Sezioni e clausole SRS a cui contribuisce") == "3.4.1.1 (DF01)"
-    assert find(df02, "Dati usati da altri domini").startswith("EI-velocita Velocità stimata (DF01, FE-DF01-DF02-")
+    assert find(df02, "Dati usati da altri domini").startswith("EI-velocita (DF01, FE-DF01-DF02-")
     assert [r["ID"] for r in table(df02, "Esito")] == ["ADR-001"]  # the domain proposed by the reallocation
     sheets = read_domain_sheets(files[0])
     assert [(s.ident, s.principal) for s in sheets] == [("DF01", "3.4.1"), ("DF02", "")]
@@ -167,12 +167,16 @@ def test_the_artefacts_are_filled_in_from_the_model(tmp_path):
     assert [(r["Produttore (funzione, dominio)"], r["Utilizzatore (funzione, dominio)"], r["Chain che lo usano"])
             for r in sa5] == [("Stimare la velocità (DF01)", "Comandare i freni (DF02)", "FC-frenatura")]
     sa6 = table(book["SA-6"].active, "ID")
-    assert sa6[0]["Produttore"] == "SF-DF01-01" and "V_TRAIN" in sa6[0][
-        "Elementi (variabili cap. 7): variabile · descrizione · unità · campo · risoluzione"]
+    assert sa6[0]["Produttore"] == "SF-DF01-01" and sa6[0]["Elementi"] == "V_TRAIN (km/h)"
     chain = book["SA-7"]["FC-frenatura"]
     assert find(chain, "Domini coinvolti") == "DF01, DF02"
     assert [r["Funzione SF"] for r in table(chain, "#")] == ["SF-DF01-01", "SF-DF02-01"]
-    assert table(chain, "Attraversamenti")[0]["Attraversamenti"] == "1"
+    used = table(chain, "ID scambio")
+    assert [(r["Produttore"], r["Utilizzatore"], r["Dato"], r["Tipo"]) for r in used] == [
+        ("SF-DF01-01", "SF-DF02-01", "EI-velocita", "Tra domini")]
+    # The sheet ends with the exchanges used (SA-7 up to section 4): no derived requirements, metrics, variants.
+    labels = {row[0] for row in chain.iter_rows(values_only=True)}
+    assert not {"5. Requisiti derivati", "Attraversamenti", "Oracolo", "Decisioni collegate"} & labels
 
     # The ADR: the register of the open ones, then a sheet per ADR with the decision of the DA.
     adrs = book["X-1"]

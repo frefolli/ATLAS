@@ -47,10 +47,21 @@ class _Window(QObject):
             self.dialog.deleteLater()
 
 
+RUNNING = [0]  # how many run_busy are running: meanwhile the model is changing (see storage.journal)
+
+
 def run_busy(parent, text, work):
     """The result of work(report), a function run in a thread: it must not touch the widgets; report(text) changes what
     the window says. Returns when it ends, raising its exception if any; the window appears after SHOW_AFTER_MS. The
     input of the user waits meanwhile, so the model does not change under it."""
+    RUNNING[0] += 1
+    try:
+        return _run(parent, text, work)
+    finally:
+        RUNNING[0] -= 1
+
+
+def _run(parent, text, work):
     worker, window = _Worker(work), _Window(parent, text)
     timer = QTimer(singleShot=True, interval=SHOW_AFTER_MS)
     timer.timeout.connect(window.show)

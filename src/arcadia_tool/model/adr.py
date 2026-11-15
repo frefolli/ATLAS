@@ -2,6 +2,7 @@
 the element it is opened from (the domain, the section, the function in question)."""
 from datetime import date
 
+from arcadia_tool.model.chains import COMPUTED as CHAIN_COMPUTED
 from arcadia_tool.model.element import Element
 from arcadia_tool.model.schema import (ADR_ALLOCATION, ADR_DELETE_DOMAIN, ADR_DETAILS, ADR_DOMAIN_SCOPE, ADR_FUNCTION,
                                        ADR_EXCLUSION, ADR_IMPLEMENTATION, ADR_MERGE_DOMAINS, ADR_NEW_DOMAIN,
@@ -374,7 +375,8 @@ COMPUTED = {"merged_srs_items": merged_srs_items, "current_mission": current_mis
             "item_primary": item_primary, "item_contributors": item_contributors,
             "function_domain": function_domain, "item_producers": item_producers, "excluded_within": excluded_within,
             "shared_primary": shared_primary, "shared_contributors": shared_contributors,
-            "unmapped_sections": unmapped_sections, "unmapped_section_domains": unmapped_section_domains}
+            "unmapped_sections": unmapped_sections, "unmapped_section_domains": unmapped_section_domains,
+            **CHAIN_COMPUTED}  # of the chains and of the exchange items
 
 
 def split_domain_items(model, adr):

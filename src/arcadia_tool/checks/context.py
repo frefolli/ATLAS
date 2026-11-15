@@ -126,7 +126,7 @@ class Context:
         if k == "exchange_item":
             return set().union(*(self.domains_of_element(fe) for fe in self.exchanges_of_item.get(element.uuid, [])))
         if k == "functional_chain":
-            return {element.get("responsible_domain")} if element.get("responsible_domain") else set()
+            return set(element.get("domains") or [])
         if k == "chain_realization":
             chain = self.get(element.get("chain"))
             return self.domains_of_element(chain) if chain is not None else set()

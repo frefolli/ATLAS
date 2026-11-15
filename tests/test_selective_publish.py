@@ -46,7 +46,10 @@ def test_the_changes_needed_by_a_change_and_those_that_need_it(tmp_path):
     needs = dependencies(p.published_model(), p.model, changed)
     assert needs[kept.uuid] == {moved.uuid} and not needs[moved.uuid]
     assert required(needs, [kept.uuid]) == {kept.uuid, moved.uuid}
-    assert dependents(needs, [moved.uuid]) == {moved.uuid, kept.uuid}
+    # Frenatura deleted renumbers Radio (DF03 → DF02) and its function (SF-DF03-01 → SF-DF02-01, the identifier the
+    # function moved away had): they need the changes that left those identifiers free.
+    assert needs[new.uuid] == {kept.uuid} and needs[sf.uuid] == {moved.uuid}
+    assert dependents(needs, [moved.uuid]) == {moved.uuid, kept.uuid, new.uuid, sf.uuid}
     # In v2 the domain and the function were new together: the function needs the domain.
     p2, old2, _kept2 = project(tmp_path / "secondo")
     radio = p2.new_element("domain", name="Radio")
@@ -54,6 +57,13 @@ def test_the_changes_needed_by_a_change_and_those_that_need_it(tmp_path):
     needs = dependencies(p2.published_model(), p2.model, [radio.uuid, session.uuid])
     assert needs == {radio.uuid: set(), session.uuid: {radio.uuid}}
     assert dependents(needs, [radio.uuid]) == {radio.uuid, session.uuid}
+    # An identifier given again (DF02, free after Frenatura was deleted): the new domain needs that removal.
+    p3, _old3, braking = project(tmp_path / "terzo")
+    p3.delete_element(braking.uuid)
+    radio = p3.new_element("domain", name="Radio")
+    assert radio.get("id") == "DF02"
+    needs = dependencies(p3.published_model(), p3.model, [braking.uuid, radio.uuid])
+    assert needs == {braking.uuid: set(), radio.uuid: {braking.uuid}}
 
 
 def test_only_the_changes_chosen_are_published_the_others_stay_local(tmp_path):

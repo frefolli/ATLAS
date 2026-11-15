@@ -126,12 +126,14 @@ class DiffView(QWidget):
     leaves out those that need it, choosing one chooses those it needs (told in `note`)."""
     selection_changed = Signal()
 
-    def __init__(self, diff, before_label, after_label, needs=None, locked=None, linked_text="Si pubblica insieme a: "):
+    def __init__(self, diff, before_label, after_label, needs=None, locked=None, linked_text="Si pubblica insieme a: ",
+                 follow_texts=("Selezionate anche, perché servono: ", "Escluse anche, perché ne dipendono: ")):
         super().__init__()
         self.diff = diff
         self.needs = needs
         self.locked = locked or {}  # {uuid: why it cannot be ticked}: it can only follow what it is linked to
         self.linked_text = linked_text
+        self.follow_texts = follow_texts  # the note when ticking one ticks others, and when leaving one out does
         self.chosen = {c.uuid for c in diff.changes} if needs is not None else set()
         self._ticking = False
         self.note = QLabel(objectName="muted")
@@ -193,8 +195,25 @@ class DiffView(QWidget):
         finally:
             self._ticking = False
 
+    @staticmethod
+    def _sorts(kind, changes):
+        """The changes of a kind in groups of their own: the graphic views by their type (as the groups of «Viste
+        grafiche»: SA-5 Dataflow funzionali, SA-7 Catene funzionali…); [(None, changes)] for the other kinds."""
+        if kind != "diagram":
+            return [(None, changes)]
+        from arcadia_tool.model import diagrams as dg
+        titles = {t: title for title, t in dg.VIEW_GROUPS}
+        titles.setdefault(dg.DIAGRAM_SCENARIO, "SA-7 Scenari di scambio")  # of an earlier version
+        groups = {}
+        for c in changes:
+            t = c.element.get("diagram_type") if c.element is not None else None
+            groups.setdefault(titles.get(t, t or "Altre viste"), []).append(c)
+        order = list(titles.values())
+        return sorted(groups.items(), key=lambda g: (order.index(g[0]) if g[0] in order else len(order), g[0]))
+
     def _fill(self):
         self.tree.clear()
+        self.change_items = []
         text = self.search.text().lower()
         wanted = self.change_filter.currentData()
         if not self.diff.changes:
@@ -211,8 +230,20 @@ class DiffView(QWidget):
             group = QTreeWidgetItem(self.tree, [f"{KINDS_BY_NAME[kind].plural}", str(len(shown)), ""])
             group.setIcon(0, kind_icon(kind))
             group.setExpanded(True)
+            parents = {}
+            for title, of_sort in self._sorts(kind, shown):
+                if title is None:
+                    parents.update({c.uuid: group for c in of_sort})
+                    continue
+                sort = QTreeWidgetItem(group, [title, str(len(of_sort)), ""])
+                sort.setIcon(0, icon("mdi6.vector-polyline", MUTED))
+                sort.setExpanded(True)
+                if self.needs is not None:
+                    sort.setFlags(sort.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
+                parents.update({c.uuid: sort for c in of_sort})
             for c in shown:
-                item = QTreeWidgetItem(group, [c.label, CHANGE_LABELS[c.change], _flags(c)])
+                item = QTreeWidgetItem(parents[c.uuid], [c.label, CHANGE_LABELS[c.change], _flags(c)])
+                self.change_items.append(item)
                 item.setIcon(0, icon(CHANGE_ICONS[c.change], CHANGE_COLORS[c.change]))
                 item.setForeground(1, QBrush(QColor(CHANGE_COLORS[c.change])))
                 item.setForeground(2, QBrush(QColor(MUTED)))
@@ -252,8 +283,7 @@ class DiffView(QWidget):
             moved = dependents(self.needs, [change.uuid]) & self.chosen
             self.chosen -= moved
         others = sorted(self.diff.label_of(u) for u in moved - {change.uuid})
-        self.note.setText((("Selezionate anche, perché servono: " if on else
-                            "Escluse anche, perché ne dipendono: ") + ", ".join(others)) if others else "")
+        self.note.setText((self.follow_texts[0 if on else 1] + ", ".join(others)) if others else "")
         self.note.setVisible(bool(others))
         self._refresh_ticks()
         self.selection_changed.emit()
@@ -261,12 +291,9 @@ class DiffView(QWidget):
     def _refresh_ticks(self):
         self._ticking = True
         try:
-            for i in range(self.tree.topLevelItemCount()):
-                group = self.tree.topLevelItem(i)
-                for j in range(group.childCount()):
-                    child = group.child(j)
-                    change = child.data(0, CHANGE_ROLE)
-                    child.setCheckState(0, Qt.Checked if change.uuid in self.chosen else Qt.Unchecked)
+            for child in self.change_items:  # also those in the groups of a kind (the views by their type)
+                change = child.data(0, CHANGE_ROLE)
+                child.setCheckState(0, Qt.Checked if change.uuid in self.chosen else Qt.Unchecked)
         finally:
             self._ticking = False
 

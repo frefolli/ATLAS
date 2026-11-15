@@ -100,6 +100,7 @@ QFrame#card {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius:
 QLabel#cardTitle {{ font-weight: 600; color: {TEXT}; font-size: 10.5pt; }}
 QLabel#sectionCaption {{ color: {MUTED}; font-size: 8.5pt; font-weight: 600; letter-spacing: 0.5px; }}
 QLabel#muted {{ color: {MUTED}; }}
+QLabel#fieldGuide {{ color: {TEXT}; background: {BG}; border: 1px solid {BORDER}; border-radius: 6px; padding: 8px 10px; }}
 QLabel#elementTitle {{ font-size: 15pt; font-weight: 600; }}
 QLabel#viewTitle {{ font-size: 15pt; font-weight: 600; color: {TEXT}; }}  /* the name of a graphic view */
 QLabel#kindLabel {{ color: {ACCENT}; font-weight: 600; }}

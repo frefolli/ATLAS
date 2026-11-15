@@ -1,6 +1,6 @@
 """Checks of the general rules, of the SRS items and matrix A4, and of the System Analysis sheets (SA-1…SA-7)."""
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 from arcadia_tool.checks import ERROR, INFO, WARNING, check, issue
 from arcadia_tool.checks.context import (AGREED, CLAUSE_TYPES, NON_BOARD, name_acronyms, question_number,
@@ -31,9 +31,9 @@ MAIN_FIELDS = {
     "system_function": ("domain", "description"),
     "trace_record": ("requirement", "b5_question", "outcome"),
     "derived_requirement": ("parent", "obligation", "function", "domain", "b6_scheme"),
-    "exchange_item": ("nature", "meaning", "srs_origin"),
+    "exchange_item": ("nature", "type", "srs_origin"),
     "functional_exchange": ("source", "target", "exchange_item", "nature", "production_condition"),
-    "functional_chain": ("responsible_domain", "trigger", "final_effect", "steps"),
+    "functional_chain": ("domains", "trigger", "final_effect", "steps"),
     "logical_function": ("refines", "description"),
     "logical_component": ("responsibility", "owner"),
     "component_exchange": ("source", "target", "realizes", "exchange_item"),
@@ -981,14 +981,6 @@ def sa5_no_item(ctx):
             yield issue(fe, "Scambio senza dato di interfaccia (Exchange Item del dizionario SA-6).")
 
 
-@check("SA5-07", "Natura dello scambio diversa da quella dell'Exchange Item", "E", "B4")
-def sa5_nature(ctx):
-    for fe in ctx.of("functional_exchange"):
-        item = ctx.get(fe.get("exchange_item"))
-        if item is not None and fe.get("nature") and item.get("nature") and fe.get("nature") != item.get("nature"):
-            yield issue(fe, f"Natura {fe.get('nature')}, ma {ctx.label(item)} è {item.get('nature')}.", [item])
-
-
 @check("SA5-08", "Condizione di produzione incoerente con la natura", "A", "B4")
 def sa5_condition(ctx):
     conditions = {n: c for n, c in (ctx.param("conditions") or {}).items() if c}
@@ -1021,22 +1013,13 @@ def sa5_duplicate(ctx):
                             "una volta e si riusa.", [same[0]])
 
 
-@check("SA5-11", "Scambio tra domini non concordato, o concordato senza accordo", "A/E", "B4, checklist di revisione 6")
+@check("SA5-11", "Scambio tra domini non concordato", "A", "B4, checklist di revisione 6")
 def sa5_agreement(ctx):
     for fe in ctx.of("functional_exchange"):
         domains = ctx.between_domains(fe)
-        if domains is None:
-            continue
-        if fe.get("status") not in AGREED:
+        if domains is not None and fe.get("status") not in AGREED:
             yield issue(fe, f"Scambio tra {ctx.label(domains[0])} e {ctx.label(domains[1])} non ancora concordato.",
                         domains, WARNING)
-        else:
-            missing = [(name, label) for name, label in (("producer_agreement", "del produttore"),
-                                                         ("consumer_agreement", "dell'utilizzatore"))
-                       if not fe.get(name)]
-            if missing:
-                yield issue(fe, f"Stato «{fe.get('status')}» senza l'accordo {' e '.join(m[1] for m in missing)}.",
-                            domains, ERROR, field=missing[0][0])
 
 
 @check("SA5-12", "Clausole dello scambio non tracciate dagli estremi", "A", "B4")
@@ -1053,8 +1036,10 @@ def sa5_clauses(ctx):
 
 
 def _coded(item, types, variable):
+    """The data is the coding of an external interface: by its type, or a variable of chapter 7 among its elements."""
+    pattern = re.compile(variable.pattern.strip("^$"))
     return item is not None and (item.get("type") in types or any(
-        variable.match((row.get("variable") or "").strip()) for row in item.get("elements") or []))
+        pattern.fullmatch(word) for word in re.findall(r"[A-Za-z0-9_]+", item.get("content") or "")))
 
 
 @check("SA5-13", "Codifica esterna usata fuori dai domini di codifica", "A", "B4, SA-6", needs="coding_domains")
@@ -1115,38 +1100,19 @@ def sa6_nature(ctx):
             yield issue(item, "Natura (FLOW, EVENT, OPERATION) non indicata.")
 
 
-@check("SA6-04", "Messaggio o Pacchetto senza elementi", "A", "SA-6")
+@check("SA6-04", "Exchange Item senza elementi", "A", "SA-6")
 def sa6_no_elements(ctx):
     types = set(ctx.param("types") or [])
     for item in ctx.of("exchange_item"):
-        if item.get("type") in types and not item.get("elements"):
-            yield issue(item, f"{item.get('type')} senza elementi (variabili del capitolo 7).")
+        if (not types or item.get("type") in types) and not (item.get("content") or "").strip():
+            yield issue(item, "Elementi del dato non indicati.")
 
 
-@check("SA6-05", "Elemento senza variabile del cap. 7, unità, campo o risoluzione", "A", "Checklist SA-6")
-def sa6_element_fields(ctx):
-    for item in ctx.of("exchange_item"):
-        for n, row in enumerate(item.get("elements") or [], 1):
-            missing = [label for name, label in (("variable", "variabile"), ("unit", "unità"), ("range", "campo"),
-                                                 ("resolution", "risoluzione")) if not (row.get(name) or "").strip()]
-            if missing:
-                yield issue(item, f"Elemento {n} ({row.get('variable') or 'senza nome'}) senza {', '.join(missing)}.")
-
-
-@check("SA6-06", "Variabile ripetuta nello stesso Exchange Item", "A", "SA-6")
-def sa6_repeated_variable(ctx):
-    for item in ctx.of("exchange_item"):
-        counts = Counter((row.get("variable") or "").strip() for row in item.get("elements") or [])
-        repeated = [v for v, n in counts.items() if v and n > 1]
-        if repeated:
-            yield issue(item, f"Variabili ripetute: {', '.join(repeated)}.")
-
-
-@check("SA6-07", "Origine SRS vuota", "A", "SA-6")
+@check("SA6-07", "Origine o specifica vuota", "A", "SA-6")
 def sa6_origin(ctx):
     for item in ctx.of("exchange_item"):
         if not item.get("srs_origin"):
-            yield issue(item, "Origine SRS non indicata.")
+            yield issue(item, "Origine o specifica non indicata.")
 
 
 @check("SA6-08", "Exchange Item con lo stesso nome", "A", "B4")
@@ -1335,7 +1301,7 @@ def sa7_cycles(ctx):
         rows, previous_cycle, previous_wait = c.get("steps") or [], None, False
         for i, row in enumerate(rows, 1):
             if ctx.is_wait(row):
-                filled = [k for k in ("function", "data", "nature", "exchange", "srs", "component") if row.get(k)]
+                filled = [k for k in ("function", "input", "data", "nature", "exchange", "srs") if row.get(k)]
                 if filled:
                     yield issue(c, f"Riga {i} di attesa con altre colonne compilate: vanno lasciate vuote.")
                 previous_wait = True
@@ -1347,33 +1313,19 @@ def sa7_cycles(ctx):
 
 @check("SA7-12", "Rimbalzo nello stesso ciclo senza ADR collegata", "A", "D4, A5")
 def sa7_bounces(ctx):
+    """The ADR about the chain: those that cite it (e.g. among the chains used as evidence)."""
     for c in ctx.of("functional_chain"):
         bounces = chain_metrics(ctx, c)["bounces"]
-        if bounces and not c.get("adrs"):
+        if bounces and not related_adrs(ctx.model, c):
             yield issue(c, f"{bounces} rimbalzi tra domini nello stesso ciclo senza ADR: il confine va riesaminato o "
                            "la scelta motivata.")
 
 
-@check("SA7-13", "Dominio responsabile mancante o non coinvolto", "A", "SA-7")
-def sa7_responsible(ctx):
+@check("SA7-13", "Chain senza domini coinvolti", "A", "SA-7")
+def sa7_domains(ctx):
     for c in ctx.of("functional_chain"):
-        domain = c.get("responsible_domain")
-        involved = {_row_domain(ctx, row) for _, row in ctx.chain_steps(c)} - {None}
-        if not domain:
-            yield issue(c, "Dominio responsabile non indicato.")
-        elif involved and domain not in involved:
-            yield issue(c, f"Il dominio responsabile {ctx.label(domain)} non compare nei passi.", [domain])
-
-
-@check("SA7-14", "Componente del passo diverso dall'allocazione delle funzioni logiche", "A", "SA-7 ↔ LA-2")
-def sa7_step_component(ctx):
-    for c in ctx.of("functional_chain"):
-        for n, row in ctx.chain_steps(c):
-            function, component = ctx.get(row.get("function")), row.get("component")
-            used = ctx.components_of(function) if function is not None else None
-            if component and used and not any(u == component or ctx.within(u, component) for u in used):
-                yield issue(c, f"Passo {n}: componente {ctx.label(component)}, ma {ctx.label(function)} è allocata a "
-                               f"{ctx.labels(used)}.", [component, function, *used])
+        if not c.get("domains"):
+            yield issue(c, "Nessun dominio coinvolto: indicali, o aggiungi i passi del percorso.")
 
 
 @check("SA7-15", "Chain di procedura: passo in un altro dominio senza requisito derivato", "A",
@@ -1383,7 +1335,7 @@ def sa7_procedure_derived(ctx):
     if not procedure:
         return
     for c in ctx.of("functional_chain"):
-        if c.get("responsible_domain") != procedure:
+        if procedure not in (c.get("domains") or []):
             continue
         items = {i.uuid for _, row in ctx.chain_steps(c) for i in ctx.requirements_in_text(row.get("srs"))}
         derived = [d for i in items for d in ctx.derived_by_parent.get(i, [])]
@@ -1392,19 +1344,6 @@ def sa7_procedure_derived(ctx):
             if domain and domain != procedure and not any(d.get("domain") == domain for d in derived):
                 yield issue(c, f"Passo {n} nel dominio {ctx.label(domain)} senza requisito derivato: le azioni della "
                                "procedura verso altri domini si scompongono in derivati.", [domain])
-
-
-@check("SA7-16", "Varianti senza tipo, oppure oracolo o caso di test vuoti", "A", "Checklist SA-7")
-def sa7_variants(ctx):
-    for c in ctx.of("functional_chain"):
-        for i, row in enumerate(c.get("variants") or [], 1):
-            if not row.get("type"):
-                yield issue(c, f"Variante {i} ({row.get('variant') or 'senza nome'}) senza tipo.")
-        missing = [(name, label) for name, label in (("oracle", "oracolo"),
-                                                     ("integration_test", "caso di test di integrazione"))
-                   if not c.get(name)]
-        if missing:
-            yield issue(c, f"Non compilati: {', '.join(m[1] for m in missing)}.", field=missing[0][0])
 
 
 @check("SA7-17", "Chain non realizzata in LA-4", "I", "LA-4")
