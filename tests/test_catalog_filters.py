@@ -158,11 +158,12 @@ def test_the_clauses_of_teams_or_of_domains(app, tmp_path):
     assert clauses() == ["3.5.1.1", "3.5.1.2", "3.5.2.1", "3.5.2.2"] and not reader.scope_pick.isVisible()
     assert [reader.scope.itemText(i) for i in range(reader.scope.count())] == [
         "Tutti i requisiti", "Requisiti del mio team", "Dei team…", "Dei domini funzionali…"]
-    # Under the checkboxes of the categories: a row of its own.
-    header = reader.layout().itemAt(0).widget().layout()
+    # One row: «Requisiti», «Categoria», «Filtra voci per stato ADR», «Evidenzia».
+    header = reader.layout().itemAt(1).widget().layout()  # under the group of the commands
     rows = [header.itemAt(i).layout() for i in range(header.count())]
-    categories = next(i for i, r in enumerate(rows) if r is not None and r.indexOf(reader.show_headings) >= 0)
-    assert rows[categories + 1].indexOf(reader.scope) >= 0
+    row = next(r for r in rows if r is not None and r.indexOf(reader.scope) >= 0)
+    order = [row.indexOf(w) for w in (reader.scope, reader.category_pick, reader.adr_view, reader.highlight_view)]
+    assert order == sorted(order) and min(order) >= 0
     reader.scope.setCurrentIndex(reader.scope.findData(MY_TEAM))  # Mario: FBK, Odometria and Freni
     assert clauses() == ["3.5.1.1", "3.5.2.1"] and not reader.scope_pick.isVisible()
     assert reader.scope_note.text() == "i domini di T2 FBK"
@@ -247,15 +248,15 @@ def test_the_highlight_can_be_turned_off_and_the_pick_looks_like_a_combo(app, tm
     reader.resize(1000, 600)
     reader.show()
     app.processEvents()
-    box = reader.highlight_team
-    assert box.text() == "Evidenzia requisiti team" and box.isChecked()
-    row = reader.show_headings.parentWidget().layout()
+    box = reader.highlight_view  # «Evidenzia»: «Requisiti team» at first, or «Nessuna»
+    assert [box.itemText(i) for i in range(box.count())] == ["Requisiti team", "Nessuna"]
+    assert box.currentText() == "Requisiti team"
     assert reader.delegate.team_clauses == {e["c4"].uuid}
-    box.setChecked(False)
+    box.setCurrentIndex(box.findText("Nessuna"))
     assert reader.delegate.team_clauses == set()
     reader.refresh()
     assert reader.delegate.team_clauses == set()  # also after the filters change
-    box.setChecked(True)
+    box.setCurrentIndex(box.findText("Requisiti team"))
     assert reader.delegate.team_clauses == {e["c4"].uuid}
     assert isinstance(reader.scope_pick, Combo)  # the same look as the other drop-down lists
     reader.scope.setCurrentIndex(reader.scope.findData(BY_DOMAINS))
@@ -265,7 +266,6 @@ def test_the_highlight_can_be_turned_off_and_the_pick_looks_like_a_combo(app, tm
     reader.scope_pick.menu_.actions()[0].trigger()  # ticked: the list stays open
     assert reader.scope_pick.text() == "DF01 Radio" and reader.scope_pick.menu_.isVisible()
     reader.scope_pick.hidePopup()
-    assert row is not None
     reader.close()
     reader.deleteLater()
     app.processEvents()

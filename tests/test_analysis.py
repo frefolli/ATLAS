@@ -122,3 +122,36 @@ def test_the_button_of_the_clause_row(app, tmp_path):
     window.deleteLater()
     app.processEvents()
     assert QPoint  # imported for the events above
+
+
+def test_the_points_and_the_figures_of_a_clause_are_analysed_on_their_own(app, tmp_path):
+    from arcadia_tool.ui.main_window import MainWindow
+
+    p, clause, _t1, _t2 = build(tmp_path)
+    point = p.new_element("requirement", id="3.14.4.2 a)", item_type="Voce", parent=clause.uuid, text="Non-infill")
+    figure = p.new_element("requirement", id="3.14.4.2 Figure 1", item_type="Voce", parent=clause.uuid,
+                           title="Figure 1: Standstill")
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window.user = account(MARIO, "Mario", "Rossi")
+    window._set_project(p)
+    window.open_srs_reader()
+    reader = window.reader
+    app.processEvents()
+    for item in (point, figure):
+        index = reader.model.index(next(i for i, e in enumerate(reader.model.elements) if e.uuid == item.uuid))
+
+        def button():
+            *_, actions, _ = reader.delegate._layout(item, reader.view.visualRect(index))
+            return next((label, box) for name, label, box in actions[1] if name == "analyzed")
+        reader.view.scrollTo(index)
+        app.processEvents()
+        assert button()[0] == "Non analizzato"
+        _click(reader.view, button()[1].center())
+        assert button()[0] == "Analizzato" and reader._analysis(item)[1] == "mine"
+    assert reader._analysis(clause)[1] == "none"  # each on its own: the clause is not marked
+    window._set_project(None)
+    window.close()
+    window.deleteLater()
+    app.processEvents()

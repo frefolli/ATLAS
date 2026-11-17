@@ -34,10 +34,20 @@ def must_not_be_empty(kind):
     return kind.name == "adr" or kind.group == "System Analysis" or (kind.template or "").startswith("SA-")
 
 
-def is_blank(element):
-    """Nothing written in the sheet: only what the tool gives."""
+def is_blank(element, model=None):
+    """Nothing written in the sheet: only what the tool gives (the title of an ADR as proposed by the tool too)."""
     context = CREATION_CONTEXT.get(element.kind)
-    return not any(not is_empty(element.values.get(f.name)) for f in element.schema.fields
+
+    def written(f):
+        value = element.values.get(f.name)
+        if is_empty(value):
+            return False
+        if element.kind == "adr" and f.name == "title":
+            from arcadia_tool.model.adr import proposed_title
+            from arcadia_tool.model.element import Model
+            return value != proposed_title(model if model is not None else Model(), element)
+        return True
+    return not any(written(f) for f in element.schema.fields
                    if f.stored and not f.computed and not f.by_tool and f.name not in NOT_WRITTEN and f.name != context)
 
 
@@ -47,4 +57,4 @@ def save_refusal(model, element, untouched=False):
     missing = missing_fields(model, element)
     if missing:
         return "Per completare e salvare la scheda mancano:\n\n" + "\n".join(f"• {name}" for name in missing)
-    return EMPTY_SHEET if must_not_be_empty(element.schema) and (untouched or is_blank(element)) else None
+    return EMPTY_SHEET if must_not_be_empty(element.schema) and (untouched or is_blank(element, model)) else None

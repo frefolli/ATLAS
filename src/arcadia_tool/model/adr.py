@@ -570,6 +570,24 @@ def outcome(adr):
     return ACTIVE
 
 
+# The states of an ADR not approved (approved: decided, or accepted by the DA, also with changes), as the SRS list
+# shows them: its status while open, with the comments of the DA, rejected by the DA, superseded.
+NOT_APPROVED_STATES = ("Proposta", "In revisione DA", "Revisionato DA", "Commenti DA", "Respinta", "Superata")
+
+
+def adr_state(adr):
+    """The state of an ADR not approved (one of NOT_APPROVED_STATES), None if it is approved."""
+    if adr.get("da_decision") == "Respinta":
+        return "Respinta"
+    if adr.get("status") == "Superata":
+        return "Superata"
+    if outcome(adr) == APPROVED:
+        return None
+    if adr.get("da_decision") == "Commenti DA":
+        return "Commenti DA"
+    return adr.get("status") if adr.get("status") in NOT_APPROVED_STATES else "Proposta"
+
+
 def related_adrs(model, element):
     """The ADR about a domain or a system function: those that name it in a field (the domain to delete, the
     function to move, the domain proposed…, or «Riguarda», when created from its sheet), those that read it from
@@ -908,3 +926,120 @@ def approve_unmapped(project, adr, today=None):
         raise ValueError("Mancano le clausole non mappate.")
     _decide(project, adr, adr.copy(), today)
 
+
+
+# --- the title proposed for an ADR, from its type and its fields --------------------------------------------------
+
+def _short_ids(items, most=3):
+    ids = [e.get("id") or "?" for e in items]
+    return ", ".join(ids[:most]) + (" …" if len(ids) > most else "")
+
+
+def _items_said(items, one, many):
+    """«della clausola 3.4.1.3» / «delle clausole 3.4.1.3, 3.4.1.5»: one, many are the words before the ids."""
+    return f"{one if len(items) == 1 else many} {_short_ids(items)}"
+
+
+def proposed_title(model, adr):
+    """The title proposed for the ADR (every type has one): what it decides, from its type and the fields already
+    written; the team may change it (see ElementEditor: it follows the fields until it is changed by hand)."""
+    from arcadia_tool.model.schema import (ADR_LOGICAL, ADR_OTHER, ADR_WAIVER)
+
+    kind = adr.get("adr_type")
+
+    def element(field):
+        uuid = adr.get(field)
+        return model.get(uuid) if isinstance(uuid, str) and uuid else None
+
+    def elements(field):
+        value = adr.get(field) or []
+        return [e for e in (model.get(u) for u in ([value] if isinstance(value, str) else value)) if e is not None]
+
+    def ident(e):
+        return (e.get("id") or model.label(e)) if e is not None else ""
+
+    def domain(uuid):
+        return ident(model.get(uuid)) if uuid else ""
+
+    def joined(names):
+        names = [n for n in names if n]
+        return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} e {names[-1]}" if names else ""
+
+    def tail(*parts):  # « da DF02 a DF05», only what is known
+        return "".join(f" {word} {value}" for word, value in parts if value)
+
+    if kind == ADR_NEW_DOMAIN:
+        name = " ".join((adr.get("new_domain_name") or "").split())
+        sections = elements("sections_allocated")
+        return (f"Nuovo dominio «{name}»" if name else "Nuovo dominio funzionale") + \
+            (f" per {_items_said(sections, 'la sezione', 'le sezioni')}" if sections else "")
+    if kind == ADR_DELETE_DOMAIN:
+        return f"Eliminazione di {domain(adr.get('deleted_domain'))}" if adr.get("deleted_domain") else \
+            "Eliminazione di un dominio funzionale"
+    if kind == ADR_MERGE_DOMAINS:
+        merged = joined([domain(u) for u in adr.get("merged_domains") or []])
+        name = " ".join((adr.get("proposed_domain") or "").split())
+        return (f"Fusione di {merged}" if merged else "Fusione di domini funzionali") + (f" in «{name}»" if name else "")
+    if kind == ADR_SPLIT_DOMAIN:
+        rows = [r for r in adr.get("new_domains") or [] if isinstance(r, dict) and r.get("name")]
+        return (f"Scissione di {domain(adr.get('split_domain'))}" if adr.get("split_domain") else
+                "Scissione di un dominio funzionale") + (f" in {len(rows)} domini" if len(rows) > 1 else "")
+    if kind == ADR_DOMAIN_SCOPE:
+        change = adr.get("scope_change")
+        what = {"Estensione": "Estensione dello scopo", "Riduzione": "Riduzione dello scopo",
+                "Cambio totale di scopo": "Cambio totale di scopo"}.get(change, "Ridefinizione dello scopo")
+        return f"{what} di {domain(adr.get('domain'))}" if adr.get("domain") else f"{what} di un dominio funzionale"
+    if kind == ADR_SECTION:
+        items = realloc_items(model, adr)
+        scope = realloc_scope(model, adr)
+        if items and scope == SCOPE_SECTION:
+            what = f"della sezione {_short_ids(items)}"
+        elif items:
+            what = _items_said(items, "della clausola", "delle clausole")
+        else:
+            what = "di sezione o clausola"
+        return f"Riallocazione {what}" + tail(("da", domain(item_primary(model, adr))),
+                                              ("a", domain(adr.get("primary_proposed"))))
+    if kind == ADR_ALLOCATION:
+        items = realloc_items(model, adr)
+        what = _items_said(items, "della clausola", "delle clausole") if items else "di clausole"
+        return f"Richiesta {what}" + tail(("per", domain(adr.get("primary_proposed"))))
+    if kind == ADR_EXCLUSION:
+        items = elements("excluded_item")
+        return f"Esclusione di {_short_ids(items) if items else 'sezioni o clausole'}" + \
+            tail(("da", domain(adr.get("excluding_domain"))))
+    if kind == ADR_SHARED:
+        items = clauses_of(model, adr)
+        title = _clause_title("Condivisione", items) if items else "Condivisione di clausole"
+        return title + tail(("con", joined([domain(u) for u in adr.get("shared_with") or []])))
+    if kind == ADR_UNMAPPED:
+        items = clauses_of(model, adr)
+        return _clause_title("Non mappatura", items) if items else "Non mappatura di clausole"
+    if kind == ADR_FUNCTION:
+        function = element("function")
+        return (f"Spostamento di {ident(function)}" if function else "Spostamento di una funzione di sistema") + \
+            tail(("da", domain(function_domain(model, adr))), ("a", domain(adr.get("to_domain"))))
+    if kind == ADR_OWNER:
+        item = element("exchange_item")
+        return f"Proprietà dell'informazione «{model.label(item)}»" if item else "Proprietà di un'informazione"
+    if kind == ADR_IMPLEMENTATION:
+        items = realloc_items(model, adr)
+        return "Scelta lasciata all'implementazione" + (f" in {_short_ids(items)}" if items else "")
+    if kind == ADR_PRODUCT_OPTION:
+        function = element("function")
+        choice = adr.get("product_choice")
+        return "Opzione di prodotto" + (f": {ident(function)}" if function else "") + \
+            (f" ({choice.lower()})" if choice else "")
+    if kind == ADR_LOGICAL:
+        involved = elements("la_elements")
+        return (adr.get("la_operation") or "Decisione di architettura logica") + \
+            (f": {joined([ident(e) for e in involved[:3]])}" if involved else "")
+    if kind == ADR_WAIVER:
+        rule = " ".join((adr.get("rule") or "").split())
+        return f"Deroga a {rule}" if rule else "Deroga a una regola della metodologia"
+    if kind == ADR_OTHER:
+        items = elements("srs_items")
+        concerned = [ident(e) for e in elements("concerns")]
+        return "Decisione trasversale" + (f" su {_short_ids(items)}" if items else
+                                          f" su {joined(concerned)}" if concerned else "")
+    return kind or "Nuova decisione architetturale"

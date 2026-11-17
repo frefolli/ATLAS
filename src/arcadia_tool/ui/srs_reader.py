@@ -6,7 +6,7 @@ section its domains are chosen (A4), from the row of a clause its system functio
 """
 from html import escape
 
-from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QEvent, QItemSelectionModel, QModelIndex, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut, QTextDocument
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QListView, QMenu, QMessageBox, QProgressDialog, QPushButton, QStyle, QStyledItemDelegate,
@@ -14,11 +14,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 
 from arcadia_tool.importers.srs_pdf import chapter_of_item
 from arcadia_tool.model.analysis import is_mine, mark_denied, marks_by_requirement, toggle, who_text
-from arcadia_tool.model.adr import item_domains
+from arcadia_tool.model.adr import NOT_APPROVED_STATES, adr_state, item_domains
 from arcadia_tool.model.coverage import derivable
 from arcadia_tool.model.element import natural_key
 from arcadia_tool.ui.element_editor import image_size, load_pixmap
-from arcadia_tool.ui.multi_pick import MultiPick
+from arcadia_tool.ui.multi_pick import CheckBoxPick, MultiPick
 from arcadia_tool.ui.srs_edit_mode import SrsEditMode, edit_mode_button
 from arcadia_tool.ui.theme import ACCENT, ACCENT_SOFT, BORDER, MUTED, TEXT, icon
 
@@ -108,7 +108,9 @@ ACTIONS_BUTTON = (ACTIONS, "Azioni ▾", "Le azioni sulla voce: allocazione, der
 ROW_ACTIONS = {"section": (ACTIONS_BUTTON,),
                "clause": ((ANALYZED, "Non analizzato", "Segna che hai preso in carico la clausola; un altro clic "
                                                       "toglie il tuo segno"), ACTIONS_BUTTON),
-               "item": (ACTIONS_BUTTON,)}
+               # A point of a clause (a), b)…, a bullet, a table row): analysed on its own too.
+               "item": ((ANALYZED, "Non analizzato", "Segna che hai preso in carico il punto della clausola; un "
+                                                    "altro clic toglie il tuo segno"), ACTIONS_BUTTON)}
 NEW_ADR = "adr"
 # The quick actions of an item, by its kind: (action, label, icon, what it does); None: a separator.
 QUICK_ACTIONS = {
@@ -147,6 +149,26 @@ DOMAIN_BADGES = {True: ("#1F5FBF", "#E6F0FF"), False: ("#5B6B7C", "#F1F3F6"),
                  "function": ("#0E7490", "#E0F5F9"), "inherited": ("#5B6B7C", "#F1F3F6"),
                  "derived": ("#7C3AED", "#F3EEFF"), "link": ("#B45309", "#FEF3C7"),
                  "excluded": ("#B42318", "#FEE4E2"), "mixed": ("#9A3412", "#FFEDD5")}
+# The ADR not approved about an item (open, with the comments of the DA, rejected, superseded: see adr_state): a
+# badge under its categories, «ADR-012 - Proposta», coloured as its state; a click opens it.
+PROPOSED_STATUS = "Proposta"
+ADR_STATUS_COLORS = {PROPOSED_STATUS: ("#B45309", "#FEF3C7"), "In revisione DA": ("#1D4ED8", "#DBEAFE"),
+                     "Commenti DA": ("#0E7490", "#E0F5F9"), "Respinta": ("#B42318", "#FEE4E2"),
+                     "Superata": ("#5B6B7C", "#F1F3F6"),
+                     "Revisionato DA": ("#7C3AED", "#F3EEFF"), None: ("#5B6B7C", "#F1F3F6")}
+ADR_BADGE_MAX = 230  # the widest an ADR badge makes the column of the categories
+OPEN_ADR = "open_adr"  # the action of a click on the badge of an ADR (its uuid in place of the item)
+
+
+TEAM = "team"  # «Evidenzia»: the clauses of the team of the user in sections of other teams
+# The states of «Filtra voci per stato ADR»: those not approved, but «Respinta» (its badge stays on the row).
+FILTER_STATES = tuple(state for state in NOT_APPROVED_STATES if state != "Respinta")
+
+
+def adr_badge_text(adr):
+    return f"{adr.get('id') or 'ADR'} - {adr_state(adr) or adr.get('status') or PROPOSED_STATUS}"
+
+
 BADGE_TIPS = {True: "Dominio principale della sezione (A4)", False: "Dominio che contribuisce alla sezione (A4)",
               "derived": "Requisito derivato (SA-4) dalla voce"}
 
@@ -182,6 +204,8 @@ class ItemDelegate(QStyledItemDelegate):
         self.link_badges = None
         # function(element) → (label, style of ANALYZED_STYLES, who has analysed it): the button «Analizzato»
         self.analysis = None
+        # function(element) → [ADR not yet approved about the item]: badges «ADR-012 - Proposta» under its category
+        self.adr_badges = None
         self._sizes = {}
         self._pixmaps = {}
         self._figure_sizes = {}  # (width, height) of the figures: their layout does not decode them
@@ -317,10 +341,13 @@ class ItemDelegate(QStyledItemDelegate):
         left = rect.x() + MARGIN_X + INDENT.get(element.get("item_type"), 0)
         top = rect.y() + (HEADING_PAD_TOP if heading else PAD_TOP)
         right = rect.right() - MARGIN_X
+        adrs = (self.adr_badges(element) or []) if self.adr_badges and not heading else []
+        adr_widths = [self.metrics["chip"].horizontalAdvance(adr_badge_text(a)) + 18 for a in adrs]
+        chips_width = min(max([CHIPS_WIDTH, *adr_widths]), ADR_BADGE_MAX)  # an ADR badge may widen the column
         if heading:
             body_left, chips_left = left, None
         else:
-            body_left, chips_left = left + NUMBER_WIDTH, right - CHIPS_WIDTH
+            body_left, chips_left = left + NUMBER_WIDTH, right - chips_width
         body_width = max((chips_left - 12 if chips_left else right) - body_left, 120)
         kind = row_kind(element)
         # A section: the badges of its domains right of its title (which leaves them up to half of the row).
@@ -354,8 +381,14 @@ class ItemDelegate(QStyledItemDelegate):
         chips = None
         if chips_left is not None:
             rows, chip_h = self._chip_rows(element.get("category"), CHIPS_WIDTH)
-            chips = (chips_left, top, rows, chip_h)
-            height = max(height, len(rows) * (chip_h + CHIP_GAP), self.metrics["bold"].height())
+            # The ADR not yet approved about the item: one badge each, under its categories, right-aligned.
+            y_adr, adr_places = top + len(rows) * (chip_h + CHIP_GAP), []
+            for adr, w in zip(adrs, adr_widths):
+                w = min(w, chips_width)
+                adr_places.append((QRect(right - w, y_adr, w, chip_h), adr))
+                y_adr += chip_h + CHIP_GAP
+            chips = (chips_left, top, rows, chip_h, adr_places, right)
+            height = max(height, y_adr - top, self.metrics["bold"].height())
         actions = None
         if kind:  # a line below the text: what the item is allocated to, and the buttons to change it
             line_h = self.metrics["chip"].height() + 8
@@ -408,8 +441,20 @@ class ItemDelegate(QStyledItemDelegate):
                              metrics.elidedText(badge[0], Qt.ElideRight, chip.width() - 20))
         painter.restore()
 
+    def adr_at(self, index, pos):
+        """The ADR whose badge is under a point of the viewport, or None."""
+        element = index.data(ELEMENT_ROLE)
+        if element is None or not self.adr_badges:
+            return None
+        chips = self._layout(element, self.view.visualRect(index))[3]
+        return next((adr for box, adr in (chips[4] if chips else ()) if box.contains(pos)), None)
+
     def badge_tip(self, index, pos):
         """What the badge under a point of the viewport means (e.g. how a function is mapped), or None."""
+        adr = self.adr_at(index, pos)
+        if adr is not None:
+            return (f"{adr_badge_text(adr)}: {adr.get('title') or ''}\n{adr.get('adr_type') or ''}\n"
+                    "Decisione architetturale non approvata sulla voce: clic per aprirla.")
         element = index.data(ELEMENT_ROLE)
         if element is None or not row_kind(element):
             return None
@@ -452,6 +497,11 @@ class ItemDelegate(QStyledItemDelegate):
     def editorEvent(self, event, model, option, index):
         """A click on a button of a row runs its action (and does not change the selection)."""
         if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+            adr = self.adr_at(index, event.position().toPoint())
+            if adr is not None:  # a click on the badge of an ADR: its sheet
+                if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+                    self.action_clicked.emit(adr.uuid, OPEN_ADR)
+                return True
             name = self.button_at(index, event.position().toPoint())
             if name is not None:
                 if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
@@ -512,11 +562,18 @@ class ItemDelegate(QStyledItemDelegate):
             painter.setPen(QColor(colour))
             painter.drawText(box, WRAP, content)
         if chips is not None:
-            chips_left, y, rows, chip_h = chips
+            chips_left, y, rows, chip_h, adr_places, chips_right = chips
             painter.setFont(self.fonts["chip"])
             painter.setRenderHint(QPainter.Antialiasing)
+            for box, adr in adr_places:  # «ADR-012 - Proposta», coloured as its status
+                fg, bg = ADR_STATUS_COLORS.get(adr_state(adr), ADR_STATUS_COLORS[None])
+                painter.setPen(QColor(fg))
+                painter.setBrush(QColor(bg))
+                painter.drawRoundedRect(box.adjusted(0, 0, -1, -1), 8, 8)
+                painter.drawText(box.adjusted(8, 0, -8, 0), Qt.AlignCenter,
+                                 self.metrics["chip"].elidedText(adr_badge_text(adr), Qt.ElideRight, box.width() - 16))
             for row in rows:
-                x = chips_left + CHIPS_WIDTH - sum(w for _, w in row) - CHIP_GAP * (len(row) - 1)
+                x = chips_right - sum(w for _, w in row) - CHIP_GAP * (len(row) - 1)
                 for c, w in row:
                     fg, bg = CATEGORY_COLORS.get(c, CATEGORY_COLORS["Altro"])
                     chip = QRect(x, y, w, chip_h)
@@ -589,6 +646,7 @@ class SrsReader(QWidget):
         self._refreshing = False
         self.edit_mode = edit_mode or SrsEditMode()
         self.edit_mode.changed.connect(self._selection_changed)
+        self.edit_mode.permission_changed.connect(self._permissions_changed)
 
         self.tabs = QTabBar()
         self.tabs.setExpanding(False)
@@ -599,30 +657,14 @@ class SrsReader(QWidget):
         self.search.addAction(icon("mdi6.magnify"), QLineEdit.LeadingPosition)
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.refresh)
+        # «Categoria»: a drop-down list of check boxes (each in the colour of its category), next to «Requisiti».
         self.category_boxes = {}
-        filters = QHBoxLayout()
-        filters.addWidget(QLabel("Categoria:", objectName="muted"))
-        for c in CATEGORIES + (NO_CATEGORY,):
-            box = QCheckBox(c)
-            box.setChecked(True)
+        self.category_pick = CheckBoxPick()
+        self.category_pick.setToolTip("Le categorie del capitolo 9 delle voci da mostrare")
+        for c in CATEGORIES + (NO_CATEGORY,):  # ticked, each with a dot of its colour
+            box = self.category_pick.add_choice(c, CATEGORY_COLORS[c][0])
             box.toggled.connect(self.refresh)
-            fg, _ = CATEGORY_COLORS[c]
-            box.setStyleSheet(f"QCheckBox {{ color: {fg}; font-weight: 600; }}")
             self.category_boxes[c] = box
-            filters.addWidget(box)
-        filters.addSpacing(16)
-        self.show_headings = QCheckBox("Mostra titoli e sezioni")
-        self.show_headings.setChecked(True)
-        self.show_headings.toggled.connect(self.refresh)
-        filters.addWidget(self.show_headings)
-        # The rows of the clauses of the team of the user in sections of other teams: light yellow, unless unticked.
-        self.highlight_team = QCheckBox("Evidenzia requisiti team")
-        self.highlight_team.setChecked(True)
-        self.highlight_team.setToolTip("Sfondo giallo chiaro per le clausole del tuo team dentro sezioni di altri "
-                                       "team (es. ricevute per riallocazione)")
-        self.highlight_team.toggled.connect(self._highlight_toggled)
-        filters.addWidget(self.highlight_team)
-        filters.addStretch()
         # Whose requirements, under the categories: all, of the team of the user (allocated to its domains), of one or
         # more teams, of one or more functional domains.
         scope_row = QHBoxLayout()
@@ -640,6 +682,33 @@ class SrsReader(QWidget):
         self.scope_note = QLabel(objectName="muted")  # the teams of the user, or why there are none
         self.scope_note.setVisible(False)
         scope_row.addWidget(self.scope_note)
+        scope_row.addSpacing(16)
+        scope_row.addWidget(QLabel("Categoria:", objectName="muted"))
+        scope_row.addWidget(self.category_pick)
+        # «Filtra voci per stato ADR»: all the items, or only those with an ADR not approved in a state (see
+        # adr_state).
+        scope_row.addSpacing(16)
+        scope_row.addWidget(QLabel("Filtra voci per stato ADR:", objectName="muted"))
+        self.adr_view = QComboBox()
+        self.adr_view.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.adr_view.setToolTip("Tutte le voci, oppure solo quelle su cui c'è un'ADR non approvata nello stato "
+                                 "scelto (il badge «ADR-…» della riga)")
+        self.adr_view.addItem("Tutte", None)
+        for state in FILTER_STATES:
+            self.adr_view.addItem(state, state)
+        self.adr_view.currentIndexChanged.connect(self.refresh)
+        scope_row.addWidget(self.adr_view)
+        # «Evidenzia»: the rows of the clauses of the team of the user in sections of other teams, light yellow.
+        scope_row.addSpacing(16)
+        scope_row.addWidget(QLabel("Evidenzia:", objectName="muted"))
+        self.highlight_view = QComboBox()
+        self.highlight_view.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.highlight_view.addItem("Requisiti team", TEAM)
+        self.highlight_view.addItem("Nessuna", None)
+        self.highlight_view.setToolTip("«Requisiti team»: sfondo giallo chiaro per le clausole del tuo team dentro "
+                                       "sezioni di altri team (es. ricevute per riallocazione)")
+        self.highlight_view.currentIndexChanged.connect(self._highlight_changed)
+        scope_row.addWidget(self.highlight_view)
         scope_row.addStretch()
 
         self.count = QLabel(objectName="muted")
@@ -657,10 +726,16 @@ class SrsReader(QWidget):
         top_row = QHBoxLayout()
         top_row.addWidget(self.search, 1)
         top_row.addWidget(self.count)
-        top_row.addWidget(self.coverage_button)
-        top_row.addWidget(self.edit_mode_button)
-        top_row.addWidget(self.delete_button)
-        top_row.addWidget(self.window_button)
+        # The commands of the list: in a group of their own, above the one of the title.
+        commands = QFrame(objectName="card")
+        commands_row = QHBoxLayout(commands)
+        commands_row.setContentsMargins(12, 8, 12, 8)
+        commands_row.addWidget(self.coverage_button)
+        commands_row.addWidget(self.edit_mode_button)
+        commands_row.addWidget(self.delete_button)
+        commands_row.addStretch()
+        commands_row.addWidget(self.window_button)
+        self.commands = commands
 
         self.model = SrsListModel()
         self.view = SrsView()
@@ -670,6 +745,7 @@ class SrsReader(QWidget):
         self.delegate.domain_badges = self._domain_badges
         self.delegate.link_badges = self._link_badges
         self.delegate.analysis = self._analysis
+        self.delegate.adr_badges = lambda element: self._links.get("adrs", {}).get(element.uuid, [])
         self.delegate.team_clauses = set()  # see _team_clauses
         self.delegate.action_clicked.connect(self.run_action)
         self.view.setItemDelegate(self.delegate)
@@ -688,35 +764,33 @@ class SrsReader(QWidget):
         self.view.customContextMenuRequested.connect(self._context_menu)
         QShortcut(QKeySequence.Delete, self.view, activated=self.delete_selected)
 
-        hint = QLabel("Sezioni: i badge sono i domini (blu il principale, grigi i contributori). Clausole: i badge "
-                      "sono le funzioni mappate (azzurre; grigie se mappate alla sezione), i requisiti derivati "
-                      "(viola) e le voci collegate (gialli: → verso, ← da altre voci). «Azioni ▾» in ogni riga, o il "
-                      "clic destro, apre le azioni sulla voce: allocare ai domini, mappare alle funzioni, derivare "
-                      "requisiti, collegare ad altre voci, condividere o escludere la clausola, creare un'ADR. "
-                      "«Non analizzato» segna che hai preso "
-                      "in carico la clausola (col mouse sopra: chi l'ha analizzata). In giallo le clausole del tuo team dentro "
-                      "sezioni di altri team. Doppio clic apre la voce. "
-                      "Selezione multipla: Maiusc + frecce, Ctrl + clic o Maiusc + clic (Ctrl + A per tutte); in "
-                      "modalità modifica, Canc elimina le voci selezionate.",
-                      objectName="muted")
-        hint.setWordWrap(True)
+        # How to read the rows: the tooltip of the title (not a text under the list, which would take its room).
+        hint = ("Sezioni: i badge sono i domini (blu il principale, grigi i contributori). Clausole: i badge sono le "
+                "funzioni mappate (azzurre; grigie se mappate alla sezione), i requisiti derivati (viola) e le voci "
+                "collegate (gialli: → verso, ← da altre voci).\n«Azioni ▾» in ogni riga, o il clic destro, apre le "
+                "azioni sulla voce: allocare ai domini, mappare alle funzioni, derivare requisiti, collegare ad altre "
+                "voci, condividere o escludere la clausola, creare un'ADR.\n«Non analizzato» segna che hai preso in "
+                "carico la voce (col mouse sopra: chi l'ha analizzata). In giallo le clausole del tuo team dentro "
+                "sezioni di altri team. Doppio clic apre la voce.\nSelezione multipla: Maiusc + frecce, Ctrl + clic o "
+                "Maiusc + clic (Ctrl + A per tutte); in modalità modifica, Canc elimina le voci selezionate.")
         header = QFrame(objectName="card")
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(16, 12, 16, 12)
         title = QLabel(f"{project.baseline or 'SUBSET-026'}", objectName="elementTitle")
+        title.setToolTip(hint)
         header_layout.addWidget(title)
         header_layout.addWidget(self.tabs)
         header_layout.addLayout(top_row)
-        header_layout.addLayout(filters)
         header_layout.addLayout(scope_row)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(10)
+        layout.addWidget(commands)
         layout.addWidget(header)
         layout.addWidget(self.view, 1)
-        layout.addWidget(hint)
         self.reload()
+        self._permissions_changed()
 
     # --- data ----------------------------------------------------------------------------------
 
@@ -815,9 +889,10 @@ class SrsReader(QWidget):
             self._fill_scope_choices()
         self.refresh()
 
-    def _highlight_toggled(self, on):
-        """Only the background of the rows changes: no new layout."""
+    def _highlight_changed(self, *_):
+        """«Evidenzia» changed: only the background of the rows changes, no new layout."""
         delegate = self.view.itemDelegate()
+        on = self.highlight_view.currentData() == TEAM
         delegate.team_clauses = self._team_clauses(self.model.elements) if on else set()
         self.view.viewport().update()
 
@@ -879,12 +954,24 @@ class SrsReader(QWidget):
         wanted = self.selected_categories()
         text = self.search.text().strip().lower()
         domains = self.scope_domains()
-        filtered = bool(text) or wanted != set(self.category_boxes) or domains is not None
+        state = self.adr_view.currentData()  # «Filtra voci per stato ADR»: the items with an ADR in that state
+        pending = None if state is None else {u for u, listed in self._links.get("adrs", {}).items()
+                                              if any(adr_state(a) == state for a in listed)}
+        filtered = bool(text) or wanted != set(self.category_boxes) or domains is not None or pending is not None
         items, needed_headings = set(), set()
         for e, chapter, heading, categories, haystack in self.rows:
-            if heading or (self.chapter is not None and chapter != self.chapter):
+            if self.chapter is not None and chapter != self.chapter:
+                continue
+            if heading:  # a section with an ADR of its own: shown, with what contains it
+                if pending and e.uuid in pending:
+                    parent = e.uuid
+                    while parent and parent not in needed_headings:
+                        needed_headings.add(parent)
+                        parent = self.parents.get(parent)
                 continue
             if categories.isdisjoint(wanted) or (text and text not in haystack):
+                continue
+            if pending is not None and e.uuid not in pending:
                 continue
             if domains is not None and domains.isdisjoint(item_domains(self.project.model, e)):
                 continue
@@ -900,14 +987,14 @@ class SrsReader(QWidget):
             if self.chapter is not None and chapter != self.chapter:
                 continue
             if heading:
-                if self.show_headings.isChecked() and (not filtered or e.uuid in needed_headings):
+                if not filtered or e.uuid in needed_headings:  # the titles and sections: always
                     shown.append(e)
             elif e.uuid in items:
                 shown.append(e)
         # Heights are cached per item and width: only items never measured cost time (first opening).
         delegate = self.view.itemDelegate()
         delegate.highlight = text
-        delegate.team_clauses = self._team_clauses(shown) if self.highlight_team.isChecked() else set()
+        delegate.team_clauses = self._team_clauses(shown) if self.highlight_view.currentData() == TEAM else set()
         slow = sum(1 for e in shown if not delegate.cached(e.uuid)) > SLOW_LAYOUT_ITEMS
         loading = None
         if slow:
@@ -930,11 +1017,15 @@ class SrsReader(QWidget):
                 loading.setMaximum(total)
                 loading.setValue(done)
                 QApplication.processEvents()
+        # The rows selected stay selected, and the list on the current one, when a filter is set or removed.
+        selected = [e.uuid for e in self.selected_elements()]
+        current = self.view.currentIndex().data(ELEMENT_ROLE) if self.view.currentIndex().isValid() else None
         try:
             if loading is not None:
                 delegate.measure(shown, progress)
             self.model.set_elements(shown)
             self.view.doItemsLayout()
+            self._restore_selection(selected, current.uuid if current is not None else None)
         finally:
             if loading is not None:
                 loading.close()
@@ -943,6 +1034,19 @@ class SrsReader(QWidget):
                 QApplication.restoreOverrideCursor()
         self.count.setText("1 voce" if len(items) == 1 else f"{len(items)} voci")
         self._selection_changed()
+
+    def _restore_selection(self, selected, current):
+        """After the rows changed (a filter): the items still shown selected again, the current one in sight."""
+        rows = {e.uuid: i for i, e in enumerate(self.model.elements)}
+        kept = [rows[u] for u in selected if u in rows]
+        if not kept:
+            return
+        selection = self.view.selectionModel()
+        target = rows.get(current, kept[0])
+        selection.setCurrentIndex(self.model.index(target), QItemSelectionModel.NoUpdate)
+        for row in kept:
+            selection.select(self.model.index(row), QItemSelectionModel.Select)
+        self.view.scrollTo(self.model.index(target), QAbstractItemView.PositionAtCenter)
 
     def set_detached(self, detached):
         """The catalogue is shown in its own window (detached) or in a tab of the main window."""
@@ -971,16 +1075,18 @@ class SrsReader(QWidget):
             if index is not None:
                 self.tabs.setCurrentIndex(index)
         if all(e.uuid != uuid for e in self.model.elements):
-            for widget in (self.search, self.show_headings, self.scope, *self.category_boxes.values()):
+            for widget in (self.search, self.scope, self.adr_view,
+                           *self.category_boxes.values()):
                 widget.blockSignals(True)
             self.search.clear()
-            self.show_headings.setChecked(True)
+            self.adr_view.setCurrentIndex(0)  # all
             self.scope.setCurrentIndex(0)  # all the requirements
             self.scope_pick.setVisible(False)
             self.scope_note.setVisible(False)
             for box in self.category_boxes.values():
                 box.setChecked(True)
-            for widget in (self.search, self.show_headings, self.scope, *self.category_boxes.values()):
+            for widget in (self.search, self.scope, self.adr_view,
+                           *self.category_boxes.values()):
                 widget.blockSignals(False)
             self.refresh()
         self.reveal(uuid)
@@ -1020,9 +1126,28 @@ class SrsReader(QWidget):
         for e in self.project.model.of_kind("requirement"):
             for link_type, target in links_of(e):
                 incoming.setdefault(target, []).append((link_type, e))
-        from arcadia_tool.model.adr import mixed_points
+        from arcadia_tool.model.adr import adr_srs_items, mixed_points
+        adrs = {}  # the ADR not approved (open, rejected, superseded: see adr_state) about each item, by their ID
+        for adr in sorted(self.project.model.of_kind("adr"), key=lambda a: a.get("id") or ""):
+            if adr_state(adr) is not None:  # not approved
+                for item in adr_srs_items(self.project.model, adr):
+                    adrs.setdefault(item.uuid, []).append(adr)
         self._links = {"functions": functions, "derived": derived, "incoming": incoming,
-                       "mixed": mixed_points(self.project.model)}
+                       "mixed": mixed_points(self.project.model), "adrs": adrs}
+        # The rows whose badges of ADR changed (the ADR are changed in place: compared by what the badges say).
+        shown = {u: [adr_badge_text(a) for a in listed] for u, listed in adrs.items()}
+        before, self._adr_shown = getattr(self, "_adr_shown", {}), shown
+        changed = [u for u in set(before) | set(shown) if before.get(u) != shown.get(u)]
+        combo = getattr(self, "adr_view", None)
+        if combo is not None:  # how many items have an ADR in each state, as the categories say
+            for i in range(1, combo.count()):
+                state = combo.itemData(i)
+                n = sum(1 for listed in adrs.values() if any(adr_state(a) == state for a in listed))
+                combo.setItemText(i, f"{state} ({n})")
+        if changed and getattr(self, "delegate", None) is not None:  # their badges: measured again
+            for uuid in changed:
+                self.delegate.invalidate(uuid)
+            self.view.scheduleDelayedItemsLayout()
         self._marks = marks_by_requirement(self.project.model)
 
     def _analysis(self, element):
@@ -1170,6 +1295,9 @@ class SrsReader(QWidget):
         item = self.project.model.get(uuid)
         if item is None:
             return
+        if name == OPEN_ADR:  # a click on the badge of an ADR of the row: its sheet
+            self.open_element.emit(uuid)
+            return
         if name == ACTIONS:  # «Azioni ▾»: the quick actions, under the mouse
             self.quick_menu(item).exec(QCursor.pos())
             return
@@ -1231,8 +1359,10 @@ class SrsReader(QWidget):
     def element_changed(self, element):
         """An item was edited elsewhere (e.g. in the editor): re-measure and repaint it. A function, a derived
         requirement or a domain changed: the rows that show it are repainted."""
-        if element.kind in ("system_function", "derived_requirement", "domain"):
+        if element.kind in ("system_function", "derived_requirement", "domain", "adr"):  # an ADR: its badges
             self._rebuild_links()
+            if element.kind == "adr" and self.adr_view.currentData() is not None:
+                self.refresh()  # «Filtra voci per stato ADR»: an item may come or go
             self.view.viewport().update()
             return
         if element.kind != "requirement":
@@ -1248,6 +1378,11 @@ class SrsReader(QWidget):
 
     def selected_elements(self):
         return [i.data(ELEMENT_ROLE) for i in sorted(self.view.selectionModel().selectedRows(), key=lambda i: i.row())]
+
+    def _permissions_changed(self):
+        """The user or the teams changed: «Elimina selezionate» only for the members of the Design Authority (the
+        others may not switch the edit mode on either: see SrsEditMode)."""
+        self.delete_button.setVisible(not self.edit_mode.reason())
 
     def _selection_changed(self, *_):
         n = len(self.view.selectionModel().selectedRows())
@@ -1281,7 +1416,10 @@ class SrsReader(QWidget):
         label = element.get("id") or ""
         menu.addAction(icon("mdi6.arrow-right-bold-box-outline"), f"Apri la scheda della voce {label}",
                        lambda _=False: self.open_element.emit(element.uuid))
+        if self.edit_mode.reason():  # not of the Design Authority: no deletion offered
+            return menu
         n = len(self.view.selectionModel().selectedRows())
+        menu.addSeparator()
         delete = menu.addAction(icon("mdi6.trash-can-outline"), f"Elimina selezionate ({n})",
                                 lambda _=False: self.delete_selected())
         delete.setEnabled(self.edit_mode.enabled)

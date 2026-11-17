@@ -6,6 +6,44 @@ l'altra.
 
 ## [Non rilasciato]
 
+## [0.17.0] - 2026-11-17
+
+### Aggiunto
+- **Titolo proposto per ogni ADR.** Ogni nuova ADR nasce con un titolo ricavato dal tipo e dai campi, es.
+  «Riallocazione della sezione 3.4.1 da DF02 a DF05», «Fusione di DF02 e DF03», «Deroga a SA2-07».
+  - Nella scheda il titolo segue i campi (voci, domini, funzione…) finché il team non lo cambia a mano; da quel
+    momento resta quello scritto. L'icona «↺» nel campo lo riporta al titolo proposto.
+  - Le ADR decise non cambiano titolo da sole. Le ADR importate da Excel senza titolo ricevono quello proposto.
+- **ADR non approvate sulle voci SRS.** Nell'elenco SRS, una clausola (o un punto) su cui c'è un'ADR non approvata
+  mostra un badge sotto la sua categoria, es. «ADR-012 - Proposta» o «ADR-003 - Respinta».
+  - Gli stati sono: Proposta, In revisione DA, Revisionato DA, Commenti DA, Respinta, Superata.
+  - Il colore indica lo stato. Col mouse sopra si leggono titolo e tipo dell'ADR; un clic apre la sua scheda.
+  - Il badge sparisce quando l'ADR è approvata (decisa, accolta, accolta con modifiche).
+  - Nuova lista «Filtra voci per stato ADR», accanto a «Requisiti». Con «Tutte» mostra tutte le voci. Con uno
+    stato, es. «Proposta (3)», mostra solo le voci con un'ADR in quello stato, e le sezioni che ne hanno una propria,
+    con i titoli che le contengono. Gli stati della lista sono quelli dei badge, tranne «Respinta».
+- **Comandi dell'elenco SRS in un gruppo proprio.** «Report di copertura…», «Sola lettura», «Elimina selezionate» e
+  «Apri in altra finestra» stanno in un riquadro sopra quello del titolo (es. «SUBSET-026 v3.6.0»).
+  - «Elimina selezionate» compare solo ai membri della Design Authority, nel riquadro e nel clic destro.
+  - Per gli altri «Sola lettura» resta disattivato: non possono passare alla modalità modifica.
+- **«Analizzato» anche sui punti e sulle figure.** I punti di una clausola (a), b)…, bullet), le righe di tabella e
+  le figure hanno il loro pulsante «Non analizzato», separato da quello della clausola.
+
+### Modificato
+- **L'elenco SRS resta sulla riga selezionata.** Quando si mette o si toglie un filtro (categorie, ricerca,
+  requisiti, stato ADR), le voci selezionate restano selezionate e l'elenco resta sulla riga
+  corrente, invece di tornare alla prima del capitolo. Se il filtro nasconde la voce, la selezione si toglie.
+- **Più spazio per l'elenco SRS.** Il testo di aiuto sotto l'elenco non c'è più: si legge col mouse sul titolo
+  (es. «SUBSET-026 v3.6.0»).
+- **Categorie in un elenco a tendina.** Le spunte delle categorie del capitolo 9 sono diventate la lista «Categoria»,
+  tra «Requisiti» e «Filtra voci per stato ADR».
+  - Ogni categoria ha la sua spunta, del suo colore, con il conteggio; il menu resta aperto mentre si spunta.
+  - La lista riassume la scelta: «Tutte», una sola categoria, o «Bordo e altre 4».
+- **Titoli e sezioni sempre visibili; «Evidenzia» in una lista.** La spunta «Mostra titoli e sezioni» non c'è più:
+  titoli e sezioni si vedono sempre (con un filtro, quelli che contengono le voci mostrate). La spunta «Evidenzia
+  requisiti team» è diventata la lista «Evidenzia», dopo «Filtra voci per stato ADR». Ha due opzioni: «Requisiti
+  team» (predefinita, lo sfondo giallo chiaro di prima) e «Nessuna».
+
 ## [0.16.0] - 2026-11-15
 
 ### Aggiunto
@@ -1434,7 +1472,8 @@ Prima versione pubblicata su GitLab.
 - Nome ATLAS (Arcadia Traceability, Logical Architecture Software), icona e logo.
 - Installer Windows e archivio Linux. La pipeline GitLab esegue i test e compila la versione Linux.
 
-[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.16.0...main
+[Non rilasciato]: https://github.com/salvodesi/ATLAS/compare/v0.17.0...main
+[0.17.0]: https://github.com/salvodesi/ATLAS/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/salvodesi/ATLAS/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/salvodesi/ATLAS/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/salvodesi/ATLAS/compare/v0.13.1...v0.14.0

@@ -692,6 +692,12 @@ def plan_adr(model, sheet, resolver=None, taken=()):
     if status and not _placeholder(status, ADR.field("status")) and status.casefold() != PROPOSED.casefold():
         plan.warn(f"Stato nel file «{status}»: si importa come «{PROPOSED}», la Design Authority decide in ATLAS",
                   f"Stato nel file: {status}")
+    if not values.get("title"):  # none in the file: the one ATLAS proposes from the type and the fields read
+        from arcadia_tool.model.adr import proposed_title
+        from arcadia_tool.model.element import Element
+
+        values["title"] = proposed_title(model, Element("adr", values=dict(values)))
+        p.choices.append(f"Titolo «{values['title']}»: non indicato nel file, proposto da ATLAS")
     p.values.update(values)
     return p
 

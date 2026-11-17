@@ -160,3 +160,59 @@ class FilterButton(QWidget):
         self.summary.setStyleSheet("" if names else "color: #8A94A3;")
         self.summary.setToolTip("\n".join(names))
         self.clear.setVisible(bool(names))
+
+
+class CheckBoxPick(QComboBox):
+    """A drop-down list of choices with ticks, each with a dot of its colour (e.g. the categories of the SRS items),
+    that stays open while they are ticked. Its text: «Tutte», the one ticked, or how many. The choices are checkable
+    actions of the menu, not widgets in it: a widget given to the menu is owned twice and may be deleted twice."""
+
+    def __init__(self, all_text="Tutte", none_text="Nessuna", parent=None):
+        super().__init__(parent)
+        self.all_text, self.none_text = all_text, none_text
+        self.boxes = []
+        self.addItem(all_text)  # the one item: the text shown
+        self.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.setMinimumContentsLength(14)
+        self.menu_ = _StayingMenu(self)
+
+    def add_choice(self, text, colour=None):
+        """A choice, ticked: its action (checkable: setChecked, isChecked, toggled, setText like a check box). Its
+        icon is the tick itself, in the colour of the choice (a menu with icons does not draw the ticks)."""
+        action = self.menu_.addAction(text)
+        action.setCheckable(True)
+        action.setChecked(True)
+        action.setIconVisibleInMenu(True)
+
+        def tick(checked, a=action, c=colour or "#1F5FBF"):
+            a.setIcon(icon("mdi6.checkbox-marked" if checked else "mdi6.checkbox-blank-outline",
+                           c if checked else "#8A96A3"))
+        tick(True)
+        action.toggled.connect(tick)
+        action.toggled.connect(lambda _checked: self.show_text())
+        action.changed.connect(self.show_text)  # its text (e.g. the count) changed
+        self.boxes.append(action)
+        self.show_text()
+        return action
+
+    def showPopup(self):
+        self.menu_.setMinimumWidth(self.width())
+        self.menu_.popup(self.mapToGlobal(self.rect().bottomLeft()))
+
+    def hidePopup(self):
+        self.menu_.hide()
+
+    def show_text(self):
+        """What is ticked, said in the box: the names without their counts («Bordo (986)» → «Bordo»)."""
+        ticked = [b.text().split(" (")[0] for b in self.boxes if b.isChecked()]
+        if len(ticked) == len(self.boxes):
+            text = self.all_text
+        elif not ticked:
+            text = self.none_text
+        elif len(ticked) == 1:
+            text = ticked[0]
+        else:
+            text = f"{ticked[0]} e altre {len(ticked) - 1}"
+        if self.itemText(0) != text:
+            self.setItemText(0, text)
+        self.setToolTip("\n".join(b.text() for b in self.boxes if b.isChecked()) or self.none_text)

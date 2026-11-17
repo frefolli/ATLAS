@@ -2146,6 +2146,11 @@ class ElementEditor(QScrollArea):
             if self.element.schema.id_format and f.name == "id":
                 w.setPlaceholderText(f"es. {self.element.schema.id_format}")
             w.textChanged.connect(self._changed)
+            if self.element.kind == "adr" and f.name == "title":  # back to the title ATLAS proposes
+                back = w.addAction(icon("mdi6.restore"), QLineEdit.TrailingPosition)
+                back.setToolTip("Proponi titolo: quello che ATLAS ricava dal tipo e dai campi dell'ADR (poi segue i "
+                                "campi finché non lo cambi a mano)")
+                back.triggered.connect(lambda _=False: self.propose_title())
             return w, lambda: w.text().strip()
         if f.type == TEXT and self.element.kind in PLAIN_TEXT_KINDS:
             w = QPlainTextEdit(value or "")
@@ -2336,6 +2341,7 @@ class ElementEditor(QScrollArea):
                 return
             for f in lost:
                 self.draft.set(f.name, None)
+        self._follow_title()  # e.g. another type of ADR: its title
         self._set_dirty(True)
         self._build()
 
@@ -2362,6 +2368,7 @@ class ElementEditor(QScrollArea):
         if self.draft is not None and self.draft.kind == "domain":  # a team chosen: its referent proposed
             from arcadia_tool.model.teams import default_referent
             default_referent(self.project.model, self.draft, self.element)
+        self._follow_title()  # e.g. the items of an ADR chosen in a window
         self._set_dirty(True)
         self._build()
 
@@ -2376,6 +2383,47 @@ class ElementEditor(QScrollArea):
         if self._timer.isActive():
             self._timer.stop()
             self._apply()
+
+    def _follow_title(self):
+        """An ADR still open whose title is the one proposed (or none): it follows the fields (its type, items,
+        domains…); changed by hand, it stays as written. The title proposed before is remembered for this draft."""
+        from arcadia_tool.model.adr import OPEN, proposed_title
+
+        draft = self.draft
+        if draft is None or draft.kind != "adr" or draft.get("status") not in OPEN or self.read_only:
+            return
+        model = self.project.model
+        seen = getattr(self, "_title_seen", None)
+        before = seen[1] if seen and seen[0] is draft else proposed_title(model, self.element or draft)
+        new = proposed_title(model, draft)
+        self._title_seen = (draft, new)
+        current = (draft.get("title") or "").strip()
+        if current not in ("", before, new):
+            return  # written by the team
+        widget = self.widgets.get("title")
+        if not current and isinstance(widget, QLineEdit) and widget.hasFocus():
+            return  # emptied to write another one: not filled while it is typed
+        if current != new:
+            draft.set("title", new)
+            if isinstance(widget, QLineEdit) and widget.text() != new:
+                widget.blockSignals(True)
+                widget.setText(new)
+                widget.blockSignals(False)
+            self._announce_label()
+
+    def propose_title(self):
+        """«Proponi titolo»: the title ATLAS proposes, in place of the one written (it follows the fields again)."""
+        from arcadia_tool.model.adr import proposed_title
+
+        if self.draft is None or not self.editing:
+            return
+        self.flush()
+        new = proposed_title(self.project.model, self.draft)
+        self._title_seen = (self.draft, new)
+        widget = self.widgets.get("title")
+        if isinstance(widget, QLineEdit):
+            widget.setText(new)  # as typed: the sheet has changes to save
+        self.draft.set("title", new)
 
     def _apply(self):
         if self.draft is None:
@@ -2407,6 +2455,7 @@ class ElementEditor(QScrollArea):
             if not self.element.get("id"):  # not assigned yet (e.g. EI-Nome): it follows the name as it is typed
                 self.draft.set("id", compute_id(self.draft, self.project.model))
             self._refresh_id()
+        self._follow_title()  # an ADR: the title proposed follows the fields, until changed by hand
         self.title.setText(self.project.model.choice_label(self.draft))
         self._announce_label()
 

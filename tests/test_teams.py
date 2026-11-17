@@ -751,6 +751,9 @@ def test_only_the_design_authority_changes_the_srs_items(app, tmp_path, monkeypa
     assert not reader.edit_mode_button.isEnabled() and "voci SRS" in reader.edit_mode_button.toolTip()
     mode.set_enabled(True)
     assert not mode.enabled and not reader.edit_mode_button.isChecked()
+    assert reader.delete_button.isHidden()  # «Elimina selezionate»: only for the Design Authority
+    assert not any(a.text().startswith("Elimina") for a in reader.context_menu(clause).actions())
+    assert reader.layout().indexOf(reader.commands) == 0  # the commands: a group above the one of the title
     reader.reveal(clause.uuid)
     reader.delete_selected()
     assert p.model.get(clause.uuid) is clause
@@ -774,12 +777,13 @@ def test_only_the_design_authority_changes_the_srs_items(app, tmp_path, monkeypa
     # The Design Authority: as before; a user who is not any more: the edit mode goes off.
     window.user = anna
     window._refresh_state()
-    assert reader.edit_mode_button.isEnabled()
+    assert reader.edit_mode_button.isEnabled() and not reader.delete_button.isHidden()
+    assert any(a.text().startswith("Elimina") for a in reader.context_menu(clause).actions())
     mode.set_enabled(True)
     assert mode.enabled
     window.user = mario
     window._refresh_state()
-    assert not mode.enabled
+    assert not mode.enabled and reader.delete_button.isHidden()
     window._set_project(None)
     window.close()
 

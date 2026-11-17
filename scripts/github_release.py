@@ -35,13 +35,9 @@ def notes(version, installer, linux, extra, mac=None):
 Scaricare ed eseguire **{installer.name}**. ATLAS si installa per il solo utente, senza privilegi di
 amministratore, e mantiene i dati degli utenti (`%APPDATA%\\RFI\\ARCADIA Tool`).
 
-**Aggiornamento dalla 0.7.0 in poi:** ATLAS propone la nuova versione all'avvio (al massimo una volta al giorno)
-oppure da *Info › Verifica aggiornamenti…* (*Aiuto* fino alla 0.8.0): «Aggiorna ora» la scarica, la verifica e la
-installa, poi riapre ATLAS. In alternativa basta scaricare ed eseguire l'installer qui sotto, che aggiorna la
-versione installata.
-
-Dalle versioni fino alla 0.6.0, installate in *Programmi*: installare questa versione, poi disinstallare quella
-precedente da *Impostazioni › App* (l'installer lo ricorda).
+**Aggiornamento:** ATLAS propone la nuova versione all'avvio (al massimo una volta al giorno) oppure da
+*Info › Verifica aggiornamenti…*: «Aggiorna ora» la scarica, la verifica e la installa, poi riapre ATLAS. In
+alternativa basta scaricare ed eseguire l'installer qui sotto, che aggiorna la versione installata.
 
 {extra}SHA-256: `{sha}`
 

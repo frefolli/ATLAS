@@ -79,10 +79,7 @@ def test_reader_chapters_filters_and_search(app, tmp_path):
         box.setChecked(c == "Terra")
     shown = {x.get("id") for x in reader.model.elements if x.get("item_type") == "Requisito"}
     assert shown == {"3.14.4.4", "7.5.1.72"}
-    reader.show_headings.setChecked(False)
-    assert all(x.get("item_type") not in ("Capitolo", "Sezione") for x in reader.model.elements)
-
-    reader.show_headings.setChecked(True)
+    # The titles and sections: always, those containing what is shown.
     assert [x.get("id") for x in reader.model.elements] == ["3.14", "3.14.4", "3.14.4.4", "7.5", "7.5.1.72"]
 
     for box in reader.category_boxes.values():
@@ -404,5 +401,158 @@ def test_a_click_on_an_srs_item_in_the_tree_goes_to_its_row_on_the_tab_of_its_ch
         assert tree.tree.currentItem() is item  # the tree keeps it: the next click is on another one
     tree._clicked(tree._items[e["derived"].uuid], 0) if e["derived"].uuid in tree._items else None
     assert reader.view.currentIndex().data(srs_reader.ELEMENT_ROLE) is e["a"]  # not an SRS item: nothing moves
+    window._set_project(None)
+    window.close()
+
+
+def test_the_adr_not_yet_approved_about_an_item_are_badges_of_its_row(app, tmp_path):
+    from arcadia_tool.model.schema import ADR_EXCLUSION, ADR_OTHER, ADR_SHARED
+
+    p, e = build(tmp_path)
+    shared = p.new_element("adr", id="ADR-012", title="Condivisione", adr_type=ADR_SHARED, status="Proposta",
+                           shared_items=[e["r2"].uuid])
+    review = p.new_element("adr", id="ADR-003", title="Altro", adr_type=ADR_OTHER, status="In revisione DA",
+                           srs_items=[e["r2"].uuid, e["a"].uuid])
+    p.new_element("adr", id="ADR-020", adr_type=ADR_OTHER, status="Decisa", srs_items=[e["r10"].uuid])
+    p.new_element("adr", id="ADR-021", adr_type=ADR_EXCLUSION, status="Proposta", da_decision="Respinta",
+                  excluded_item=[e["r10"].uuid])
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window._set_project(p)
+    window.go_to_srs_item(e["r2"].uuid)
+    app.processEvents()
+    reader = window.reader
+    delegate = reader.delegate
+    texts = lambda key: [srs_reader.adr_badge_text(a) for a in delegate.adr_badges(e[key])]
+    assert texts("r2") == ["ADR-003 - In revisione DA", "ADR-012 - Proposta"]  # by their ID
+    assert texts("a") == ["ADR-003 - In revisione DA"]
+    assert texts("r10") == ["ADR-021 - Respinta"]  # decided: none; rejected: shown, it is not approved
+    index = reader.view.currentIndex()
+    assert index.data(srs_reader.ELEMENT_ROLE) is e["r2"]
+    rect = reader.view.visualRect(index)
+    chips = delegate._layout(e["r2"], rect)[3]
+    places = chips[4]
+    assert [adr for _box, adr in places] == [review, shared]
+    assert all(box.right() <= rect.right() for box, _adr in places)  # in the column of the categories
+    assert places[0][0].top() > chips[1]  # under the chip of its category
+    tip = delegate.badge_tip(index, places[1][0].center())
+    assert tip.startswith("ADR-012 - Proposta: Condivisione") and "clic per aprirla" in tip
+    opened = []
+    reader.open_element.connect(opened.append)
+    reader.run_action(shared.uuid, srs_reader.OPEN_ADR)  # what a click on the badge does
+    assert opened == [shared.uuid]
+    previous = shared.copy()
+    shared.set("status", "Decisa")  # approved: its badge goes
+    p.update(shared, previous)
+    reader.element_changed(shared)
+    assert texts("r2") == ["ADR-003 - In revisione DA"]
+    assert not reader.grab().isNull()  # drawn
+    window._set_project(None)
+    window.close()
+
+
+def test_the_list_to_show_the_items_with_an_adr_in_a_state(app, tmp_path):
+    from arcadia_tool.model.schema import ADR_OTHER, ADR_SECTION
+
+    p, e = build(tmp_path)
+    p.new_element("adr", id="ADR-001", adr_type=ADR_OTHER, status="Proposta", srs_items=[e["r2"].uuid])
+    p.new_element("adr", id="ADR-002", adr_type=ADR_SECTION, status="Revisionato DA", realloc_item=[e["sec"].uuid])
+    p.new_element("adr", id="ADR-004", adr_type=ADR_OTHER, status="Revisionato DA", da_decision="Commenti DA",
+                  srs_items=[e["t"].uuid])
+    p.new_element("adr", id="ADR-005", adr_type=ADR_OTHER, status="Decisa", da_decision="Accolta con modifiche",
+                  srs_items=[e["d"].uuid])  # approved: in no state of the list
+    decided = p.new_element("adr", id="ADR-003", adr_type=ADR_OTHER, status="Decisa", srs_items=[e["var"].uuid])
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window._set_project(p)
+    window.open_srs_reader()
+    app.processEvents()
+    reader = window.reader
+    combo = reader.adr_view
+    shown = lambda: [x.get("id") for x in reader.model.elements]
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        "Tutte", "Proposta (1)", "In revisione DA (0)", "Revisionato DA (1)", "Commenti DA (1)",
+        "Superata (0)"]  # not «Accolta» nor «Accolta con modifiche», nor «Respinta»
+    assert combo.currentData() is None and "3.14.4.3" in shown()  # «Tutte»: every item
+    combo.setCurrentIndex(combo.findData("Proposta"))
+    assert shown() == ["3.14", "3.14.4", "3.14.4.2"]
+    combo.setCurrentIndex(combo.findData("Revisionato DA"))
+    assert shown() == ["3.14", "3.14.4"]  # the section, with an ADR of its own
+    combo.setCurrentIndex(combo.findData("Commenti DA"))
+    assert shown() == ["3.14", "3.14.4", "3.14.4.4"]
+    combo.setCurrentIndex(combo.findData("Proposta"))
+    previous = decided.copy()
+    decided.set("status", "Proposta")  # back to proposed: its item comes in
+    p.update(decided, previous)
+    reader.element_changed(decided)
+    assert shown() == ["3.14", "3.14.4", "3.14.4.2", "7.5", "7.5.1.72"] and combo.itemText(1) == "Proposta (2)"
+    reader.go_to(e["r10"].uuid)  # from outside, an item without an ADR: «Tutte» again
+    assert combo.currentData() is None and "3.14.4.10" in shown()
+    window._set_project(None)
+    window.close()
+
+
+def test_the_selected_row_stays_when_a_filter_is_set_or_removed(app, tmp_path):
+    p, e = build(tmp_path)
+    window = MainWindow()
+    window.resize(1400, 500)  # short: the list scrolls
+    window.show()
+    window._set_project(p)
+    for n in range(40):  # many clauses before the one selected
+        p.new_element("requirement", id=f"3.14.4.{20 + n}", item_type="Requisito", parent=e["sec"].uuid,
+                      category=["Bordo"], text=f"Clausola {n}")
+    p.new_element("requirement", id="3.14.4.99", item_type="Requisito", parent=e["sec"].uuid, category=["Terra"],
+                  text="Selected")
+    window._model_changed()
+    window.open_srs_reader()
+    app.processEvents()
+    reader = window.reader
+    target = next(x for x in p.model.of_kind("requirement") if x.get("id") == "3.14.4.99")
+    reader.reveal(target.uuid)
+    app.processEvents()
+    current = lambda: reader.view.currentIndex().data(srs_reader.ELEMENT_ROLE)
+    visible = lambda: reader.view.viewport().rect().intersects(
+        reader.view.visualRect(reader.model.index(reader.model.elements.index(target))))
+    reader.category_boxes["Bordo"].setChecked(False)  # a filter that keeps it
+    app.processEvents()
+    assert current() is target and reader.selected_elements() == [target] and visible()
+    reader.category_boxes["Bordo"].setChecked(True)  # removed: still on its row, not on the first of the chapter
+    app.processEvents()
+    assert current() is target and reader.selected_elements() == [target] and visible()
+    assert reader.view.verticalScrollBar().value() > 0
+    reader.category_boxes["Terra"].setChecked(False)  # a filter that hides it: nothing selected
+    app.processEvents()
+    assert reader.selected_elements() == []
+    window._set_project(None)
+    window.close()
+
+
+def test_the_categories_are_a_list_with_ticks_between_requisiti_and_the_state_of_the_adr(app, tmp_path):
+    p, e = build(tmp_path)
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window._set_project(p)
+    window.open_srs_reader()
+    app.processEvents()
+    reader = window.reader
+    pick = reader.category_pick
+    row = next(reader.layout().itemAt(1).widget().layout().itemAt(i).layout()
+               for i in range(reader.layout().itemAt(1).widget().layout().count())
+               if reader.layout().itemAt(1).widget().layout().itemAt(i).layout() is not None
+               and reader.layout().itemAt(1).widget().layout().itemAt(i).layout().indexOf(pick) >= 0)
+    assert row.indexOf(reader.scope) < row.indexOf(pick) < row.indexOf(reader.adr_view)
+    assert pick.currentText() == "Tutte" and reader.category_boxes["Bordo"].text() == "Bordo (4)"
+    reader.category_boxes["Terra"].setChecked(False)
+    assert pick.currentText() == "Bordo e altre 4" and "3.14.4.4" not in [x.get("id") for x in reader.model.elements]
+    for c, box in reader.category_boxes.items():
+        box.setChecked(c == "Definizione")
+    assert pick.currentText() == "Definizione"
+    assert [x.get("id") for x in reader.model.elements if x.get("item_type") == "Requisito"] == ["3.14.4.3"]
+    for box in reader.category_boxes.values():
+        box.setChecked(False)
+    assert pick.currentText() == "Nessuna"
     window._set_project(None)
     window.close()

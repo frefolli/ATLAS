@@ -622,7 +622,8 @@ def test_the_sheets_of_domains_and_functions_list_their_adr_and_create_one(app, 
     monkeypatch.setattr(adr_types.AdrTypeDialog, "exec", choose)
     assert editor.adrs_new.isEnabled()
     editor.adrs_new.click()
-    new = next(a for a in p.model.of_kind("adr") if a.get("title") is None and a.get("adr_type") == ADR_OTHER)
+    new = next(a for a in p.model.of_kind("adr") if a.get("adr_type") == ADR_OTHER and a.get("concerns"))
+    assert new.get("title") == f"Decisione trasversale su {d1.get('id')}"  # the title proposed
     assert new.get("concerns") == [d1.uuid] and window.editors[new.uuid].editing  # created about it, opened
     window._select(d1)
     assert new.uuid in [window.editor.adrs_table.item(r, 1).data(Qt.UserRole)

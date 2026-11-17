@@ -1020,6 +1020,10 @@ class ModelTree(QFrame):
             from arcadia_tool.model.adr import proposer_defaults
             user = self.user_of() if self.user_of else None
             context = {**proposer_defaults(self.project.model, user), **(context or {})}
+            if not (context.get("title") or "").strip():  # a title proposed from its type and fields (changeable)
+                from arcadia_tool.model.adr import proposed_title
+                from arcadia_tool.model.element import Element
+                context["title"] = proposed_title(self.project.model, Element("adr", values=dict(context)))
         element = self.project.new_element(kind, **(context or {}))
         if kind == "derived_requirement" and element.get("parent"):  # SA-4, or «Deriva requisito da…» of an SRS item
             self.project.record_decomposition(self.project.model.get(element.get("parent")))

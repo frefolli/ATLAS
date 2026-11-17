@@ -190,7 +190,7 @@ def test_everything_but_chapters_and_sections_is_derivable(app, tmp_path):
                         category=["Bordo"], text="a sub-clause")
     assert not derivable(e["chapter"]) and not derivable(e["section"])  # e.g. 3.8.1
     assert all(derivable(x) for x in (e["clause"], sub, e["item"]))  # 3.8.1.1, its sub-clauses, list items
-    assert [name for name, *_ in ROW_ACTIONS[row_kind(e["item"])]] == ["actions"]  # the quick actions
+    assert [name for name, *_ in ROW_ACTIONS[row_kind(e["item"])]] == ["analyzed", "actions"]  # analysed on its own
     # Derived from a list item: «3.14.4.2 a)-D1», covering its clause at the level SA-4.
     created, _ = p.derive_requirements(e["item"], [("", "Rileva il primo movimento.")])
     assert [d.get("id") for d in created] == ["3.14.4.2 a)-D1"]
