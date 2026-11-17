@@ -17,7 +17,10 @@ def pytest_sessionfinish(session, exitstatus):
     from PySide6.QtWidgets import QApplication
     if QApplication.instance() is not None:
         for widget in QApplication.topLevelWidgets():
-            widget.deleteLater()
+            # Only the windows of their own: a popup or a dialog with a parent (e.g. the menu of a drop-down list) is
+            # deleted with it; deleted on its own too, it may be deleted twice and crash the process (seen on Linux).
+            if widget.parentWidget() is None:
+                widget.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
